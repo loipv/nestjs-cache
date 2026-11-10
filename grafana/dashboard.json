@@ -75,7 +75,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(cache_requests_total{store=~\"$store\",result=~\"hit|stale\"}[5m])) / clamp_min(sum(rate(cache_requests_total{store=~\"$store\"}[5m])), 1e-9)",
+          "expr": "sum by (store) (rate(cache_requests_total{store=~\"$store\",result=~\"hit|stale\"}[5m])) / clamp_min(sum by (store) (rate(cache_requests_total{store=~\"$store\"}[5m])), 1e-9)",
           "legendFormat": "{{store}}"
         }
       ]

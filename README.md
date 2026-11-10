@@ -467,8 +467,8 @@ import * as client from '@prometheus-io/client';
 export class AppModule {}
 ```
 
-`prom-client` works the same way, because the library only relies on structural types. Note that `prom-client` 15.1.3
-is deprecated on npm:
+`prom-client` works the same way, because the library only relies on structural types. Note that the `prom-client` package is
+marked deprecated on npm in favour of `@prometheus-io/client`:
 
 ```ts
 import { Module } from '@nestjs/common';
@@ -517,8 +517,9 @@ Metric names below use the default prefix `cache_`:
   (`Metric "cache_requests_total" is already registered; use a different prefix or registry`). This happens when two
   apps in one process share `client.register`; give one of them another `prefix` or `registry`.
 - The metrics are removed from the registry when the app closes, so a second app can start afterwards.
-- A failure while updating a metric is logged with `operation: 'metrics'` and is never emitted as an `error` event, so
-  `errors_total` is not affected.
+- A failure while updating a metric is logged as a warning, `Cache metrics failed on store "<store>": <message>`, at
+  most once per 30 s per store (the same throttle as other store errors). Nothing is logged at `logging.level: 'off'`.
+  It is never emitted as an `error` event, so `errors_total` is not affected.
 
 Custom or fake clients: `PrometheusClientLike` and `RegistryLike` are structural types. A registry needs
 `getSingleMetric`, `removeSingleMetric` and `registerMetric`, and the constructors are typed `new (config: never) => ...`.
@@ -568,6 +569,12 @@ from 1 to 2147483647. It does not emit `error` events, and a `ping` that rejects
 | Store without `ping`  | Reported as `up` with `ping: 'unsupported'`                                |
 
 `ioredisAdapter` provides `ping`. A hand-written `IoredisLike` stub must now add `ping()`.
+
+With ioredis's default offline queue, a `ping` that timed out stays queued until ioredis gives up
+(`maxRetriesPerRequest`, default 20), so frequent checks while Redis is down queue PINGs until then. Set
+`maxRetriesPerRequest` low or `enableOfflineQueue: false` on the client if that matters. On a store wrapped with
+`circuitBreaker(...)`, a failed `ping` counts toward `failureThreshold` like any other operation, and in half-open
+state it can take the single trial request.
 
 ### Logging
 
