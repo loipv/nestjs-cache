@@ -12,11 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Optional distributed lock (`defaults.lock`, per-call `lock`) that coalesces concurrent misses across instances; `LockProvider`, `LockHandle` and `CacheStore.lock`, implemented by the Redis store and by a tiered store whose L2 has a lock.
 - `circuitBreaker(store, options)`, `CircuitBreakerStore`, `CircuitOpenError` and the `CircuitBreakerOptions` and `BreakerState` types.
 - `lock` and `breaker` events; `hit.stale` is `true` for `swr` stale reads.
-- Optional `CacheStore.getAndTouch`, implemented by the memory, Redis and tiered stores.
+- `getAndTouch` (already optional on `CacheStore` and implemented by `RedisStore` in 0.1) is now also implemented by the memory and tiered stores.
 - `MemoryStoreOptions` type export; `CacheLockDefaults` type export.
 
 ### Changed
 
+- `WriteOptions` is now a type alias containing a union, so `interface X extends WriteOptions` no longer compiles; use `type X = WriteOptions & { ... }`.
+- `IoredisLike` gained a required `eval` and a `set ... 'NX'` overload. Real ioredis clients are unaffected, but hand-written fakes must add them.
 - Repeated `error` log lines are throttled to one per 30 seconds for each (store, operation) pair, with a `(+N similar errors suppressed)` suffix. Events are still emitted for every occurrence.
 - `package.json` now has `repository`, `homepage`, `bugs` and more keywords.
 

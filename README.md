@@ -305,6 +305,8 @@ await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock:
 - It needs a `redisStore`, or a `tieredStore` whose L2 is Redis (the lock is the L2's). The memory store has no lock.
   With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup. For `lock: true` on a method whose store has no lock, `CacheExplorer` logs the
   warning once per class and method.
+- A request answered from the cache after waiting for the lock emits `miss` and then `hit` for the same request; do not double-count it in metrics.
+- Lock keys are `lock:<fullKey>`. Without a `prefix`, do not use a namespace literally named `lock`: `clear('lock')` would delete live locks. Setting a `prefix` avoids this.
 - The lock is **not auto-extended.** If a load runs longer than `lock.ttl`, the lock expires and another instance
   may load the same key too (a duplicated load, never a wrong value). Set `lock.ttl` above your slowest load.
 - A waiter that finds the value returns it, and coalesced waiters in one process produce one `hit` per flight. If
@@ -342,6 +344,7 @@ const store = tieredStore({
   typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
 - Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `lock.acquire` and `lock.release`. `invalidation`, `bind`
   and `close` are passed through. The breaker has `getAndTouch` and `lock` only if the wrapped store does.
+- `clear` is guarded by the breaker `timeout`. For big namespaces (Redis `SCAN`/`UNLINK` loops) use a larger `timeout`, otherwise `@CacheEvict({ allEntries: true })` can trip the breaker.
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
   state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
 - `CircuitOpenError` never reaches your code and never emits `error`: reads count as a miss, writes are skipped, and
