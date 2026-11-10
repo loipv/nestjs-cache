@@ -57,7 +57,9 @@
     "test": "vitest run --project unit",
     "test:cov": "vitest run --project unit --coverage",
     "test:integration": "vitest run --project integration",
-    "test:consumers": "node scripts/test-consumers.mjs"
+    "test:consumers": "node scripts/test-consumers.mjs",
+    "changeset": "changeset",
+    "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts"
   },
   "peerDependencies": {
     "@nestjs/common": "^11.0.0 || ^12.0.0",
@@ -71,6 +73,8 @@
     }
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@nestjs/common": "^12.4.2",
     "@nestjs/core": "^12.4.2",
     "@nestjs/terminus": "^12.1.0",

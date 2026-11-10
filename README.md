@@ -673,6 +673,41 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.2 - Resilience (done):** distributed lock (cross-instance stampede protection), per-store circuit breaker, `'swr'` (stale-while-revalidate) and `'sliding'` TTL strategies.
 - **0.3 - Observability (done):** Prometheus metrics (`CachePrometheusModule`) with a sample Grafana dashboard, configurable log level with debug logs, circuit breaker logs, and a `@nestjs/terminus` health indicator (`CacheHealthIndicator`). All from the main entry point.
 
+## Releasing
+
+Versions and the CHANGELOG are managed with [Changesets](https://changesets.dev).
+
+1. A pull request that changes the published package runs `npx changeset`, picks `patch`, `minor` or `major`, and
+   commits the generated `.changeset/*.md` file. Tests, CI and docs-only changes need none.
+2. When CI passes on `main`, the `Release` workflow opens or updates a "Version Packages" pull request that bumps
+   `package.json` and `package-lock.json` and writes the CHANGELOG entry.
+3. Merging that pull request runs CI again. When it passes and the version in `package.json` is not on npm yet, the
+   workflow publishes it with [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC, with provenance,
+   no npm token) and creates the `v<version>` git tag and GitHub Release.
+
+The workflow only releases the commit that CI tested: if `main` has moved on by the time CI finishes, that run does
+nothing and the newer commit's run takes over. Nothing is released while CI on `main` is red.
+
+One-time setup for maintainers, in this order:
+
+1. Publish the current version by hand and push its tag. npm only allows a trusted publisher once the package
+   exists. Do this before the release workflow first runs on `main`, or that run will try to publish the unpublished
+   version and fail.
+
+   ```bash
+   npm run build && npm publish
+   git tag v0.3.0 && git push origin v0.3.0
+   ```
+
+2. On npmjs.com, add a trusted publisher to `@loipv/nestjs-cache`: GitHub Actions, repository `loipv/nestjs-cache`,
+   workflow `release.yml` (exact file name), no environment.
+3. In the GitHub repository, enable Settings > Actions > General > "Allow GitHub Actions to create and approve pull
+   requests".
+4. The "Version Packages" pull request is opened with the workflow's `GITHUB_TOKEN`, so CI does not run on it. If a
+   branch ruleset requires CI checks on pull requests, allow the maintainer to bypass it for that pull request (or
+   exempt the `changeset-release/main` branch). The pull request only changes versions and the CHANGELOG, and CI runs
+   on `main` after it is merged, before anything is published.
+
 ## License
 
 MIT
