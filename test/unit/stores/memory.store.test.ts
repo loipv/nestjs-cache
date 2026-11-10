@@ -89,4 +89,40 @@ describe('MemoryStore', () => {
     await s.set('a', 'v', 1_000);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('getAndTouch extends a live entry', async () => {
+    const s = memoryStore();
+    await s.set('a', 'v', 1_000);
+    vi.advanceTimersByTime(900);
+    expect(await s.getAndTouch('a', 1_000)).toBe('v');
+    vi.advanceTimersByTime(900);
+    expect(await s.get('a')).toBe('v');
+    vi.advanceTimersByTime(100);
+    expect(await s.get('a')).toBeUndefined();
+  });
+
+  it('getAndTouch on a miss or expired entry returns undefined and drops it', async () => {
+    const s = memoryStore({ maxEntries: 1 });
+    expect(await s.getAndTouch('nope', 1_000)).toBeUndefined();
+    await s.set('a', 'v', 1_000);
+    vi.advanceTimersByTime(1_000);
+    expect(await s.getAndTouch('a', 5_000)).toBeUndefined();
+    // dropped, not revived by a later read
+    vi.advanceTimersByTime(1);
+    expect(await s.get('a')).toBeUndefined();
+    // the freed slot is usable: nothing is evicted by this set
+    await s.set('b', 'w', 1_000);
+    expect(await s.get('b')).toBe('w');
+  });
+
+  it('getAndTouch moves the entry to most-recently-used', async () => {
+    const s = memoryStore({ maxEntries: 2 });
+    await s.set('a', '1', 10_000);
+    await s.set('b', '2', 10_000);
+    expect(await s.getAndTouch('a', 10_000)).toBe('1');
+    await s.set('c', '3', 10_000);
+    expect(await s.get('b')).toBeUndefined();
+    expect(await s.get('a')).toBe('1');
+    expect(await s.get('c')).toBe('3');
+  });
 });

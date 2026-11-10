@@ -6,6 +6,10 @@ interface Entry {
   expiresAt: number;
 }
 
+export interface MemoryStoreOptions {
+  maxEntries?: number;
+}
+
 const DEFAULT_MAX_ENTRIES = 1_000;
 
 /** In-process LRU store on Map insertion order. Expiry is lazy; no timers. */
@@ -13,7 +17,7 @@ export class MemoryStore implements CacheStore {
   private readonly entries = new Map<string, Entry>();
   private readonly maxEntries: number;
 
-  constructor(options: { maxEntries?: number } = {}) {
+  constructor(options: MemoryStoreOptions = {}) {
     const max = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     if (!Number.isInteger(max) || max < 1) {
       throw new CacheConfigError(`maxEntries must be an integer >= 1, got ${String(max)}`);
@@ -26,6 +30,18 @@ export class MemoryStore implements CacheStore {
     if (entry === undefined) return Promise.resolve(undefined);
     this.entries.delete(key);
     if (Date.now() >= entry.expiresAt) return Promise.resolve(undefined);
+    this.entries.set(key, entry);
+    return Promise.resolve(entry.value);
+  }
+
+  /** Reads the entry and resets its TTL to `ttlMs`; a live hit also becomes most recently used. */
+  getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    const entry = this.entries.get(key);
+    if (entry === undefined) return Promise.resolve(undefined);
+    this.entries.delete(key);
+    const now = Date.now();
+    if (now >= entry.expiresAt) return Promise.resolve(undefined);
+    entry.expiresAt = now + ttlMs;
     this.entries.set(key, entry);
     return Promise.resolve(entry.value);
   }
@@ -64,6 +80,6 @@ export class MemoryStore implements CacheStore {
   }
 }
 
-export function memoryStore(options?: { maxEntries?: number }): MemoryStore {
+export function memoryStore(options?: MemoryStoreOptions): MemoryStore {
   return new MemoryStore(options);
 }

@@ -104,11 +104,41 @@ export class TieredStore implements CacheStore {
     }
     if (local !== undefined) return local;
 
+    return this.readL2(key, () => this.l2.get(key), this.l1Ttl);
+  }
+
+  /**
+   * Reads the value and resets its TTL to `ttlMs` on L2 (through `l2.getAndTouch` when it has
+   * one, otherwise `l2.get`). L1 is read but never extended; a backfill lives `min(ttlMs, l1Ttl)`.
+   */
+  async getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    let local: string | undefined;
+    try {
+      local = await this.l1.get(key);
+    } catch (error) {
+      this.report('get', error);
+    }
+    if (local !== undefined) return local;
+
+    const l2 = this.l2;
+    return this.readL2(
+      key,
+      () => (l2.getAndTouch === undefined ? l2.get(key) : l2.getAndTouch(key, ttlMs)),
+      Math.min(ttlMs, this.l1Ttl),
+    );
+  }
+
+  /** L2 read after an L1 miss, backfilling L1 unless the key was invalidated meanwhile. */
+  private async readL2(
+    key: string,
+    read: () => Promise<string | undefined>,
+    backfillTtl: number,
+  ): Promise<string | undefined> {
     const token = Symbol(key);
     this.pending.set(key, token);
     let remote: string | undefined;
     try {
-      remote = await this.l2.get(key);
+      remote = await read();
     } catch (error) {
       this.report('get', error);
     }
@@ -117,7 +147,7 @@ export class TieredStore implements CacheStore {
     if (current) this.pending.delete(key);
     if (remote !== undefined && current) {
       const value = remote;
-      await this.attempt('set', () => this.l1.set(key, value, this.l1Ttl));
+      await this.attempt('set', () => this.l1.set(key, value, backfillTtl));
     }
     return remote;
   }

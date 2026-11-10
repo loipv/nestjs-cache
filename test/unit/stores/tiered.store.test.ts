@@ -561,4 +561,105 @@ describe('TieredStore', () => {
     expect('lock' in without).toBe(false);
     expect(Object.keys(without)).not.toContain('lock');
   });
+
+  describe('getAndTouch', () => {
+    class TouchStore extends FakeStore {
+      readonly touch = vi.fn((key: string, ttlMs: number): Promise<string | undefined> => {
+        const entry = this.data.get(key);
+        if (entry) this.data.set(key, { value: entry.value, ttlMs });
+        return Promise.resolve(entry?.value);
+      });
+      getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+        return this.touch(key, ttlMs);
+      }
+    }
+
+    it('reads L1 without touching it or calling L2', async () => {
+      await l1.set('k', 'v', 5_000);
+      expect(await store.getAndTouch('k', 60_000)).toBe('v');
+      expect(l2.calls.filter((c) => c.op === 'get')).toHaveLength(0);
+      vi.advanceTimersByTime(5_000);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('touches L2 and backfills L1 with min(ttl, l1Ttl)', async () => {
+      const touching = new TouchStore();
+      touching.data.set('k', { value: 'v', ttlMs: 1 });
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      t.bind(sink);
+      expect(await t.getAndTouch('k', 60_000)).toBe('v');
+      expect(touching.touch).toHaveBeenCalledWith('k', 60_000);
+      expect(touching.calls.filter((c) => c.op === 'get')).toHaveLength(0);
+      vi.advanceTimersByTime(9_999);
+      expect(await l1.get('k')).toBe('v');
+      vi.advanceTimersByTime(1);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('backfills with the requested ttl when it is below l1Ttl', async () => {
+      const touching = new TouchStore();
+      touching.data.set('k', { value: 'v', ttlMs: 1 });
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      expect(await t.getAndTouch('k', 2_000)).toBe('v');
+      vi.advanceTimersByTime(2_000);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('falls back to l2.get when L2 has no getAndTouch', async () => {
+      l2.data.set('k', { value: 'v', ttlMs: 1 });
+      expect(await store.getAndTouch('k', 60_000)).toBe('v');
+      expect(l2.calls.filter((c) => c.op === 'get')).toHaveLength(1);
+      vi.advanceTimersByTime(9_999);
+      expect(await l1.get('k')).toBe('v');
+    });
+
+    it('does not backfill across an invalidation', async () => {
+      const touching = new TouchStore();
+      touching.data.set('k', { value: 'old', ttlMs: 1 });
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      t.bind(sink);
+      await flush();
+      let release: () => void = () => undefined;
+      touching.touch.mockImplementationOnce(
+        (): Promise<string | undefined> =>
+          new Promise((resolve) => {
+            release = () => {
+              resolve('old');
+            };
+          }),
+      );
+      const result = t.getAndTouch('k', 60_000);
+      await flush();
+      bus.deliver({ origin: 'other', keys: ['k'] });
+      release();
+      expect(await result).toBe('old');
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('reports an L2 failure as get and resolves undefined', async () => {
+      const touching = new TouchStore();
+      const boom = new Error('boom');
+      touching.touch.mockRejectedValueOnce(boom);
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      t.bind(sink);
+      expect(await t.getAndTouch('k', 1_000)).toBeUndefined();
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'get', error: boom });
+    });
+
+    it('reports an L1 failure as get and still reads L2', async () => {
+      l2.data.set('k', { value: 'v', ttlMs: 1 });
+      const boom = new Error('l1 down');
+      vi.spyOn(l1, 'get').mockRejectedValueOnce(boom);
+      expect(await store.getAndTouch('k', 1_000)).toBe('v');
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'get', error: boom });
+    });
+
+    it('reports a backfill failure as set and still returns the value', async () => {
+      l2.data.set('k', { value: 'v', ttlMs: 1 });
+      const boom = new Error('l1 set');
+      vi.spyOn(l1, 'set').mockRejectedValueOnce(boom);
+      expect(await store.getAndTouch('k', 1_000)).toBe('v');
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'set', error: boom });
+    });
+  });
 });
