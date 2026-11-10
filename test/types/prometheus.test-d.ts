@@ -1,5 +1,7 @@
 import * as promClient from 'prom-client';
 import * as ioClient from '@prometheus-io/client';
+import { construct } from '../../src/observability/prometheus.types.js';
+import type { PrometheusMetricConfig } from '../../src/index.js';
 import type {
   CachePrometheusOptions,
   PrometheusClientLike,
@@ -17,8 +19,6 @@ export const o: CachePrometheusOptions = {
 };
 // @ts-expect-error client is required
 export const bad: CachePrometheusOptions = {};
-import { construct } from '../../src/observability/prometheus.types.js';
-import type { PrometheusMetricConfig } from '../../src/index.js';
 declare const cfg: PrometheusMetricConfig;
 construct(a.Counter, cfg).inc({ x: '1' });
 construct(a.Histogram, { ...cfg, buckets: [1] }).observe({ x: '1' }, 1);

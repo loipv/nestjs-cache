@@ -86,9 +86,9 @@ describe('default Nest logger (assumption 3)', () => {
 
   it('Logger.debug prints with the default Nest logger (giả định 3)', async () => {
     /* NestFactory.createApplicationContext(AppModule với logging debug) không truyền logger; spy process.stdout.write; cache.get → có dòng chứa 'Cache miss' */
-    // Nothing in this file overrides the static logger: it is still Nest's own ConsoleLogger.
-    const staticRef = (Logger as unknown as { staticInstanceRef?: unknown }).staticInstanceRef;
-    expect(Object.getPrototypeOf(staticRef)).toBe(ConsoleLogger.prototype);
+    // Nothing in this file overrides the static logger: the line must come from Nest's own
+    // ConsoleLogger (spied here with call-through, so it still prints).
+    const consoleDebug = vi.spyOn(ConsoleLogger.prototype, 'debug');
     const savedLevel = process.env.NEST_LOG_LEVEL;
     delete process.env.NEST_LOG_LEVEL;
     const written: string[] = [];
@@ -110,5 +110,9 @@ describe('default Nest logger (assumption 3)', () => {
     expect(line).toBeDefined();
     expect(line).toContain('DEBUG');
     expect(line).toContain('[CacheModule]');
+    expect(consoleDebug).toHaveBeenCalledWith(
+      expect.stringContaining('Cache miss default users:k'),
+      'CacheModule',
+    );
   });
 });

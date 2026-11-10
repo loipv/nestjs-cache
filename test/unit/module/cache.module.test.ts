@@ -11,6 +11,7 @@ import { CacheLogger } from '../../../src/module/cache.logger.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
 import { resolveOptions } from '../../../src/module/cache.options.js';
 import { CACHE_ENGINE, CACHE_LOGGER } from '../../../src/module/tokens.js';
+import { circuitBreaker } from '../../../src/resilience/circuit-breaker.store.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
 import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -265,6 +266,8 @@ describe('CacheModule', () => {
       }
       const closing = new FakeStore();
       closing.close.mockRejectedValueOnce(new Error('x'));
+      const flaky = new FakeStore();
+      flaky.failNext('get');
       const ref = await Test.createTestingModule({
         imports: [
           CacheModule.forRoot({
@@ -273,6 +276,7 @@ describe('CacheModule', () => {
             stores: {
               default: tieredStore({ l1: memoryStore(), l2: new FakeStore() }),
               closing,
+              flaky: circuitBreaker(flaky, { failureThreshold: 1 }),
             },
           }),
         ],
@@ -281,7 +285,7 @@ describe('CacheModule', () => {
       refs.push(ref);
       await ref.init();
       const events = ref.get(CacheEvents);
-      const errors = vi.fn();
+      const errors = vi.fn<(p: { store: string }) => void>();
       const breakers = vi.fn();
       const hits = vi.fn();
       events.on('error', errors);
@@ -293,15 +297,15 @@ describe('CacheModule', () => {
       for (let i = 0; i < 3; i++) {
         events.emit('error', { store: 'default', operation: 'get', error: new Error('down') });
       }
-      events.emit('breaker', { store: 'default', state: 'open' });
-      events.emit('breaker', { store: 'default', state: 'closed' });
       events.emit('hit', { store: 'default', namespace: undefined, key: 'k', stale: false });
       events.emit('miss', { store: 'default', namespace: undefined, key: 'k' });
+      // A real breaker-wrapped store that fails and opens.
+      await ref.get(CacheService).get('k', { store: 'flaky' });
       await ref.get(CacheService).get('k');
       await ref.close();
       refs.splice(refs.indexOf(ref), 1);
-      expect(errors).toHaveBeenCalledTimes(3);
-      expect(breakers).toHaveBeenCalledTimes(2);
+      expect(errors.mock.calls.filter(([p]) => p.store === 'default')).toHaveLength(3);
+      expect(breakers).toHaveBeenCalledWith({ store: 'flaky', state: 'open' });
       expect(hits).toHaveBeenCalledOnce();
       expect(closing.close).toHaveBeenCalledOnce();
       expect(s).toEqual({ error: [], warn: [], log: [], debug: [] });

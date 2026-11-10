@@ -573,8 +573,9 @@ from 1 to 2147483647. It does not emit `error` events, and a `ping` that rejects
 With ioredis's default offline queue, a `ping` that timed out stays queued until ioredis gives up
 (`maxRetriesPerRequest`, default 20), so frequent checks while Redis is down queue PINGs until then. Set
 `maxRetriesPerRequest` low or `enableOfflineQueue: false` on the client if that matters. On a store wrapped with
-`circuitBreaker(...)`, a failed `ping` counts toward `failureThreshold` like any other operation, and in half-open
-state it can take the single trial request.
+`circuitBreaker(...)`, a failed `ping` counts toward `failureThreshold` like any other operation. Once `openDuration`
+has passed, the next call, which may be a `ping`, becomes the single probe; while that probe is in flight (half-open),
+other calls including `ping` are rejected with `CircuitOpenError`.
 
 ### Logging
 
