@@ -266,8 +266,10 @@ Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh un
 **Sliding and `CacheService.get`.** `CacheService.get(key, { strategy: 'sliding' })` resets the entry's window to
 `defaults.ttl`, not to the `ttl` the entry was written with, because the store needs the new TTL before the entry is
 read. Pass the same TTL through `defaults.ttl`, or read with `getOrSet`, which knows the call's `ttl`. Sliding uses the
-store's `getAndTouch` (atomic in the memory, Redis and tiered stores); a custom store without it falls back to a
-`get` followed by a `set`, which is not atomic. `null` values stored with `cacheNull` always use `fixed` and `nullTtl`.
+store's `getAndTouch`, which is atomic in the memory and Redis stores. A tiered store does not touch L2 on an L1 hit, so
+the window is refreshed on L1 misses only (about once per `l1Ttl` per instance), and the backfill is capped at
+`min(ttl, l1Ttl)`; its atomicity depends on L2, and an L2 without `getAndTouch` is read with a plain `get`, which does
+not extend it. A custom store without `getAndTouch` falls back to a `get` followed by a `set`, which is not atomic. `null` values stored with `cacheNull` always use `fixed` and `nullTtl`.
 
 Validation: `staleTtl` and `maxTtl` must be finite numbers greater than 0, `maxTtl` must be `>= ttl` (the call's `ttl`
 or `defaults.ttl`), and an unknown `strategy` name or `swr` without `staleTtl` is rejected with `CacheConfigError`.
@@ -298,8 +300,11 @@ await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock:
 | `defaults.lock.waitTimeout` | `3_000`  | How long a waiter polls for the value before loading it itself (ms) |
 | `defaults.lock.retryDelay`  | `50`     | Pause between polls (ms)                                            |
 
+`defaults.lock` is typed `CacheLockDefaults`.
+
 - It needs a `redisStore`, or a `tieredStore` whose L2 is Redis (the lock is the L2's). The memory store has no lock.
-  With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup.
+  With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup. For `lock: true` on a method whose store has no lock, `CacheExplorer` logs the
+  warning once per class and method.
 - The lock is **not auto-extended.** If a load runs longer than `lock.ttl`, the lock expires and another instance
   may load the same key too (a duplicated load, never a wrong value). Set `lock.ttl` above your slowest load.
 - A waiter that finds the value returns it, and coalesced waiters in one process produce one `hit` per flight. If
@@ -333,7 +338,8 @@ const store = tieredStore({
 
 - Defaults: `failureThreshold` 5 (an integer `>= 1`), `openDuration` 10_000, `timeout` 500. `timeout` and
   `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
-  otherwise `circuitBreaker` throws `CacheConfigError`.
+  otherwise `circuitBreaker` throws `CacheConfigError`. `circuitBreaker(...)` returns a `CircuitBreakerStore`, its options are
+  typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
 - Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `lock.acquire` and `lock.release`. `invalidation`, `bind`
   and `close` are passed through. The breaker has `getAndTouch` and `lock` only if the wrapped store does.
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
