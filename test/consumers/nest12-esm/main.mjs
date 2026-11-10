@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import * as lib from '@loipv/nestjs-cache';
+import * as promClient from 'prom-client';
 import { NestFactory } from '@nestjs/core';
 import { Injectable, Module } from '@nestjs/common';
 
@@ -34,15 +35,25 @@ lib.Cacheable({ namespace: 'users', key: 'swr:{0}', strategy: 'swr', staleTtl: 6
 Object.defineProperty(UserService.prototype, 'findSwr', swrDescriptor);
 Injectable()(UserService);
 class AppModule {}
-Module({ imports: [lib.CacheModule.forRoot({ isGlobal: true })], providers: [UserService] })(
-  AppModule,
-);
+const registry = new promClient.Registry();
+Module({
+  imports: [
+    lib.CacheModule.forRoot({ isGlobal: true }),
+    lib.CachePrometheusModule.forRoot({ client: promClient, registry }),
+  ],
+  providers: [UserService],
+})(AppModule);
 (async () => {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
   const users = app.get(UserService);
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.equal(users.calls, 1);
+  assert.ok(
+    (await registry.metrics()).includes(
+      'cache_requests_total{store="default",namespace="users",result="hit"} 1',
+    ),
+  );
   assert.deepEqual(await users.findSwr('1'), { id: '1' });
   assert.deepEqual(await users.findSwr('1'), { id: '1' });
   assert.equal(users.swrCalls, 1);
