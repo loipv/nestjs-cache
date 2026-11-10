@@ -52,3 +52,9 @@ export {
   CircuitOpenError,
 } from './resilience/circuit-breaker.store.js';
 export type { CircuitBreakerOptions } from './resilience/circuit-breaker.store.js';
+export type {
+  CachePrometheusOptions,
+  PrometheusClientLike,
+  PrometheusMetricConfig,
+  RegistryLike,
+} from './observability/prometheus.types.js';
