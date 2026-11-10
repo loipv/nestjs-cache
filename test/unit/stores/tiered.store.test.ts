@@ -350,18 +350,128 @@ describe('TieredStore', () => {
     expect(local.emit).toHaveBeenCalledWith('error', { operation: 'clear', error: anyError });
   });
 
-  it('does not backfill L1 with a value read before a concurrent invalidation', async () => {
-    let release: (value: string | undefined) => void = () => undefined;
-    l2.get = (): Promise<string | undefined> =>
-      new Promise((resolve) => {
-        release = resolve;
-      });
-    const pending = store.get('k');
-    await flush();
-    bus.deliver({ origin: 'other', keys: ['k'] });
-    release('old');
-    expect(await pending).toBe('old');
-    expect(await l1.get('k')).toBeUndefined();
+  describe('per-key backfill guard', () => {
+    let replies: Map<string, (reply: string | Error) => void>;
+
+    beforeEach(() => {
+      replies = new Map();
+      // L2 reads stay in flight until the test answers them.
+      l2.get = (key: string): Promise<string | undefined> =>
+        new Promise((resolve, reject) => {
+          replies.set(key, (reply) => {
+            if (reply instanceof Error) reject(reply);
+            else resolve(reply);
+          });
+        });
+    });
+
+    /** Wrapped in an object: returning the bare promise from an async function would await it. */
+    async function startRead(key: string): Promise<{ read: Promise<string | undefined> }> {
+      const read = store.get(key);
+      await flush(); // L1 missed; the L2 read is now in flight
+      return { read };
+    }
+
+    async function answer(
+      key: string,
+      { read }: { read: Promise<string | undefined> },
+      reply: string | Error = 'old',
+    ): Promise<void> {
+      replies.get(key)!(reply);
+      await expect(read).resolves.toBe(reply instanceof Error ? undefined : reply);
+    }
+
+    function pendingSize(): number {
+      return (store as unknown as { pending: Map<string, symbol> }).pending.size;
+    }
+
+    it('backfills when nothing touches the key', async () => {
+      const read = await startRead('k');
+      await answer('k', read);
+      expect(await l1.get('k')).toBe('old');
+    });
+
+    it('an unrelated local write or foreign message does not suppress the backfill', async () => {
+      const read = await startRead('k');
+      await store.set('other', 'v', 60_000);
+      await store.delete(['other2']);
+      bus.deliver({ origin: 'other', keys: ['other3'] });
+      await answer('k', read);
+      expect(await l1.get('k')).toBe('old');
+    });
+
+    it('a foreign keys message for the key suppresses the backfill', async () => {
+      const read = await startRead('k');
+      bus.deliver({ origin: 'other', keys: ['k'] });
+      await answer('k', read);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('a local set of the key suppresses the backfill', async () => {
+      const read = await startRead('k');
+      await store.set('k', 'new', 60_000);
+      await answer('k', read);
+      expect(await l1.get('k')).toBe('new');
+    });
+
+    it('a local delete of the key suppresses the backfill', async () => {
+      const read = await startRead('k');
+      await store.delete(['k']);
+      await answer('k', read);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('a local clear covering the key suppresses the backfill', async () => {
+      const read = await startRead('u:1');
+      await store.clear('u:');
+      await answer('u:1', read);
+      expect(await l1.get('u:1')).toBeUndefined();
+    });
+
+    it('a prefix message covering the key suppresses the backfill; another prefix does not', async () => {
+      const covered = await startRead('u:1');
+      const uncovered = await startRead('p:1');
+      bus.deliver({ origin: 'other', prefix: 'u:' });
+      await answer('u:1', covered);
+      await answer('p:1', uncovered);
+      expect(await l1.get('u:1')).toBeUndefined();
+      expect(await l1.get('p:1')).toBe('old');
+    });
+
+    it('a reconnect suppresses the backfill', async () => {
+      const read = await startRead('k');
+      bus.triggerReconnect();
+      await answer('k', read);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('leaves no pending entries once reads settle', async () => {
+      const ok = await startRead('a');
+      const invalidated = await startRead('b');
+      const failed = await startRead('c');
+      expect(pendingSize()).toBe(3);
+      bus.deliver({ origin: 'other', keys: ['b'] });
+      await answer('a', ok);
+      await answer('b', invalidated);
+      await answer('c', failed, new Error('l2 down'));
+      expect(pendingSize()).toBe(0);
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'get', error: anyError });
+    });
+
+    it('a newer read of the same key keeps the map clean in either completion order', async () => {
+      const first = store.get('k');
+      await flush();
+      const answerFirst = replies.get('k')!;
+      const second = store.get('k');
+      await flush();
+      const answerSecond = replies.get('k')!;
+      answerSecond('v2');
+      expect(await second).toBe('v2');
+      answerFirst('v1');
+      expect(await first).toBe('v1');
+      expect(pendingSize()).toBe(0);
+      expect(await l1.get('k')).toBe('v2'); // the older read did not overwrite the newer backfill
+    });
   });
 
   it('honours a custom l1Ttl', async () => {

@@ -32,8 +32,11 @@ export class TieredStore implements CacheStore {
   private subscribed = false;
   private warned = false;
   private closing: Promise<void> | undefined;
-  /** Bumped whenever L1 may have been invalidated; a backfill that straddles a bump is dropped. */
-  private epoch = 0;
+  /**
+   * One token per key with an L2 read in flight. Invalidating a key drops its token, so a read
+   * that straddles an invalidation does not backfill L1 with the value it read before it.
+   */
+  private readonly pending = new Map<string, symbol>();
 
   constructor(options: TieredStoreOptions) {
     const l1Ttl = options.l1Ttl ?? DEFAULT_L1_TTL;
@@ -83,15 +86,18 @@ export class TieredStore implements CacheStore {
     }
     if (local !== undefined) return local;
 
-    const epoch = this.epoch;
+    const token = Symbol(key);
+    this.pending.set(key, token);
     let remote: string | undefined;
     try {
       remote = await this.l2.get(key);
     } catch (error) {
       this.report('get', error);
-      return undefined;
     }
-    if (remote !== undefined && epoch === this.epoch) {
+    // Still ours: no invalidation of this key (and no newer read of it) happened meanwhile.
+    const current = this.pending.get(key) === token;
+    if (current) this.pending.delete(key);
+    if (remote !== undefined && current) {
       const value = remote;
       await this.attempt('set', () => this.l1.set(key, value, this.l1Ttl));
     }
@@ -100,21 +106,21 @@ export class TieredStore implements CacheStore {
 
   async set(key: string, value: string, ttlMs: number): Promise<void> {
     await this.attempt('set', () => this.l2.set(key, value, ttlMs));
-    this.epoch += 1;
+    this.pending.delete(key);
     await this.attempt('set', () => this.l1.set(key, value, Math.min(ttlMs, this.l1Ttl)));
     await this.publish({ origin: this.origin, keys: [key] });
   }
 
   async delete(keys: readonly string[]): Promise<void> {
     await this.attempt('delete', () => this.l2.delete(keys));
-    this.epoch += 1;
+    this.forgetKeys(keys);
     await this.attempt('delete', () => this.l1.delete(keys));
     if (keys.length > 0) await this.publish({ origin: this.origin, keys: [...keys] });
   }
 
   async clear(prefix: string): Promise<void> {
     await this.attempt('clear', () => this.l2.clear(prefix));
-    this.epoch += 1;
+    this.forgetPrefix(prefix);
     await this.attempt('clear', () => this.l1.clear(prefix));
     await this.publish({ origin: this.origin, prefix });
   }
@@ -133,19 +139,30 @@ export class TieredStore implements CacheStore {
 
   private readonly onMessage = (message: InvalidationMessage): void => {
     if (message.origin === this.origin) return;
-    this.epoch += 1;
     if ('keys' in message) {
+      this.forgetKeys(message.keys);
       void this.attempt('delete', () => this.l1.delete(message.keys));
     } else {
+      this.forgetPrefix(message.prefix);
       void this.attempt('clear', () => this.l1.clear(message.prefix));
     }
   };
 
   private readonly onReconnect = (): void => {
     // Messages may have been missed while disconnected.
-    this.epoch += 1;
+    this.pending.clear();
     void this.attempt('clear', () => this.l1.clear(''));
   };
+
+  private forgetKeys(keys: readonly string[]): void {
+    for (const key of keys) this.pending.delete(key);
+  }
+
+  private forgetPrefix(prefix: string): void {
+    for (const key of this.pending.keys()) {
+      if (key.startsWith(prefix)) this.pending.delete(key);
+    }
+  }
 
   private async publish(message: InvalidationMessage): Promise<void> {
     const bus = this.bus;
