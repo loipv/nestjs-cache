@@ -51,4 +51,27 @@ describe('store ping', () => {
     await expect(breaker.ping?.()).rejects.toBeInstanceOf(CircuitOpenError);
     expect(ping).toHaveBeenCalledTimes(1);
   });
+
+  describe('ping receiver', () => {
+    class PingingStore extends FakeStore {
+      receivers: unknown[] = [];
+
+      ping(): Promise<void> {
+        this.receivers.push(this);
+        return Promise.resolve();
+      }
+    }
+
+    it('tieredStore calls the L2 ping with the L2 as this', async () => {
+      const l2 = new PingingStore();
+      await tieredStore({ l1: memoryStore(), l2 }).ping?.();
+      expect(l2.receivers).toEqual([l2]);
+    });
+
+    it('circuitBreaker calls the inner ping with the inner as this', async () => {
+      const inner = new PingingStore();
+      await circuitBreaker(inner).ping?.();
+      expect(inner.receivers).toEqual([inner]);
+    });
+  });
 });

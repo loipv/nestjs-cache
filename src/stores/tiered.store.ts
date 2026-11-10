@@ -59,8 +59,8 @@ export class TieredStore implements CacheStore {
     this.l2 = options.l2;
     if (options.l2.lock !== undefined) this.lock = options.l2.lock;
     if (options.l2.ping !== undefined) {
-      const l2 = options.l2;
-      this.ping = () => l2.ping?.() ?? Promise.resolve();
+      const ping = options.l2.ping.bind(options.l2);
+      this.ping = () => ping();
     }
     this.l1Ttl = l1Ttl;
     this.ownedBus = options.invalidation;

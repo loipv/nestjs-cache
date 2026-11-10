@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheEvents } from '../../../src/core/events.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
+import { construct } from '../../../src/observability/prometheus.types.js';
+import { resolvePrometheusOptions } from '../../../src/observability/metrics.collector.js';
 import { CachePrometheusModule } from '../../../src/observability/prometheus.module.js';
 import type {
   PrometheusClientLike,
@@ -15,6 +17,7 @@ import type {
 
 interface RealRegistry extends RegistryLike {
   getSingleMetricAsString(name: string): Promise<string>;
+  clear(): void;
 }
 
 const clients: [string, PrometheusClientLike & { Registry: new () => RealRegistry }][] = [
@@ -142,6 +145,21 @@ describe.each(clients)('CacheMetricsCollector with %s', (_name, client) => {
     expect(registry.getSingleMetric('cache_requests_total')).toBeDefined();
   });
 
+  it('does not remove a same-named metric that another source registered after a clear', async () => {
+    const registry = new client.Registry();
+    const ref = await boot(registry);
+    registry.clear();
+    const foreign = construct(client.Counter, {
+      name: 'cache_requests_total',
+      help: 'foreign',
+      labelNames: [],
+      registers: [registry],
+    });
+    await ref.close();
+    refs.splice(refs.indexOf(ref), 1);
+    expect(registry.getSingleMetric('cache_requests_total')).toBe(foreign);
+  });
+
   it('removes every metric and stops listening after close', async () => {
     const registry = new client.Registry();
     const ref = await boot(registry);
@@ -159,6 +177,18 @@ describe.each(clients)('CacheMetricsCollector with %s', (_name, client) => {
     expect(() => {
       events.emit('miss', { store: 's', namespace: undefined, key: 'k' });
     }).not.toThrow();
+  });
+});
+
+describe('resolvePrometheusOptions messages', () => {
+  it.each([
+    [[1, Number.NaN], '[1,NaN]'],
+    [[Number.POSITIVE_INFINITY, 1], '[Infinity,1]'],
+    [[1, Number.NEGATIVE_INFINITY], '[1,-Infinity]'],
+  ])('shows non-finite buckets %j as %s', (buckets, shown) => {
+    expect(() => resolvePrometheusOptions({ client: promClient, buckets })).toThrow(
+      new CacheConfigError(`Invalid cachePrometheus option buckets: ${shown}`),
+    );
   });
 });
 

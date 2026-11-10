@@ -20,6 +20,14 @@ const PREFIX_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
 
 function describeValue(value: unknown): string {
   if (typeof value === 'string') return value;
+  // JSON.stringify renders NaN and +-Infinity as null; show them as written.
+  if (Array.isArray(value) && value.some((v) => typeof v === 'number' && !Number.isFinite(v))) {
+    return `[${value
+      .map((v: unknown) =>
+        typeof v === 'number' && !Number.isFinite(v) ? String(v) : describeValue(v),
+      )
+      .join(',')}]`;
+  }
   try {
     return value === undefined ? 'undefined' : JSON.stringify(value);
   } catch {
@@ -77,7 +85,7 @@ const BREAKER_VALUE: Record<BreakerState, number> = { closed: 0, 'half-open': 1,
 export class CacheMetricsCollector implements OnModuleInit, OnModuleDestroy {
   private unsubscribers: (() => void)[] = [];
 
-  private created: string[] = [];
+  private created: { name: string; metric: unknown }[] = [];
 
   constructor(
     private readonly events: CacheEvents,
@@ -192,12 +200,16 @@ export class CacheMetricsCollector implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     for (const off of this.unsubscribers.splice(0)) off();
-    for (const metric of this.created.splice(0)) {
+    for (const { name, metric } of this.created.splice(0)) {
       try {
-        this.options.registry.removeSingleMetric(metric);
+        // Skip a metric that is no longer ours (the registry was cleared and another source
+        // registered the same name).
+        if (this.options.registry.getSingleMetric(name) === metric) {
+          this.options.registry.removeSingleMetric(name);
+        }
       } catch (error) {
         this.logger.warn(
-          `Could not remove metric "${metric}": ${error instanceof Error ? error.message : String(error)}`,
+          `Could not remove metric "${name}": ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
@@ -208,7 +220,7 @@ export class CacheMetricsCollector implements OnModuleInit, OnModuleDestroy {
     config: Parameters<typeof construct<T>>[1],
   ): T {
     const metric = construct(ctor, config);
-    this.created.push(config.name);
+    this.created.push({ name: config.name, metric });
     return metric;
   }
 }
