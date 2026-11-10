@@ -49,11 +49,13 @@ Module({
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.equal(users.calls, 1);
-  assert.ok(
-    (await registry.metrics()).includes(
-      'cache_requests_total{store="default",namespace="users",result="hit"} 1',
-    ),
+  // Read the counter through the client API, so label order does not matter.
+  const requests = await registry.getSingleMetric('cache_requests_total').get();
+  const hit = requests.values.find(
+    (v) =>
+      v.labels.store === 'default' && v.labels.namespace === 'users' && v.labels.result === 'hit',
   );
+  assert.equal(hit?.value, 1);
   assert.deepEqual(await users.findSwr('1'), { id: '1' });
   assert.deepEqual(await users.findSwr('1'), { id: '1' });
   assert.equal(users.swrCalls, 1);

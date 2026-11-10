@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
@@ -147,8 +147,13 @@ describe('@CacheEvict', () => {
   });
 
   it('returns the method result when eviction fails', async () => {
+    /* the failed delete is logged once through the module logger, not printed to the test output */
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     fake.failNext('delete');
     await expect(svc.remove('1')).resolves.toBe('removed 1');
+    expect(errorSpy.mock.calls).toEqual([
+      ['Cache delete failed on store "default": delete failed'],
+    ]);
     expect(emitted).toContainEqual({
       event: 'error',
       payload: expect.objectContaining({ operation: 'delete' }) as unknown,

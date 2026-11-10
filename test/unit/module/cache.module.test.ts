@@ -253,7 +253,7 @@ describe('CacheModule', () => {
     });
 
     it('off writes no log and still emits every event (Review Focus 4)', async () => {
-      /* forRoot({ logging:{level:'off'}, defaults:{lock:{enabled:true}} }) + explorer lock warning + TieredStore không bus + breaker open
+      /* forRoot({ logging:{level:'off'}, defaults:{lock:{enabled:true}} }) + explorer lock warning + TieredStore không bus + breaker open rồi closed
          → warn/error/log/debug spy đều 0; một listener events.on('error') nhận đủ 3 lần */
       vi.useFakeTimers();
       const s = spyAll();
@@ -301,11 +301,18 @@ describe('CacheModule', () => {
       events.emit('miss', { store: 'default', namespace: undefined, key: 'k' });
       // A real breaker-wrapped store that fails and opens.
       await ref.get(CacheService).get('k', { store: 'flaky' });
+      // After openDuration (default 10 s) a successful probe closes it again.
+      vi.advanceTimersByTime(10_000);
+      await ref.get(CacheService).get('k', { store: 'flaky' });
       await ref.get(CacheService).get('k');
       await ref.close();
       refs.splice(refs.indexOf(ref), 1);
       expect(errors.mock.calls.filter(([p]) => p.store === 'default')).toHaveLength(3);
-      expect(breakers).toHaveBeenCalledWith({ store: 'flaky', state: 'open' });
+      expect(breakers.mock.calls).toEqual([
+        [{ store: 'flaky', state: 'open' }],
+        [{ store: 'flaky', state: 'half-open' }],
+        [{ store: 'flaky', state: 'closed' }],
+      ]);
       expect(hits).toHaveBeenCalledOnce();
       expect(closing.close).toHaveBeenCalledOnce();
       expect(s).toEqual({ error: [], warn: [], log: [], debug: [] });
