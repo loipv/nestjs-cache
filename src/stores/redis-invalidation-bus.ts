@@ -57,7 +57,13 @@ export function createRedisBus(adapter: RedisClientAdapter, channel: string): In
         subscribed = subscriber.subscribe(channel, (raw) => {
           const message = parseMessage(raw);
           if (message === undefined) return;
-          for (const h of handlers) h(message);
+          for (const h of handlers) {
+            try {
+              h(message);
+            } catch {
+              // one failing handler must not stop the others or reach the ioredis listener
+            }
+          }
         });
       }
       return subscribed;

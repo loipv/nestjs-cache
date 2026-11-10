@@ -60,6 +60,22 @@ describe('redisInvalidationBus', () => {
     expect(two).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps dispatching when a handler throws, and never throws out of the dispatch', async () => {
+    const fake = new FakeRedis();
+    const bus = redisInvalidationBus({ client: fake });
+    const one = vi.fn(() => {
+      throw new Error('handler failed');
+    });
+    const two = vi.fn();
+    await bus.subscribe(one);
+    await bus.subscribe(two);
+    expect(() => {
+      fake.subscribers[0]!.deliver('{"origin":"a","keys":["k"]}');
+    }).not.toThrow();
+    expect(one).toHaveBeenCalledTimes(1);
+    expect(two).toHaveBeenCalledWith({ origin: 'a', keys: ['k'] });
+  });
+
   it('forwards reconnects registered before or after subscribe', async () => {
     const fake = new FakeRedis();
     const bus = redisInvalidationBus({ client: fake });
