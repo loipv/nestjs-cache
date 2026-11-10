@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import * as lib from '@loipv/nestjs-cache';
-import * as promClient from 'prom-client';
+import * as promClient from '@prometheus-io/client';
 import { NestFactory } from '@nestjs/core';
 import { Injectable, Module } from '@nestjs/common';
 
