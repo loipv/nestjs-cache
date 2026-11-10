@@ -41,6 +41,26 @@ export interface InvalidationBus {
 }
 
 /**
+ * Distributed mutual exclusion, used by the cache engine to avoid stampedes across instances.
+ */
+export interface LockProvider {
+  /**
+   * Tries to take the lock for `key` for at most `ttlMs` milliseconds (integer >= 1). Returns a
+   * handle when acquired, or `undefined` when the lock is held by someone else. Never waits.
+   */
+  acquire(key: string, ttlMs: number): Promise<LockHandle | undefined>;
+}
+
+/** Proof of ownership of an acquired lock. */
+export interface LockHandle {
+  /**
+   * Releases the lock only if it is still ours (it may have expired and been taken by another
+   * owner). A second call is a no-op.
+   */
+  release(): Promise<void>;
+}
+
+/**
  * Contract for a cache backend. Values are opaque serialized strings.
  */
 export interface CacheStore {
@@ -64,6 +84,11 @@ export interface CacheStore {
    * (milliseconds, integer >= 1). Returns `undefined` for a miss. Used from 0.2.
    */
   getAndTouch?(key: string, ttlMs: number): Promise<string | undefined>;
+  /**
+   * Optional. Distributed lock backed by this store. Absent when the store cannot lock; the
+   * engine then falls back to a per-process lock.
+   */
+  readonly lock?: LockProvider;
   /**
    * Optional bus that `TieredStore` uses to sync L1 caches when this store is
    * the L2.

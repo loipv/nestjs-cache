@@ -550,4 +550,11 @@ describe('TieredStore', () => {
       CacheConfigError,
     );
   });
+
+  it('exposes the L2 lock', () => {
+    const fakeLock = { acquire: vi.fn() };
+    const withLock = Object.assign(new FakeStore(), { lock: fakeLock });
+    expect(tieredStore({ l1: memoryStore(), l2: withLock }).lock).toBe(fakeLock);
+    expect(tieredStore({ l1: memoryStore(), l2: new FakeStore() }).lock).toBeUndefined();
+  });
 });

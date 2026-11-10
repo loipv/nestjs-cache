@@ -1,3 +1,4 @@
+import { RELEASE_SCRIPT } from './redis-lock.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 
 /**
@@ -7,6 +8,8 @@ import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.
 export interface IoredisLike {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode: 'PX', ttlMs: number): Promise<unknown>;
+  set(key: string, value: string, mode: 'PX', ttlMs: number, nx: 'NX'): Promise<'OK' | null>;
+  eval(script: string, numKeys: number, ...args: string[]): Promise<unknown>;
   getex(key: string, mode: 'PX', ttlMs: number): Promise<string | null>;
   unlink(...keys: string[]): Promise<unknown>;
   scan(
@@ -46,6 +49,12 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
     async scan(cursor, match, count) {
       const [next, keys] = await client.scan(cursor, 'MATCH', match, 'COUNT', count);
       return { cursor: next, keys };
+    },
+    async setIfAbsent(key, value, ttlMs) {
+      return (await client.set(key, value, 'PX', ttlMs, 'NX')) === 'OK';
+    },
+    async deleteIfEquals(key, value) {
+      return (await client.eval(RELEASE_SCRIPT, 1, key, value)) === 1;
     },
     async publish(channel, message) {
       await client.publish(channel, message);

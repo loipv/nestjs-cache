@@ -24,6 +24,8 @@ export type {
   CacheStore,
   InvalidationBus,
   InvalidationMessage,
+  LockHandle,
+  LockProvider,
 } from './stores/cache-store.interface.js';
 export { MemoryStore, memoryStore } from './stores/memory.store.js';
 export type {

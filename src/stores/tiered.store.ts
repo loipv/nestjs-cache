@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { CacheEventSink, CacheOperation } from '../core/events.js';
 import { CacheConfigError } from '../errors.js';
-import type { CacheStore, InvalidationBus, InvalidationMessage } from './cache-store.interface.js';
+import type {
+  CacheStore,
+  InvalidationBus,
+  InvalidationMessage,
+  LockProvider,
+} from './cache-store.interface.js';
 
 export interface TieredStoreOptions {
   l1: CacheStore;
@@ -21,6 +26,8 @@ const DEFAULT_L1_TTL = 10_000;
  * failures are reported through the sink given to `bind`.
  */
 export class TieredStore implements CacheStore {
+  /** The L2's lock, when it has one. */
+  readonly lock?: LockProvider;
   private readonly l1: CacheStore;
   private readonly l2: CacheStore;
   private readonly l1Ttl: number;
@@ -47,6 +54,7 @@ export class TieredStore implements CacheStore {
     }
     this.l1 = options.l1;
     this.l2 = options.l2;
+    if (options.l2.lock !== undefined) this.lock = options.l2.lock;
     this.l1Ttl = l1Ttl;
     this.ownedBus = options.invalidation;
     this.bus = options.invalidation ?? options.l2.invalidation;

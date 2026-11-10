@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CHANNEL } from '../../../src/stores/redis-invalidation-bus.js';
+import { RedisLock } from '../../../src/stores/redis-lock.js';
 import { escapeGlob, redisStore } from '../../../src/stores/redis.store.js';
 import { FakeRedis } from '../helpers/fake-redis.js';
 
@@ -63,5 +64,16 @@ describe('RedisStore', () => {
       name: 'publish',
       args: [DEFAULT_CHANNEL, '{"origin":"a","keys":["k"]}'],
     });
+  });
+
+  it('has a lock only when the adapter supports it', () => {
+    function adapterWithout(name: 'setIfAbsent' | 'deleteIfEquals'): FakeRedis {
+      const fake = new FakeRedis();
+      Object.defineProperty(fake, name, { value: undefined });
+      return fake;
+    }
+    expect(redisStore({ client: new FakeRedis() }).lock).toBeInstanceOf(RedisLock);
+    expect(redisStore({ client: adapterWithout('setIfAbsent') }).lock).toBeUndefined();
+    expect(redisStore({ client: adapterWithout('deleteIfEquals') }).lock).toBeUndefined();
   });
 });

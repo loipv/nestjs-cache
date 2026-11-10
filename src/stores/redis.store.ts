@@ -1,4 +1,5 @@
-import type { CacheStore, InvalidationBus } from './cache-store.interface.js';
+import type { CacheStore, InvalidationBus, LockProvider } from './cache-store.interface.js';
+import { RedisLock } from './redis-lock.js';
 import type { RedisClientAdapter } from './redis-client.adapter.js';
 import { createRedisBus, DEFAULT_CHANNEL, toRedisAdapter } from './redis-invalidation-bus.js';
 import type { RedisStoreOptions } from './redis-invalidation-bus.js';
@@ -12,13 +13,22 @@ export function escapeGlob(literal: string): string {
   return literal.replace(/[\\*?[\]]/g, '\\$&');
 }
 
+type LockCapable = Required<Pick<RedisClientAdapter, 'setIfAbsent' | 'deleteIfEquals'>>;
+
+function supportsLock(adapter: RedisClientAdapter): adapter is RedisClientAdapter & LockCapable {
+  return typeof adapter.setIfAbsent === 'function' && typeof adapter.deleteIfEquals === 'function';
+}
+
 export class RedisStore implements CacheStore {
   readonly invalidation: InvalidationBus;
+  /** Present only when the adapter implements `setIfAbsent` and `deleteIfEquals`. */
+  readonly lock?: LockProvider;
   private readonly adapter: RedisClientAdapter;
 
   constructor(options: RedisStoreOptions) {
     this.adapter = toRedisAdapter(options.client);
     this.invalidation = createRedisBus(this.adapter, options.channel ?? DEFAULT_CHANNEL);
+    if (supportsLock(this.adapter)) this.lock = new RedisLock(this.adapter);
   }
 
   get(key: string): Promise<string | undefined> {

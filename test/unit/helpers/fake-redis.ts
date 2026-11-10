@@ -116,6 +116,32 @@ export class FakeRedis implements RedisClientAdapter {
     return Promise.resolve({ cursor: end >= all.length ? '0' : String(end), keys });
   }
 
+  async setIfAbsent(key: string, value: string, ttlMs: number): Promise<boolean> {
+    this.record('setIfAbsent', key, value, ttlMs);
+    await Promise.resolve();
+    if (this.data.has(key)) return false;
+    this.data.set(key, value);
+    return true;
+  }
+
+  async deleteIfEquals(key: string, value: string): Promise<boolean> {
+    this.record('deleteIfEquals', key, value);
+    await Promise.resolve();
+    if (this.data.get(key) !== value) return false;
+    this.data.delete(key);
+    return true;
+  }
+
+  /** Test-only: whether the key is stored. */
+  has(key: string): boolean {
+    return this.data.has(key);
+  }
+
+  /** Test-only: removes the key without a command, simulating expiry. */
+  forceDelete(key: string): void {
+    this.data.delete(key);
+  }
+
   async publish(channel: string, message: string): Promise<void> {
     this.record('publish', channel, message);
     await Promise.resolve();

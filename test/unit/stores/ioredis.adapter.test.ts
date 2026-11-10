@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ioredisAdapter } from '../../../src/stores/ioredis.adapter.js';
+import { RELEASE_SCRIPT } from '../../../src/stores/redis-lock.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
 import { FakeConnection } from '../helpers/fake-ioredis.js';
 
@@ -212,5 +213,27 @@ describe('ioredisAdapter subscriber', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(closing).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('ioredisAdapter lock primitives', () => {
+  it('setIfAbsent sends SET NX PX and maps OK/null', async () => {
+    const client = new FakeConnection();
+    const adapter = ioredisAdapter(client.asIoredis());
+    client.set.mockResolvedValueOnce('OK');
+    expect(await adapter.setIfAbsent?.('k', 'v', 5)).toBe(true);
+    expect(client.set).toHaveBeenCalledWith('k', 'v', 'PX', 5, 'NX');
+    client.set.mockResolvedValueOnce(null);
+    expect(await adapter.setIfAbsent?.('k', 'v', 5)).toBe(false);
+  });
+
+  it('deleteIfEquals evaluates the release script', async () => {
+    const client = new FakeConnection();
+    const adapter = ioredisAdapter(client.asIoredis());
+    client.eval.mockResolvedValueOnce(1);
+    expect(await adapter.deleteIfEquals?.('k', 'v')).toBe(true);
+    expect(client.eval).toHaveBeenCalledWith(RELEASE_SCRIPT, 1, 'k', 'v');
+    client.eval.mockResolvedValueOnce(0);
+    expect(await adapter.deleteIfEquals?.('k', 'v')).toBe(false);
   });
 });

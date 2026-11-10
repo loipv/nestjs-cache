@@ -8,6 +8,16 @@ export interface RedisClientAdapter {
   /** An empty list sends no command. */
   unlink(keys: readonly string[]): Promise<void>;
   scan(cursor: string, match: string, count: number): Promise<{ cursor: string; keys: string[] }>;
+  /**
+   * Optional. SET key value PX ttlMs NX. Resolves `true` when the key was set, `false` when it
+   * already existed.
+   */
+  setIfAbsent?(key: string, value: string, ttlMs: number): Promise<boolean>;
+  /**
+   * Optional. Deletes `key` only if it holds `value`, atomically. Resolves `true` when it
+   * deleted the key.
+   */
+  deleteIfEquals?(key: string, value: string): Promise<boolean>;
   publish(channel: string, message: string): Promise<void>;
   createSubscriber(): RedisSubscriberAdapter;
 }

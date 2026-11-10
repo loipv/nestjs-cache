@@ -12,6 +12,7 @@ export class FakeConnection extends EventEmitter {
   get = vi.fn();
   set = vi.fn();
   getex = vi.fn();
+  eval = vi.fn();
   unlink = vi.fn();
   scan = vi.fn();
   publish = vi.fn((channel: string, message: string) => {
