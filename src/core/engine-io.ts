@@ -238,7 +238,10 @@ export class EngineIO {
     }
     if (isEmpty(value)) {
       if (!(options.cacheNull ?? this.options.defaults.cacheNull)) {
-        if (deleteWhenEmpty) await this.remove(target, ref.namespace, [ref.key], [key.full]);
+        // Through `delete`, so a versioned namespace reads its token fresh, as any delete does.
+        if (deleteWhenEmpty) {
+          await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
+        }
         return;
       }
       const nullTtl = toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl);
@@ -276,23 +279,17 @@ export class EngineIO {
   ): Promise<void> {
     const target = this.resolve(scope.store);
     if (keys.length === 0) return;
-    let namespace = scope.namespace;
+    const { name, store } = target;
+    const { namespace } = scope;
+    let namespaces: readonly (string | undefined)[] = [namespace];
     if (namespace !== undefined && this.versions.isVersioned(namespace)) {
-      // One version read for the whole call: the keys share their namespace.
-      namespace = await this.versionedNamespace(target, namespace);
-      if (namespace === undefined) return;
+      const versioned = await this.deleteNamespaces(target, namespace);
+      if (versioned === undefined) return;
+      namespaces = versioned;
     }
-    const fullKeys = keys.map((key) => fullKey(this.options.prefix, namespace, key));
-    await this.remove(target, scope.namespace, keys, fullKeys);
-  }
-
-  /** `namespace` and `keys` are the plain ones the event carries; `fullKeys` are deleted. */
-  private async remove(
-    { name, store }: Target,
-    namespace: string | undefined,
-    keys: readonly string[],
-    fullKeys: readonly string[],
-  ): Promise<void> {
+    const fullKeys = namespaces.flatMap((ns) =>
+      keys.map((key) => fullKey(this.options.prefix, ns, key)),
+    );
     try {
       await store.delete(fullKeys);
     } catch (error) {
@@ -300,6 +297,29 @@ export class EngineIO {
       return;
     }
     this.events.emit('delete', { store: name, namespace, keys });
+  }
+
+  /**
+   * The `<ns>@<v>` forms a delete removes: the token read fresh from the store, so an entry
+   * another instance wrote after its clear is deleted within `cacheTtl` too, plus any other
+   * token this instance had cached (its own writes may sit under it). One version read for the
+   * whole call; `undefined` after reporting a `version` error.
+   */
+  private async deleteNamespaces(target: Target, namespace: string): Promise<string[] | undefined> {
+    const previous = this.versions.cached(target, namespace);
+    let token: string;
+    try {
+      token = await this.versions.fresh(target, namespace);
+    } catch (error) {
+      this.reportError(target.name, 'version', error);
+      return undefined;
+    }
+    // A bump during the read leaves its newer token cached: delete under it as well.
+    const tokens = new Set([token]);
+    for (const other of [previous, this.versions.cached(target, namespace)]) {
+      if (other !== undefined) tokens.add(other);
+    }
+    return [...tokens].map((t) => `${namespace}@${t}`);
   }
 
   /** A versioned namespace gets a new token instead of a scan; its old keys expire by TTL. */

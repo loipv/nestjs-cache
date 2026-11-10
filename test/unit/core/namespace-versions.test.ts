@@ -149,6 +149,72 @@ describe('NamespaceVersions', () => {
     const now = await versions.current(target, 'users');
     expect(now).toBe(store.data.get('app:__version__:users')?.value);
   });
+
+  it('fresh always reads the store and refreshes the cache', async () => {
+    /* Another instance changed the token: current keeps serving the cached one, fresh reads
+       the store anyway, and current then serves the fresh token without a get. */
+    const { store, versions } = setup();
+    const target = { name: 'default', store };
+    const gets = (): number => store.calls.filter((c) => c.op === 'get').length;
+    expect(versions.cached(target, 'users')).toBeUndefined();
+    store.data.set('app:__version__:users', { value: 'old12345', ttlMs: 1 });
+    expect(await versions.current(target, 'users')).toBe('old12345');
+    store.data.set('app:__version__:users', { value: 'new12345', ttlMs: 1 });
+    expect(await versions.current(target, 'users')).toBe('old12345');
+    expect(versions.cached(target, 'users')).toBe('old12345');
+    expect(gets()).toBe(1);
+    vi.advanceTimersByTime(500);
+    expect(await versions.fresh(target, 'users')).toBe('new12345');
+    expect(gets()).toBe(2);
+    expect(versions.cached(target, 'users')).toBe('new12345');
+    /* The refreshed entry lives cacheTtl from the fresh read. */
+    vi.advanceTimersByTime(999);
+    expect(await versions.current(target, 'users')).toBe('new12345');
+    expect(gets()).toBe(2);
+    vi.advanceTimersByTime(1);
+    await versions.current(target, 'users');
+    expect(gets()).toBe(3);
+  });
+
+  it('fresh creates a missing version key and reads it back', async () => {
+    /* Same as current: set a new token with the 30 day ttl, then get it again. */
+    const { store, versions } = setup();
+    const target = { name: 'default', store };
+    const token = await versions.fresh(target, 'users');
+    expect(token).toMatch(TOKEN);
+    expect(store.calls.map((c) => c.op)).toEqual(['get', 'set', 'get']);
+    expect(store.data.get('app:__version__:users')).toEqual({
+      value: token,
+      ttlMs: VERSION_KEY_TTL,
+    });
+  });
+
+  it('a fresh read racing a bump keeps the bumped token', async () => {
+    /* The fresh read started before the bump finished after it: the cache keeps the bumped
+       token, and current serves it without another get. */
+    const { store, versions } = setup();
+    const target = { name: 'default', store };
+    store.data.set('app:__version__:users', { value: 'old12345', ttlMs: 1 });
+    const pending = versions.fresh(target, 'users');
+    await versions.bump(target, 'users');
+    expect(await pending).toBe('old12345');
+    const bumped = store.data.get('app:__version__:users')?.value;
+    expect(versions.cached(target, 'users')).toBe(bumped);
+    const gets = store.calls.filter((c) => c.op === 'get').length;
+    expect(await versions.current(target, 'users')).toBe(bumped);
+    expect(store.calls.filter((c) => c.op === 'get')).toHaveLength(gets);
+  });
+
+  it('a failing fresh read rejects and keeps the cached token', async () => {
+    /* The store rejects: fresh rejects and the cache is left as it was. */
+    const { store, versions } = setup();
+    const target = { name: 'default', store };
+    store.data.set('app:__version__:users', { value: 'abc12345', ttlMs: 1 });
+    await versions.current(target, 'users');
+    store.failNext('get');
+    await expect(versions.fresh(target, 'users')).rejects.toThrow('get failed');
+    expect(versions.cached(target, 'users')).toBe('abc12345');
+  });
 });
 
 describe('versioning options', () => {

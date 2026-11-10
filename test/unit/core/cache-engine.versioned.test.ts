@@ -128,6 +128,59 @@ describe('CacheEngine versioned namespaces', () => {
     expect(await b.engine.get(REF)).toBeUndefined();
   });
 
+  it('a delete on another instance removes the live key within cacheTtl', async () => {
+    /* B cached v1; A clears (v2) and writes users:1 under v2. B deletes users:1 before its
+       cache expires: the delete reads the version fresh, so the live v2 entry is removed,
+       together with the v1 entry B's stale token names. */
+    const a = setup();
+    const b = setup({ ...OPTIONS, stores: { default: a.store } });
+    await a.engine.set(REF, 'x');
+    const [v1Key] = dataKeys(a.store);
+    expect(await b.engine.get(REF)).toBe('x');
+    await a.engine.clear('users');
+    await a.engine.set(REF, 'y');
+    const v2Key = dataKeys(a.store).find((key) => key !== v1Key);
+    expect(v2Key).toMatch(DATA_KEY);
+    await b.engine.delete({ namespace: 'users' }, ['1']);
+    const deletes = a.store.calls.filter((c) => c.op === 'delete');
+    expect(deletes).toEqual([{ op: 'delete', args: [[v2Key, v1Key]] }]);
+    expect(await a.engine.get(REF)).toBeUndefined();
+    expect(await b.engine.get(REF)).toBeUndefined();
+    expect(b.emitted.at(-2)).toEqual({
+      event: 'delete',
+      payload: { store: 'default', namespace: 'users', keys: ['1'] },
+    });
+  });
+
+  it('a delete with a current cached token deletes one key per entry', async () => {
+    /* The fresh read matches the cached token: one data key per deleted key, and the delete
+       still reads the version even though it is cached. */
+    const { engine, store } = setup();
+    await engine.set(REF, 'x');
+    await engine.set({ namespace: 'users', key: '2' }, 'y');
+    const gets = store.calls.filter((c) => c.op === 'get').length;
+    await engine.delete({ namespace: 'users' }, ['1', '2']);
+    expect(store.calls.filter((c) => c.op === 'get')).toHaveLength(gets + 1);
+    const deleted = store.calls.find((c) => c.op === 'delete')?.args[0] as string[];
+    expect(deleted).toHaveLength(2);
+    expect(deleted[0]).toMatch(DATA_KEY);
+    expect(deleted[1]).toBe(deleted[0]?.replace(/:1$/, ':2'));
+    expect(dataKeys(store)).toEqual([]);
+  });
+
+  it('an empty put deletes under the fresh token', async () => {
+    /* put(null) without cacheNull deletes the entry: like delete, it reads the version fresh,
+       so a stale cached token on B does not leave A's v2 entry alive. */
+    const a = setup();
+    const b = setup({ ...OPTIONS, stores: { default: a.store } });
+    await a.engine.set(REF, 'x');
+    expect(await b.engine.get(REF)).toBe('x');
+    await a.engine.clear('users');
+    await a.engine.set(REF, 'y');
+    await b.engine.put(REF, null);
+    expect(await a.engine.get(REF)).toBeUndefined();
+  });
+
   it('lock and flight keys carry the version', async () => {
     /* The lock key is `app:__lock__:users@<v>:1` with the same token as the data key, and
        concurrent misses of a versioned key still share one load. */
