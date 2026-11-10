@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { circuitBreaker, CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { memoryStore, type MemoryStore } from '../../../src/stores/memory.store.js';
 import { redisStore } from '../../../src/stores/redis.store.js';
@@ -660,6 +661,50 @@ describe('TieredStore', () => {
       vi.spyOn(l1, 'set').mockRejectedValueOnce(boom);
       expect(await store.getAndTouch('k', 1_000)).toBe('v');
       expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'set', error: boom });
+    });
+  });
+
+  describe('open circuit on L2', () => {
+    it('L2 open circuit: L1 written, no publish, no sink error', async () => {
+      l2.failNext('set', new CircuitOpenError());
+      await store.set('k', 'v', 1_000);
+      expect(await l1.get('k')).toBe('v');
+      expect(bus.published).toEqual([]);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    it('L2 open circuit on delete and clear skips publish', async () => {
+      l2.failNext('delete', new CircuitOpenError());
+      l2.failNext('clear', new CircuitOpenError());
+      await store.delete(['k']);
+      await store.clear('p:');
+      expect(bus.published).toEqual([]);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    it('other L2 errors still publish and report', async () => {
+      l2.failNext('set', new Error('boom'));
+      await store.set('k', 'v', 1_000);
+      expect(bus.published).toHaveLength(1);
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'set', error: anyError });
+    });
+
+    it('a circuit breaker as L2 serves from L1 while open', async () => {
+      const inner = new FakeStore();
+      const tiered = tieredStore({
+        l1: memoryStore(),
+        l2: circuitBreaker(inner, { failureThreshold: 1 }),
+        invalidation: bus,
+      });
+      tiered.bind(sink);
+      inner.failNext('set', new Error('down'));
+      await tiered.set('a', '1', 1_000);
+      sink.emit.mockClear();
+      bus.published.length = 0;
+      await tiered.set('k', 'v', 1_000);
+      expect(await tiered.get('k')).toBe('v');
+      expect(bus.published).toEqual([]);
+      expect(sink.emit).not.toHaveBeenCalledWith('error', expect.anything());
     });
   });
 });

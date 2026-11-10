@@ -1,6 +1,7 @@
 import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
+import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
@@ -76,6 +77,8 @@ export class EngineIO {
   }
 
   reportError(store: string | undefined, operation: CacheOperation, error: unknown): void {
+    // An open circuit means the store is temporarily absent, not broken: no `error` event.
+    if (error instanceof CircuitOpenError) return;
     this.events.emit('error', { store: store ?? 'default', operation, error });
   }
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { CacheEventSink, CacheOperation } from '../core/events.js';
 import { CacheConfigError } from '../errors.js';
+import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type {
   CacheStore,
   InvalidationBus,
@@ -153,23 +154,26 @@ export class TieredStore implements CacheStore {
   }
 
   async set(key: string, value: string, ttlMs: number): Promise<void> {
-    await this.attempt('set', () => this.l2.set(key, value, ttlMs));
+    const refused = await this.attempt('set', () => this.l2.set(key, value, ttlMs));
     this.pending.delete(key);
     await this.attempt('set', () => this.l1.set(key, value, Math.min(ttlMs, this.l1Ttl)));
+    if (refused instanceof CircuitOpenError) return;
     await this.publish({ origin: this.origin, keys: [key] });
   }
 
   async delete(keys: readonly string[]): Promise<void> {
-    await this.attempt('delete', () => this.l2.delete(keys));
+    const refused = await this.attempt('delete', () => this.l2.delete(keys));
     this.forgetKeys(keys);
     await this.attempt('delete', () => this.l1.delete(keys));
+    if (refused instanceof CircuitOpenError) return;
     if (keys.length > 0) await this.publish({ origin: this.origin, keys: [...keys] });
   }
 
   async clear(prefix: string): Promise<void> {
-    await this.attempt('clear', () => this.l2.clear(prefix));
+    const refused = await this.attempt('clear', () => this.l2.clear(prefix));
     this.forgetPrefix(prefix);
     await this.attempt('clear', () => this.l1.clear(prefix));
+    if (refused instanceof CircuitOpenError) return;
     await this.publish({ origin: this.origin, prefix });
   }
 
@@ -223,16 +227,23 @@ export class TieredStore implements CacheStore {
     await this.attempt('publish', () => bus.publish(message));
   }
 
-  /** Runs `fn`, reporting a rejection or a synchronous throw. Never rejects. */
-  private async attempt(operation: CacheOperation, fn: () => Promise<unknown>): Promise<void> {
+  /**
+   * Runs `fn`, reporting a rejection or a synchronous throw. Never rejects. Returns the caught
+   * error, or `undefined` on success.
+   */
+  private async attempt(operation: CacheOperation, fn: () => Promise<unknown>): Promise<unknown> {
     try {
       await fn();
+      return undefined;
     } catch (error) {
       this.report(operation, error);
+      return error;
     }
   }
 
   private report(operation: CacheOperation, error: unknown): void {
+    // An open circuit means the store is temporarily absent, not broken.
+    if (error instanceof CircuitOpenError) return;
     try {
       this.sink?.emit('error', { operation, error });
     } catch {
