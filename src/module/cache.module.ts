@@ -1,7 +1,9 @@
+import { DiscoveryService, DiscoveryModule } from '@nestjs/core';
 import { Logger, Module, type DynamicModule, type Provider } from '@nestjs/common';
 import { CacheEngine } from '../core/cache-engine.js';
 import { CacheService } from '../core/cache.service.js';
 import { CacheEvents } from '../core/events.js';
+import { CacheExplorer } from './cache.explorer.js';
 import { CacheLifecycle } from './cache.lifecycle.js';
 import {
   resolveOptions,
@@ -41,6 +43,12 @@ function sharedProviders(): Provider[] {
         new CacheLifecycle(options, events),
       inject: [CACHE_OPTIONS, CacheEvents],
     },
+    {
+      provide: CacheExplorer,
+      useFactory: (discovery: DiscoveryService, engine: CacheEngine) =>
+        new CacheExplorer(discovery, engine),
+      inject: [DiscoveryService, CACHE_ENGINE],
+    },
   ];
 }
 
@@ -54,6 +62,7 @@ export class CacheModule {
     return {
       module: CacheModule,
       global: isGlobal ?? false,
+      imports: [DiscoveryModule],
       providers: [{ provide: CACHE_OPTIONS, useValue: resolved }, ...sharedProviders()],
       exports: EXPORTS,
     };
@@ -63,7 +72,7 @@ export class CacheModule {
     return {
       module: CacheModule,
       global: options.isGlobal ?? false,
-      imports: options.imports ?? [],
+      imports: [DiscoveryModule, ...(options.imports ?? [])],
       providers: [
         {
           provide: CACHE_OPTIONS,
