@@ -136,4 +136,70 @@ describe('CacheModule', () => {
     expect(b.close).toHaveBeenCalledOnce();
     expect(errorSpy).toHaveBeenCalledWith('Failed to close cache store "default": x');
   });
+
+  describe('error log throttling and lock warnings', () => {
+    const err = (store: string, operation: 'get' | 'set') => ({
+      store,
+      operation,
+      error: new Error('down'),
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('logs one line per store+operation per 30 s, then reports the suppressed count', async () => {
+      vi.useFakeTimers();
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const events = (await boot(CacheModule.forRoot())).get(CacheEvents);
+      for (let i = 0; i < 5; i++) events.emit('error', err('default', 'get'));
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(29_999);
+      events.emit('error', err('default', 'get'));
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      events.emit('error', err('default', 'get'));
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenLastCalledWith(
+        'Cache get failed on store "default": down (+5 similar errors suppressed)',
+      );
+      vi.advanceTimersByTime(30_000);
+      events.emit('error', err('default', 'get'));
+      expect(warnSpy).toHaveBeenLastCalledWith('Cache get failed on store "default": down');
+    });
+
+    it('throttles store+operation pairs independently', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const events = (await boot(CacheModule.forRoot())).get(CacheEvents);
+      events.emit('error', err('default', 'get'));
+      events.emit('error', err('default', 'set'));
+      events.emit('error', err('other', 'get'));
+      events.emit('error', err('default', 'get'));
+      expect(warnSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('still emits every error event', async () => {
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const events = (await boot(CacheModule.forRoot())).get(CacheEvents);
+      const seen = vi.fn();
+      events.on('error', seen);
+      for (let i = 0; i < 5; i++) events.emit('error', err('default', 'get'));
+      expect(seen).toHaveBeenCalledTimes(5);
+    });
+
+    it('warns per store without a lock when defaults.lock.enabled', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await boot(CacheModule.forRoot({ defaults: { lock: { enabled: true } } }));
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Cache store "default" has no distributed lock; defaults.lock.enabled falls back to in-process coalescing',
+      );
+    });
+
+    it('no lock warnings when nothing asks for a lock', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await boot(CacheModule.forRoot());
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import { Controller, Injectable, Scope } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
 import { CacheEvict } from '../../../src/decorators/cache-evict.js';
 import { CachePut } from '../../../src/decorators/cache-put.js';
 import { Cacheable } from '../../../src/decorators/cacheable.js';
@@ -105,5 +106,44 @@ describe('CacheExplorer', () => {
     }).compile();
     await expect(ref.init()).resolves.toBeDefined();
     await ref.close();
+  });
+
+  it('warns for lock: true on a store without a lock and still starts', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Locky {
+      @Cacheable({ lock: true })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      providers: [Locky],
+    }).compile();
+    await expect(ref.init()).resolves.toBeDefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Locky.find sets lock: true but cache store "default" has no distributed lock; falling back to in-process coalescing',
+    );
+    await ref.close();
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn when lock is not requested', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Plain2 {
+      @Cacheable({ lock: false })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      providers: [Plain2],
+    }).compile();
+    await ref.init();
+    expect(warnSpy).not.toHaveBeenCalled();
+    await ref.close();
+    warnSpy.mockRestore();
   });
 });

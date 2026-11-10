@@ -1,4 +1,4 @@
-import type { OnModuleInit } from '@nestjs/common';
+import { Logger, type OnModuleInit } from '@nestjs/common';
 import type { DiscoveryService } from '@nestjs/core';
 import type { CacheEngine } from '../core/cache-engine.js';
 import { getCacheMetadata, type CacheMetadataEntry } from '../decorators/metadata.js';
@@ -18,6 +18,8 @@ const KIND_LABELS: Record<CacheMetadataEntry['kind'], string> = {
  * every provider and controller in the app against its own stores.
  */
 export class CacheExplorer implements OnModuleInit {
+  private readonly logger = new Logger('CacheModule');
+
   constructor(
     private readonly discovery: DiscoveryService,
     private readonly engine: CacheEngine,
@@ -29,7 +31,15 @@ export class CacheExplorer implements OnModuleInit {
       const { metatype } = wrapper;
       if (typeof metatype !== 'function' || wrapper.isFactory) continue;
       for (const entry of getCacheMetadata(metatype)) {
-        if (this.engine.hasStore(entry.store)) continue;
+        if (this.engine.hasStore(entry.store)) {
+          if (entry.lock === true && !this.engine.hasLock(entry.store)) {
+            this.logger.warn(
+              `${metatype.name}.${String(entry.method)} sets lock: true but cache store "${entry.store}" ` +
+                'has no distributed lock; falling back to in-process coalescing',
+            );
+          }
+          continue;
+        }
         throw new CacheConfigError(
           `Unknown cache store "${entry.store}" in ${metatype.name}.${String(entry.method)} ` +
             `(${KIND_LABELS[entry.kind]}). Configured stores: ${this.engine.storeNames().join(', ')}`,
