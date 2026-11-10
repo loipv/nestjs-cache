@@ -1,6 +1,6 @@
 import type { CacheStore, InvalidationBus } from './cache-store.interface.js';
 import type { RedisClientAdapter } from './redis-client.adapter.js';
-import { createRedisBus, toRedisAdapter } from './redis-invalidation-bus.js';
+import { createRedisBus, DEFAULT_CHANNEL, toRedisAdapter } from './redis-invalidation-bus.js';
 import type { RedisStoreOptions } from './redis-invalidation-bus.js';
 
 export type { RedisStoreOptions } from './redis-invalidation-bus.js';
@@ -18,7 +18,7 @@ export class RedisStore implements CacheStore {
 
   constructor(options: RedisStoreOptions) {
     this.adapter = toRedisAdapter(options.client);
-    this.invalidation = createRedisBus(this.adapter, options.channel ?? 'nestjs-cache:invalidate');
+    this.invalidation = createRedisBus(this.adapter, options.channel ?? DEFAULT_CHANNEL);
   }
 
   get(key: string): Promise<string | undefined> {

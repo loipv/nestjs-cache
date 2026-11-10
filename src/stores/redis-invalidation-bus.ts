@@ -9,7 +9,8 @@ export interface RedisStoreOptions {
   channel?: string;
 }
 
-const DEFAULT_CHANNEL = 'nestjs-cache:invalidate';
+/** Internal: the channel used when none is configured. */
+export const DEFAULT_CHANNEL = 'nestjs-cache:invalidate';
 
 export function toRedisAdapter(client: IoredisLike | RedisClientAdapter): RedisClientAdapter {
   return isRedisClientAdapter(client) ? client : ioredisAdapter(client);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_CHANNEL } from '../../../src/stores/redis-invalidation-bus.js';
 import { escapeGlob, redisStore } from '../../../src/stores/redis.store.js';
 import { FakeRedis } from '../helpers/fake-redis.js';
 
@@ -52,5 +53,15 @@ describe('RedisStore', () => {
     await store.close();
     expect(fake.subscribers).toHaveLength(1);
     expect(fake.subscribers[0]?.closed).toBe(true);
+  });
+
+  it('publishes on the bus module default channel when none is given (F6)', async () => {
+    expect(DEFAULT_CHANNEL).toBe('nestjs-cache:invalidate');
+    const fake = new FakeRedis();
+    await redisStore({ client: fake }).invalidation.publish({ origin: 'a', keys: ['k'] });
+    expect(fake.commands).toContainEqual({
+      name: 'publish',
+      args: [DEFAULT_CHANNEL, '{"origin":"a","keys":["k"]}'],
+    });
   });
 });
