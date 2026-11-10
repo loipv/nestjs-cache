@@ -21,7 +21,7 @@ describe('TieredStore', () => {
   let l1: MemoryStore;
   let l2: FakeStore;
   let bus: FakeBus;
-  let sink: { emit: Mock; logLevel: 'error' };
+  let sink: { emit: Mock };
   let store: TieredStore;
 
   beforeEach(() => {
@@ -30,7 +30,7 @@ describe('TieredStore', () => {
     l1 = memoryStore();
     l2 = new FakeStore();
     bus = new FakeBus();
-    sink = { emit: vi.fn(), logLevel: 'error' as const };
+    sink = { emit: vi.fn() };
     store = tieredStore({ l1, l2, invalidation: bus });
     store.bind(sink);
   });
@@ -178,7 +178,7 @@ describe('TieredStore', () => {
 
     const failing = new FakeBus();
     failing.failNext('subscribe');
-    const otherSink = { emit: vi.fn(), logLevel: 'error' as const };
+    const otherSink = { emit: vi.fn() };
     tieredStore({ l1: memoryStore(), l2: new FakeStore(), invalidation: failing }).bind(otherSink);
     await flush();
     expect(otherSink.emit).toHaveBeenCalledWith('error', {
@@ -199,7 +199,7 @@ describe('TieredStore', () => {
     const plain = Object.assign(new FakeBus(), { onError: undefined });
     const s = tieredStore({ l1: memoryStore(), l2: new FakeStore(), invalidation: plain });
     expect(() => {
-      s.bind({ emit: vi.fn(), logLevel: 'error' as const });
+      s.bind({ emit: vi.fn() });
     }).not.toThrow();
 
     const throwing = new FakeBus();
@@ -208,7 +208,7 @@ describe('TieredStore', () => {
     };
     const remote = new FakeStore();
     const t = tieredStore({ l1: memoryStore(), l2: remote, invalidation: throwing });
-    const local = { emit: vi.fn(), logLevel: 'error' as const };
+    const local = { emit: vi.fn() };
     t.bind(local);
     expect(local.emit).toHaveBeenCalledWith('error', { operation: 'subscribe', error: anyError });
     await t.set('k', 'v', 60_000);
@@ -223,7 +223,7 @@ describe('TieredStore', () => {
     connection.failNextSubscribe();
     const local = memoryStore();
     const s = tieredStore({ l1: local, l2: redisStore({ client: client.asIoredis() }) });
-    const events = { emit: vi.fn(), logLevel: 'error' as const };
+    const events = { emit: vi.fn() };
     s.bind(events);
     await flush();
     expect(events.emit).toHaveBeenCalledWith('error', { operation: 'subscribe', error: anyError });
@@ -257,7 +257,7 @@ describe('TieredStore', () => {
       l2: Object.assign(new FakeStore(), { invalidation: own }),
       invalidation: passed,
     });
-    s.bind({ emit: vi.fn(), logLevel: 'error' as const });
+    s.bind({ emit: vi.fn() });
     await s.set('k', 'v', 1_000);
     expect(passed.published).toHaveLength(1);
     expect(own.published).toEqual([]);
@@ -270,7 +270,7 @@ describe('TieredStore', () => {
       l1: memoryStore(),
       l2: Object.assign(new FakeStore(), { invalidation: own }),
     });
-    s.bind({ emit: vi.fn(), logLevel: 'error' as const });
+    s.bind({ emit: vi.fn() });
     await s.set('k', 'v', 1_000);
     expect(own.published).toEqual([{ origin: anyString, keys: ['k'] }]);
     expect(warn).not.toHaveBeenCalled();
@@ -279,7 +279,7 @@ describe('TieredStore', () => {
   it('warns once and still works without any bus', async () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const plain = tieredStore({ l1: memoryStore(), l2: new FakeStore() });
-    plain.bind({ emit: vi.fn(), logLevel: 'error' as const });
+    plain.bind({ emit: vi.fn() });
     await plain.set('k', 'v', 1_000);
     expect(await plain.get('k')).toBe('v');
     expect(warn).toHaveBeenCalledOnce();
@@ -299,10 +299,10 @@ describe('TieredStore', () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it('treats a custom sink without logLevel as error and warns', () => {
+  it('a hand-built sink with no logLevel still gets the missing-bus warning', () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    const custom = { emit: vi.fn() } as unknown as CacheEventSink;
-    tieredStore({ l1: memoryStore(), l2: new FakeStore() }).bind(custom);
+    const handBuilt: CacheEventSink = { emit: () => undefined };
+    tieredStore({ l1: memoryStore(), l2: new FakeStore() }).bind(handBuilt);
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       'TieredStore has no invalidation bus: other instances keep stale L1 entries for up to l1Ttl after a write or delete',
     );
@@ -311,8 +311,8 @@ describe('TieredStore', () => {
   it('warns only once per instance even when bound twice', () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const plain = tieredStore({ l1: memoryStore(), l2: new FakeStore() });
-    plain.bind({ emit: vi.fn(), logLevel: 'error' as const });
-    plain.bind({ emit: vi.fn(), logLevel: 'error' as const });
+    plain.bind({ emit: vi.fn() });
+    plain.bind({ emit: vi.fn() });
     expect(warn).toHaveBeenCalledOnce();
   });
 
@@ -320,7 +320,7 @@ describe('TieredStore', () => {
     const fakeL1 = new FakeStore();
     const fakeL2 = new FakeStore();
     const s = tieredStore({ l1: fakeL1, l2: fakeL2, invalidation: new FakeBus() });
-    const other = { emit: vi.fn(), logLevel: 'error' as const };
+    const other = { emit: vi.fn() };
     s.bind(other);
     expect(fakeL1.bind).toHaveBeenCalledWith(other);
     expect(fakeL2.bind).toHaveBeenCalledWith(other);
@@ -361,7 +361,7 @@ describe('TieredStore', () => {
   it('bus handlers never throw and report L1 failures', async () => {
     const fakeL1 = new FakeStore();
     const s = tieredStore({ l1: fakeL1, l2: new FakeStore(), invalidation: bus });
-    const local = { emit: vi.fn(), logLevel: 'error' as const };
+    const local = { emit: vi.fn() };
     s.bind(local);
     fakeL1.failNext('delete');
     fakeL1.failNext('clear');
@@ -398,7 +398,7 @@ describe('TieredStore', () => {
     };
     const remote = new FakeStore();
     const s = tieredStore({ l1: memoryStore(), l2: remote, invalidation: throwing });
-    const local = { emit: vi.fn(), logLevel: 'error' as const };
+    const local = { emit: vi.fn() };
     expect(() => {
       s.bind(local);
     }).not.toThrow();
@@ -417,7 +417,7 @@ describe('TieredStore', () => {
     fakeL1.delete = boom;
     fakeL1.clear = boom;
     const s = tieredStore({ l1: fakeL1, l2: new FakeStore(), invalidation: bus });
-    const local = { emit: vi.fn(), logLevel: 'error' as const };
+    const local = { emit: vi.fn() };
     s.bind(local);
     expect(() => {
       bus.deliver({ origin: 'other', keys: ['k'] });

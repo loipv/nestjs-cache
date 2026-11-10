@@ -44,8 +44,11 @@ export interface CacheEventMap {
 export interface CacheEventSink {
   emit(event: 'error', payload: { operation: CacheOperation; error: unknown }): void;
   emit(event: 'breaker', payload: { state: BreakerState }): void;
-  /** The module's log level, so a store can skip its own warnings at `'off'`. */
-  readonly logLevel: CacheLogLevel;
+  /**
+   * The module's log level, so a store can skip its own warnings at `'off'`. Sinks from
+   * `CacheModule` always set it; a missing value (a hand-built sink) means `'error'`.
+   */
+  readonly logLevel?: CacheLogLevel;
 }
 
 /** One tuple per sink overload, so the event name narrows its payload. */

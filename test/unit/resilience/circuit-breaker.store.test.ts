@@ -41,7 +41,7 @@ function hangNextGet(inner: FakeStore): Deferred<string | undefined> {
 }
 
 function makeSink() {
-  return { emit: vi.fn(), logLevel: 'error' as const };
+  return { emit: vi.fn() };
 }
 
 function breakerStates(sink: ReturnType<typeof makeSink>): unknown[] {
@@ -578,7 +578,6 @@ describe('circuitBreaker', () => {
       emit: () => {
         throw new Error('sink');
       },
-      logLevel: 'error',
     });
     await openWithOneFailure(inner, b);
     vi.setSystemTime(100);

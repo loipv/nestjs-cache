@@ -72,8 +72,8 @@ export class TieredStore implements CacheStore {
     this.l1.bind?.(sink);
     this.l2.bind?.(sink);
     if (this.bus === undefined) {
-      // A hand-written sink may predate `logLevel`; treat a missing one as the default level.
-      const level = (sink as Partial<CacheEventSink>).logLevel ?? 'error';
+      // A hand-built sink may omit `logLevel`; a missing one means the default level.
+      const level = sink.logLevel ?? 'error';
       if (level !== 'off' && !this.warned) {
         this.warned = true;
         this.logger.warn(
