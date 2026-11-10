@@ -1,0 +1,69 @@
+import { CacheConfigError } from '../errors.js';
+import type { CacheStore } from './cache-store.interface.js';
+
+interface Entry {
+  value: string;
+  expiresAt: number;
+}
+
+const DEFAULT_MAX_ENTRIES = 1_000;
+
+/** In-process LRU store on Map insertion order. Expiry is lazy; no timers. */
+export class MemoryStore implements CacheStore {
+  private readonly entries = new Map<string, Entry>();
+  private readonly maxEntries: number;
+
+  constructor(options: { maxEntries?: number } = {}) {
+    const max = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    if (!Number.isInteger(max) || max < 1) {
+      throw new CacheConfigError(`maxEntries must be an integer >= 1, got ${String(max)}`);
+    }
+    this.maxEntries = max;
+  }
+
+  get(key: string): Promise<string | undefined> {
+    const entry = this.entries.get(key);
+    if (entry === undefined) return Promise.resolve(undefined);
+    this.entries.delete(key);
+    if (Date.now() >= entry.expiresAt) return Promise.resolve(undefined);
+    this.entries.set(key, entry);
+    return Promise.resolve(entry.value);
+  }
+
+  set(key: string, value: string, ttlMs: number): Promise<void> {
+    const now = Date.now();
+    if (this.entries.has(key)) {
+      this.entries.delete(key);
+    } else if (this.entries.size >= this.maxEntries) {
+      for (const [k, e] of this.entries) {
+        if (now >= e.expiresAt) this.entries.delete(k);
+      }
+      if (this.entries.size >= this.maxEntries) {
+        const oldest = this.entries.keys().next();
+        if (oldest.done !== true) this.entries.delete(oldest.value);
+      }
+    }
+    this.entries.set(key, { value, expiresAt: now + ttlMs });
+    return Promise.resolve();
+  }
+
+  delete(keys: readonly string[]): Promise<void> {
+    for (const key of keys) this.entries.delete(key);
+    return Promise.resolve();
+  }
+
+  clear(prefix: string): Promise<void> {
+    if (prefix === '') {
+      this.entries.clear();
+    } else {
+      for (const key of this.entries.keys()) {
+        if (key.startsWith(prefix)) this.entries.delete(key);
+      }
+    }
+    return Promise.resolve();
+  }
+}
+
+export function memoryStore(options?: { maxEntries?: number }): MemoryStore {
+  return new MemoryStore(options);
+}
