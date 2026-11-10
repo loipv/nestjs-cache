@@ -1,0 +1,5 @@
+dist
+coverage
+docs
+.superpowers
+test/consumers/*/node_modules

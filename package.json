@@ -1,0 +1,79 @@
+{
+  "name": "@loipv/nestjs-cache",
+  "version": "0.1.0",
+  "description": "Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "nestjs",
+    "cache",
+    "redis",
+    "decorator",
+    "two-tier"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run --project unit",
+    "test:cov": "vitest run --project unit --coverage",
+    "test:integration": "vitest run --project integration",
+    "test:consumers": "node scripts/test-consumers.mjs"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^11.0.0 || ^12.0.0",
+    "@nestjs/core": "^11.0.0 || ^12.0.0",
+    "ioredis": "^5.0.0 || ^6.0.0",
+    "reflect-metadata": "^0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/testing": "^12.4.2",
+    "@testcontainers/redis": "^12.2.1",
+    "@types/node": "^24.19.2",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "^10.14.0",
+    "ioredis": "^6.0.0",
+    "prettier": "^3.9.10",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "testcontainers": "^12.2.1",
+    "tsup": "^9.0.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
+  }
+}
