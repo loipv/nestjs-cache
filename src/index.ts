@@ -31,3 +31,6 @@ export type {
   CacheModuleAsyncOptions,
   CacheModuleOptions,
 } from './module/cache.options.js';
+export { CacheModule } from './module/cache.module.js';
+export { CacheService } from './core/cache.service.js';
+export type { GetOrSetOptions, KeyOptions, WriteOptions } from './core/cache.service.js';
