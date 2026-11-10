@@ -150,6 +150,20 @@ describe('CacheEngine', () => {
     expect(emitted.some(isDeserializeError)).toBe(true);
   });
 
+  it('a deserializer returning a revoked Proxy is a miss, never a rejection', async () => {
+    /* every inspection of a revoked Proxy throws, Array.isArray included */
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    const { engine, store, emitted } = makeEngine({
+      serializer: { serialize: (e) => JSON.stringify(e), deserialize: () => proxy as never },
+    });
+    store.data.set('a', { value: '{}', ttlMs: 1 });
+    await expect(engine.get({ key: 'a' })).resolves.toBeUndefined();
+    expect(store.data.has('a')).toBe(true);
+    expect(emitted.some(isDeserializeError)).toBe(true);
+    expect(emitted.at(-1)?.event).toBe('miss');
+  });
+
   it('swallows a failing cleanup delete after a deserialize failure', async () => {
     const { engine, store, emitted } = makeEngine();
     store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });

@@ -171,11 +171,12 @@ export class EngineIO {
    * another version, i.e. an object with an own `v`. `decoded` is what the serializer returned,
    * or `undefined` when it threw. The built-in JSON serializer validates the envelope itself, so
    * for it the raw JSON is inspected; a throwing custom serializer never leads to a delete.
+   * Never throws: a value that cannot even be inspected (a revoked Proxy) is not ours.
    */
   private ownEnvelope(raw: string, decoded: { value: unknown } | undefined): boolean {
-    if (decoded !== undefined) return hasOwnVersion(decoded.value);
-    if (this.options.serializer !== jsonSerializer) return false;
     try {
+      if (decoded !== undefined) return hasOwnVersion(decoded.value);
+      if (this.options.serializer !== jsonSerializer) return false;
       return hasOwnVersion(JSON.parse(raw));
     } catch {
       return false;
