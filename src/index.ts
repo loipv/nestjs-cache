@@ -34,3 +34,9 @@ export type {
 export { CacheModule } from './module/cache.module.js';
 export { CacheService } from './core/cache.service.js';
 export type { GetOrSetOptions, KeyOptions, WriteOptions } from './core/cache.service.js';
+export { RedisStore, redisStore } from './stores/redis.store.js';
+export { redisInvalidationBus } from './stores/redis-invalidation-bus.js';
+export type { RedisStoreOptions } from './stores/redis-invalidation-bus.js';
+export { ioredisAdapter } from './stores/ioredis.adapter.js';
+export type { IoredisLike } from './stores/ioredis.adapter.js';
+export type { RedisClientAdapter, RedisSubscriberAdapter } from './stores/redis-client.adapter.js';
