@@ -7,13 +7,14 @@ function calls(fake: FakeRedis, name: string): unknown[][] {
 }
 
 describe('RedisLock', () => {
-  it('acquires under lock:<key> and rejects a second acquire', async () => {
+  it('acquires under the key as given and rejects a second acquire', async () => {
+    /* the engine passes the complete lock key; RedisLock adds nothing to it */
     const fake = new FakeRedis();
     const lock = new RedisLock(fake);
-    const handle = await lock.acquire('app:users:1', 1_000);
+    const handle = await lock.acquire('app:__lock__:users:1', 1_000);
     expect(handle).toBeDefined();
-    expect(fake.has('lock:app:users:1')).toBe(true);
-    expect(await lock.acquire('app:users:1', 1_000)).toBeUndefined();
+    expect(fake.has('app:__lock__:users:1')).toBe(true);
+    expect(await lock.acquire('app:__lock__:users:1', 1_000)).toBeUndefined();
   });
 
   it('release frees the key and is idempotent', async () => {
@@ -22,7 +23,7 @@ describe('RedisLock', () => {
     const handle = await lock.acquire('k', 1_000);
     await handle!.release();
     await handle!.release();
-    expect(fake.has('lock:k')).toBe(false);
+    expect(fake.has('k')).toBe(false);
     expect(calls(fake, 'deleteIfEquals')).toHaveLength(1);
     expect(await lock.acquire('k', 1_000)).toBeDefined();
   });
@@ -31,11 +32,11 @@ describe('RedisLock', () => {
     const fake = new FakeRedis();
     const lock = new RedisLock(fake);
     const old = await lock.acquire('k', 1_000);
-    fake.forceDelete('lock:k');
+    fake.forceDelete('k');
     const fresh = await lock.acquire('k', 1_000);
     await old!.release();
     expect(fresh).toBeDefined();
-    expect(fake.has('lock:k')).toBe(true);
+    expect(fake.has('k')).toBe(true);
   });
 
   it('rounds the TTL up to an integer >= 1, like ioredisAdapter', async () => {

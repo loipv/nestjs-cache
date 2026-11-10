@@ -38,26 +38,26 @@ describe('RedisLock primitives', () => {
 
   it('acquire, contend, release against real Redis', async () => {
     const store = redisStore({ client });
-    const a = await store.lock!.acquire('it:k', 5_000);
+    const a = await store.lock!.acquire('app:__lock__:it:k', 5_000);
     expect(a).toBeDefined();
-    expect(await store.lock!.acquire('it:k', 5_000)).toBeUndefined();
-    const pttl = await client.pttl('lock:it:k');
+    expect(await store.lock!.acquire('app:__lock__:it:k', 5_000)).toBeUndefined();
+    const pttl = await client.pttl('app:__lock__:it:k');
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(5_000);
     await a!.release();
-    expect(await client.exists('lock:it:k')).toBe(0);
+    expect(await client.exists('app:__lock__:it:k')).toBe(0);
   });
 
   it('a stale handle does not release a newer owner', async () => {
     const store = redisStore({ client });
-    const old = await store.lock!.acquire('it:s', 5_000);
-    await client.del('lock:it:s');
-    const fresh = await store.lock!.acquire('it:s', 5_000);
+    const old = await store.lock!.acquire('app:__lock__:it:s', 5_000);
+    await client.del('app:__lock__:it:s');
+    const fresh = await store.lock!.acquire('app:__lock__:it:s', 5_000);
     expect(fresh).toBeDefined();
     await old!.release();
-    expect(await client.exists('lock:it:s')).toBe(1);
+    expect(await client.exists('app:__lock__:it:s')).toBe(1);
     await fresh!.release();
-    expect(await client.exists('lock:it:s')).toBe(0);
+    expect(await client.exists('app:__lock__:it:s')).toBe(0);
   });
 
   it('a real ioredis client is assignable to IoredisLike without a cast', () => {

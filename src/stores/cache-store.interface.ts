@@ -45,7 +45,7 @@ export interface InvalidationBus {
  */
 export interface LockProvider {
   /**
-   * Tries to take the lock for `key` for at most `ttlMs` milliseconds (integer >= 1). Returns a
+   * Tries to take the lock for `key`, the complete lock key the engine computed (the provider adds nothing to it), for at most `ttlMs` milliseconds (integer >= 1). Returns a
    * handle when acquired, or `undefined` when the lock is held by someone else. Never waits.
    */
   acquire(key: string, ttlMs: number): Promise<LockHandle | undefined>;

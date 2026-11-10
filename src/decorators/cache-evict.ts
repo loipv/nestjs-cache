@@ -1,5 +1,5 @@
 import { CacheConfigError } from '../errors.js';
-import { describeMethod } from './metadata.js';
+import { assertNamespace, describeMethod } from './metadata.js';
 import { assertInstanceMethod, compileKeyAt, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheEvictOptions, KeySpec } from './options.js';
 
@@ -16,6 +16,7 @@ export function CacheEvict<K extends unknown[] = never[]>(
       beforeInvocation?: boolean;
     };
     const { namespace, allEntries = false, beforeInvocation = false } = loose;
+    assertNamespace(target, propertyKey, namespace);
     const store = loose.store ?? 'default';
     if (allEntries) {
       const where = describeMethod(target, propertyKey);

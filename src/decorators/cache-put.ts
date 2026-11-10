@@ -1,4 +1,9 @@
-import { assertBoolean, assertPositiveFinite, assertStrategyTtls } from './metadata.js';
+import {
+  assertBoolean,
+  assertNamespace,
+  assertPositiveFinite,
+  assertStrategyTtls,
+} from './metadata.js';
 import {
   assertInstanceMethod,
   compileKeyAt,
@@ -13,6 +18,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
 ): AsyncMethodDecorator<K, C, R> {
   return (target, propertyKey, descriptor) => {
     assertInstanceMethod(target, propertyKey);
+    assertNamespace(target, propertyKey, options?.namespace);
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);

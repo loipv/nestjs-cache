@@ -6,7 +6,7 @@ import { jsonSerializer } from '../serializers/json.serializer.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
-import { fullKey, namespacePrefix } from './key-builder.js';
+import { fullKey, lockKey, namespacePrefix } from './key-builder.js';
 import {
   classifyEnvelope,
   createStrategy,
@@ -73,6 +73,10 @@ export class EngineIO {
 
   keyOf(ref: { namespace?: string | undefined; key: string }): string {
     return fullKey(this.options.prefix, ref.namespace, ref.key);
+  }
+
+  lockKeyOf(ref: { namespace?: string | undefined; key: string }): string {
+    return lockKey(this.options.prefix, ref.namespace, ref.key);
   }
 
   resolve(name: string | undefined): Target {

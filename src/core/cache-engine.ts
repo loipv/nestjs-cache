@@ -11,7 +11,7 @@ import {
   type Target,
 } from './engine-io.js';
 import { EngineLoad } from './engine-load.js';
-import { emptyKeyError, isEmptyKey } from './key-builder.js';
+import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
@@ -96,6 +96,7 @@ export class CacheEngine {
   /** Never refreshes; `options` selects the read command and the classification only. */
   async get<T>(ref: KeyRef, options: StrategyOptions = {}): Promise<T | undefined> {
     const target = this.io.resolve(ref.store);
+    this.checkNamespace(ref.namespace);
     const strategy = strategyOf(options, undefined);
     if (this.emptyKey(target, ref.key)) return undefined;
     const result = await this.io.read(target, ref, strategy, this.options.defaults.ttl);
@@ -118,6 +119,7 @@ export class CacheEngine {
     preset?: ExpiryStrategy,
   ): Promise<T> {
     const target = this.io.resolve(ref.store);
+    this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
     checkBoolean('cacheNull', options.cacheNull);
@@ -139,6 +141,7 @@ export class CacheEngine {
 
   async set(ref: KeyRef, value: unknown, options: SetOptions = {}): Promise<void> {
     const target = this.io.resolve(ref.store);
+    this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl);
@@ -156,6 +159,7 @@ export class CacheEngine {
     preset?: ExpiryStrategy,
   ): Promise<void> {
     const target = this.io.resolve(ref.store);
+    this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
     checkBoolean('cacheNull', options.cacheNull);
@@ -170,6 +174,7 @@ export class CacheEngine {
     keys: readonly string[],
   ): Promise<void> {
     const target = this.io.resolve(scope.store);
+    this.checkNamespace(scope.namespace);
     const valid = keys.filter((key) => !isEmptyKey(key));
     if (valid.length < keys.length) this.io.reportError(target.name, 'key', emptyKeyError());
     await this.io.delete(scope, valid);
@@ -180,11 +185,22 @@ export class CacheEngine {
     if (typeof namespace !== 'string' || namespace === '') {
       throw new CacheConfigError('clear requires a non-empty namespace');
     }
+    this.io.resolve(storeName);
+    this.checkNamespace(namespace);
     await this.io.clear(storeName, namespace);
   }
 
   reportError(store: string | undefined, operation: CacheOperation, error: unknown): void {
     this.io.reportError(store, operation, error);
+  }
+
+  /** Names starting with `__` are reserved for internal keys (the lock keys). */
+  private checkNamespace(namespace: string | undefined): void {
+    if (namespace !== undefined && isReservedNamespace(namespace)) {
+      throw new CacheConfigError(
+        `Invalid namespace: ${namespace}. Names starting with "__" are reserved.`,
+      );
+    }
   }
 
   /** Reports an empty key as a key error; the caller then skips the cache. */

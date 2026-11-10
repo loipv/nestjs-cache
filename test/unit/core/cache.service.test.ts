@@ -251,4 +251,37 @@ describe('CacheService', () => {
       expect(store.calls).toEqual([]);
     });
   });
+
+  describe('reserved namespaces', () => {
+    const reserved = new CacheConfigError(
+      'Invalid namespace: __x. Names starting with "__" are reserved.',
+    );
+
+    it('rejects get, getOrSet, set, delete and clear on a namespace starting with __', async () => {
+      /* every public entry that takes a namespace throws before touching the store */
+      const { service, store } = setup();
+      await expect(service.get('k', { namespace: '__x' })).rejects.toThrow(reserved);
+      await expect(
+        service.getOrSet('k', () => Promise.resolve(1), { namespace: '__x' }),
+      ).rejects.toThrow(reserved);
+      await expect(service.set('k', 1, { namespace: '__x' })).rejects.toThrow(reserved);
+      await expect(service.delete('k', { namespace: '__x' })).rejects.toThrow(reserved);
+      await expect(service.clear('__x')).rejects.toThrow(reserved);
+      expect(store.calls).toEqual([]);
+    });
+
+    it('accepts a namespace with a single underscore and keeps the empty clear message', async () => {
+      /* '_x' works; clear('') still reports the empty namespace first */
+      const { service, store } = setup();
+      await service.set('k', 1, { namespace: '_x' });
+      expect(store.data.has('_x:k')).toBe(true);
+      await expect(service.clear('')).rejects.toThrow('clear requires a non-empty namespace');
+    });
+
+    it('rejects put on a namespace starting with __', async () => {
+      /* put is engine-only (the @CachePut path) */
+      const { engine } = makeEngine();
+      await expect(engine.put({ namespace: '__x', key: 'k' }, 1)).rejects.toThrow(reserved);
+    });
+  });
 });

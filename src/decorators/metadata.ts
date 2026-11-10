@@ -1,4 +1,5 @@
 import { CacheConfigError } from '../errors.js';
+import { isReservedNamespace } from '../core/key-builder.js';
 import { CACHE_METADATA } from '../module/tokens.js';
 
 export interface CacheMetadataEntry {
@@ -62,6 +63,18 @@ export function assertBoolean(
   throw new CacheConfigError(
     `${describeMethod(target, method)}: ${field} must be a boolean, got ${String(value)}`,
   );
+}
+
+export function assertNamespace(
+  target: object,
+  method: string | symbol,
+  namespace: string | undefined,
+): void {
+  if (typeof namespace === 'string' && isReservedNamespace(namespace)) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: namespace "${namespace}" is reserved (names starting with "__")`,
+    );
+  }
 }
 
 /** Validates `staleTtl`/`maxTtl` and the `maxTtl >= ttl` relation at definition time. */

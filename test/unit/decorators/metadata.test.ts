@@ -274,4 +274,49 @@ describe('decorator metadata', () => {
       expect(d).toHaveProperty('lock', undefined);
     });
   });
+
+  describe('reserved namespaces', () => {
+    const message = (m: string) => `S.${m}: namespace "__x" is reserved (names starting with "__")`;
+
+    it('rejects a namespace starting with __ at definition time', () => {
+      /* the same check in all three decorators, before the method is ever called */
+      expect(() => {
+        class S {
+          @Cacheable({ namespace: '__x' }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow(new CacheConfigError(message('a')));
+      expect(() => {
+        class S {
+          @CachePut({ namespace: '__x' }) b(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow(new CacheConfigError(message('b')));
+      expect(() => {
+        class S {
+          @CacheEvict({ namespace: '__x' }) c(): Promise<void> {
+            return Promise.resolve();
+          }
+        }
+        return S;
+      }).toThrow(new CacheConfigError(message('c')));
+    });
+
+    it('accepts a single underscore and no namespace', () => {
+      /* '_x' is a normal namespace */
+      class S {
+        @Cacheable({ namespace: '_x' }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+        @CachePut() b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      expect(getCacheMetadata(S)).toHaveLength(2);
+    });
+  });
 });

@@ -59,14 +59,14 @@ describe('CacheEngine distributed lock', () => {
     const off = setup({ prefix: 'app' });
     await off.engine.getOrSet({ namespace: 'ns', key: 'a' }, async () => 1, LOCKED);
     // The lock key is the full cache key; the store adds its own lock prefix.
-    expect(off.lock.acquireCalls).toEqual(['app:ns:a']);
+    expect(off.lock.acquireCalls).toEqual(['app:__lock__:ns:a']);
 
     const on = setup({ defaults: { lock: { enabled: true } } });
     await on.engine.getOrSet({ key: 'a' }, async () => 1, { lock: false });
     expect(on.lock.acquireCalls).toEqual([]);
     expect(on.emitted.some((e) => e.event === 'lock')).toBe(false);
     await on.engine.getOrSet({ key: 'b' }, async () => 1);
-    expect(on.lock.acquireCalls).toEqual(['b']);
+    expect(on.lock.acquireCalls).toEqual(['__lock__:b']);
   });
 
   it('lock events carry store, namespace, key, waitedMs, acquired', async () => {
@@ -80,7 +80,7 @@ describe('CacheEngine distributed lock', () => {
       waitedMs: 0,
       acquired: true,
     });
-    expect(lock.releaseCalls).toEqual(['ns:k']);
+    expect(lock.releaseCalls).toEqual(['__lock__:ns:k']);
     expect(lock.held.size).toBe(0);
   });
 
@@ -92,7 +92,7 @@ describe('CacheEngine distributed lock', () => {
 
   it('waits for another holder, then serves its value with one hit', async () => {
     const { engine, emitted, lock, other } = setup();
-    lock.held.add('k');
+    lock.held.add('__lock__:k');
     const loader = vi.fn(async () => 'mine');
     const p = engine.getOrSet({ key: 'k' }, loader, LOCKED);
     await vi.advanceTimersByTimeAsync(70);
@@ -118,7 +118,7 @@ describe('CacheEngine distributed lock', () => {
 
   it('a stale swr value found while waiting is served as a stale hit, without a refresh', async () => {
     const { engine, emitted, lock, other } = setup();
-    lock.held.add('k');
+    lock.held.add('__lock__:k');
     const loader = vi.fn(async () => 'mine');
     const p = engine.getOrSet({ key: 'k' }, loader, { ...SWR, lock: true });
     await vi.advanceTimersByTimeAsync(10);
@@ -127,14 +127,14 @@ describe('CacheEngine distributed lock', () => {
     expect(await p).toBe('theirs');
     await vi.runAllTimersAsync();
     expect(loader).not.toHaveBeenCalled();
-    expect(lock.acquireCalls).toEqual(['k']);
+    expect(lock.acquireCalls).toEqual(['__lock__:k']);
     expect(emitted.map((e) => e.event)).toEqual(['miss', 'lock', 'hit']);
     expect(emitted[2]?.payload).toMatchObject({ key: 'k', stale: true });
   });
 
   it('a stale value does not end the wait of a reader that is not swr', async () => {
     const { engine, lock, other } = setup();
-    lock.held.add('k');
+    lock.held.add('__lock__:k');
     const loader = vi.fn(async () => 'mine');
     const p = engine.getOrSet({ key: 'k' }, loader, LOCKED);
     await other.set({ key: 'k' }, 'theirs', { ttl: 20, strategy: 'swr', staleTtl: 10_000 });
@@ -147,7 +147,7 @@ describe('CacheEngine distributed lock', () => {
     const { engine, emitted, lock, store } = setup({
       defaults: { lock: { waitTimeout: 200, retryDelay: 50 } },
     });
-    lock.held.add('k');
+    lock.held.add('__lock__:k');
     const loader = vi.fn(async () => 'mine');
     store.calls.length = 0;
     const p = engine.getOrSet({ key: 'k' }, loader, LOCKED);
@@ -170,7 +170,7 @@ describe('CacheEngine distributed lock', () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(await all).toEqual(['v', 'v', 'v', 'v', 'v']);
     expect(loader).toHaveBeenCalledOnce();
-    expect(lock.acquireCalls).toEqual(['k']);
+    expect(lock.acquireCalls).toEqual(['__lock__:k']);
   });
 
   it('releases when the loader throws, so the next request takes the lock at once', async () => {
@@ -198,7 +198,7 @@ describe('CacheEngine distributed lock', () => {
     const { engine, emitted, lock, store } = setup();
     store.failNext('set');
     expect(await engine.getOrSet({ key: 'k' }, async () => 'v', LOCKED)).toBe('v');
-    expect(lock.releaseCalls).toEqual(['k']);
+    expect(lock.releaseCalls).toEqual(['__lock__:k']);
     expect(lock.held.size).toBe(0);
     expect(emitted.map((e) => e.event)).toEqual(['miss', 'lock', 'load', 'error']);
     expect(emitted[3]?.payload).toMatchObject({ operation: 'set' });
@@ -235,13 +235,13 @@ describe('CacheEngine distributed lock', () => {
     const { engine, emitted, lock } = setup();
     await engine.set({ key: 'k' }, 'old', SWR);
     vi.setSystemTime(150);
-    lock.held.add('k');
+    lock.held.add('__lock__:k');
     emitted.length = 0;
     const loader = vi.fn(async () => 'new');
     expect(await engine.getOrSet({ key: 'k' }, loader, { ...SWR, lock: true })).toBe('old');
     await vi.runAllTimersAsync();
     expect(loader).not.toHaveBeenCalled();
-    expect(lock.acquireCalls).toEqual(['k']);
+    expect(lock.acquireCalls).toEqual(['__lock__:k']);
     expect(emitted.map((e) => e.event)).toEqual(['hit', 'lock']);
     expect(emitted[1]?.payload).toEqual({
       store: 'default',
@@ -262,7 +262,7 @@ describe('CacheEngine distributed lock', () => {
     await vi.runAllTimersAsync();
     expect(emitted.map((e) => e.event)).toEqual(['hit', 'lock', 'load', 'set']);
     expect(emitted[1]?.payload).toMatchObject({ acquired: true, waitedMs: 0 });
-    expect(lock.releaseCalls).toEqual(['k']);
+    expect(lock.releaseCalls).toEqual(['__lock__:k']);
     expect(await engine.get({ key: 'k' })).toBe('new');
   });
 
@@ -296,7 +296,7 @@ describe('CacheEngine distributed lock', () => {
     const opts = { ...SWR, lock: true };
     await engine.set({ key: 'k' }, 'old', SWR);
     vi.setSystemTime(150);
-    inner.held.add('k');
+    inner.held.add('__lock__:k');
     const loader = vi.fn(async () => 'new');
     expect(await engine.getOrSet({ key: 'k' }, loader, opts)).toBe('old');
     await engine.delete({}, ['k']);
@@ -308,14 +308,14 @@ describe('CacheEngine distributed lock', () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(await joined).toBe('missed');
     expect(missLoader).toHaveBeenCalledOnce();
-    expect(inner.acquireCalls).toEqual(['k', 'k']);
+    expect(inner.acquireCalls).toEqual(['__lock__:k', '__lock__:k']);
   });
 
   it('CacheService.getOrSet forwards lock to the engine', async () => {
     const { engine, lock } = setup();
     const service = new CacheService(engine);
     expect(await service.getOrSet('k', async () => 'v', { namespace: 'ns', lock: true })).toBe('v');
-    expect(lock.acquireCalls).toEqual(['ns:k']);
+    expect(lock.acquireCalls).toEqual(['__lock__:ns:k']);
   });
 
   it('hasLock is true only for a configured store with a lock', () => {
@@ -329,9 +329,18 @@ describe('CacheEngine distributed lock', () => {
   });
 });
 
+describe('the lock key', () => {
+  it('is the complete key under the prefix, passed to the provider', async () => {
+    /* prefix 'app': getOrSet on users/1 with a lock acquires 'app:__lock__:users:1' */
+    const { engine, lock } = setup({ prefix: 'app' });
+    await engine.getOrSet({ namespace: 'users', key: '1' }, async () => 'v', LOCKED);
+    expect(lock.acquireCalls).toEqual(['app:__lock__:users:1']);
+  });
+});
+
 describe('a read of a lock key over a shared Redis', () => {
   it('reports the unreadable value but never deletes the lock of another instance', async () => {
-    /* the auditor's scenario: lock keys are `lock:<fullKey>` holding a bare UUID, in the same
+    /* the auditor's scenario: lock keys are `<prefix>:__lock__:<namespace>:<key>` holding a bare UUID, in the same
        Redis as the cache entries; a user-controlled key can name one */
     const redis = new FakeRedis();
     const store = new RedisStore({ client: redis });
@@ -343,16 +352,16 @@ describe('a read of a lock key over a shared Redis', () => {
     const lock = store.lock;
     if (lock === undefined) throw new Error('RedisStore over FakeRedis must have a lock');
 
-    const held = await lock.acquire('users:1', 10_000);
+    const held = await lock.acquire('__lock__:users:1', 10_000);
     expect(held).toBeDefined();
-    const token = redis.data.get('lock:users:1');
+    const token = redis.data.get('__lock__:users:1');
 
-    expect(await engine.get({ key: 'lock:users:1' })).toBeUndefined();
-    expect(await service.get('lock:users:1')).toBeUndefined();
+    expect(await engine.get({ key: '__lock__:users:1' })).toBeUndefined();
+    expect(await service.get('__lock__:users:1')).toBeUndefined();
 
     expect(errors).toEqual(['deserialize', 'deserialize']);
     expect(redis.commands.filter((c) => c.name === 'unlink')).toEqual([]);
-    expect(redis.data.get('lock:users:1')).toBe(token);
-    expect(await lock.acquire('users:1', 10_000)).toBeUndefined();
+    expect(redis.data.get('__lock__:users:1')).toBe(token);
+    expect(await lock.acquire('__lock__:users:1', 10_000)).toBeUndefined();
   });
 });

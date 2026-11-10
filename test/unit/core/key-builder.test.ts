@@ -4,6 +4,8 @@ import {
   compileTemplate,
   defaultKey,
   fullKey,
+  isReservedNamespace,
+  lockKey,
   namespacePrefix,
   stableStringify,
 } from '../../../src/core/key-builder.js';
@@ -132,5 +134,22 @@ describe('key-builder', () => {
   it('namespacePrefix ends with a colon', () => {
     expect(namespacePrefix('app', 'users')).toBe('app:users:');
     expect(namespacePrefix(undefined, 'users')).toBe('users:');
+  });
+});
+
+describe('lockKey and isReservedNamespace', () => {
+  it('puts the lock key under the prefix and the __lock__ segment', () => {
+    /* prefix, namespace and key combinations of lockKey */
+    expect(lockKey('app', 'users', '1')).toBe('app:__lock__:users:1');
+    expect(lockKey(undefined, 'users', '1')).toBe('__lock__:users:1');
+    expect(lockKey('app', undefined, 'k')).toBe('app:__lock__:k');
+  });
+
+  it('reserves namespaces starting with two underscores only', () => {
+    /* one underscore is a normal namespace */
+    expect(isReservedNamespace('__x')).toBe(true);
+    expect(isReservedNamespace('__')).toBe(true);
+    expect(isReservedNamespace('_x')).toBe(false);
+    expect(isReservedNamespace('x__')).toBe(false);
   });
 });

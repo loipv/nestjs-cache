@@ -174,6 +174,19 @@ export function fullKey(
   return [prefix, namespace, key].filter((p): p is string => p !== undefined && p !== '').join(':');
 }
 
+/** `<prefix>:__lock__:<namespace>:<key>`; the `__` namespace space is reserved, so it cannot collide with data. */
+export function lockKey(
+  prefix: string | undefined,
+  namespace: string | undefined,
+  key: string,
+): string {
+  return fullKey(prefix, '__lock__', fullKey(undefined, namespace, key));
+}
+
+export function isReservedNamespace(ns: string): boolean {
+  return ns.startsWith('__');
+}
+
 export function namespacePrefix(prefix: string | undefined, namespace: string): string {
   return `${fullKey(prefix, namespace, '')}:`;
 }

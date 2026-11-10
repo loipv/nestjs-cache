@@ -85,7 +85,7 @@ export class EngineLoad {
     const { target, ref, strategy, ttl } = plan;
     const result = await loadWithLock<{ value: T; stale: boolean }>(
       lock,
-      this.io.keyOf(ref),
+      this.io.lockKeyOf(ref),
       this.lockSettings,
       async () => {
         const cached = await this.io.read(target, ref, strategy, ttl);
@@ -108,7 +108,7 @@ export class EngineLoad {
     let outcome: Outcome<T> = { loaded: false };
     await refreshWithLock(
       plan.lock,
-      this.io.keyOf(plan.ref),
+      this.io.lockKeyOf(plan.ref),
       this.lockSettings.ttl,
       async () => {
         outcome = { loaded: true, value: await this.loadAndStore(plan, true) };

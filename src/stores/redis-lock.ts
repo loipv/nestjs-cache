@@ -8,18 +8,17 @@ export class RedisLock implements LockProvider {
     private readonly adapter: Required<Pick<RedisClientAdapter, 'setIfAbsent' | 'deleteIfEquals'>>,
   ) {}
 
-  /** `ttlMs` is rounded up to an integer >= 1, as `ioredisAdapter` rounds its TTLs. */
+  /** `key` is the complete lock key, used verbatim. `ttlMs` is rounded up to an integer >= 1, as `ioredisAdapter` rounds its TTLs. */
   async acquire(key: string, ttlMs: number): Promise<LockHandle | undefined> {
-    const lockKey = `lock:${key}`;
     const token = randomUUID();
-    const acquired = await this.adapter.setIfAbsent(lockKey, token, Math.max(1, Math.ceil(ttlMs)));
+    const acquired = await this.adapter.setIfAbsent(key, token, Math.max(1, Math.ceil(ttlMs)));
     if (!acquired) return undefined;
     let released = false;
     return {
       release: async () => {
         if (released) return;
         released = true;
-        await this.adapter.deleteIfEquals(lockKey, token);
+        await this.adapter.deleteIfEquals(key, token);
       },
     };
   }
