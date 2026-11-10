@@ -203,7 +203,7 @@ describe('CacheEngine.getOrSet', () => {
     await expect(engine.getOrSet(ref, loader, opts)).rejects.toBeInstanceOf(CacheConfigError);
     await expect(engine.put(ref, 1, opts)).rejects.toBeInstanceOf(CacheConfigError);
     if (option === 'ttl') {
-      await expect(engine.set(ref, 1, value)).rejects.toBeInstanceOf(CacheConfigError);
+      await expect(engine.set(ref, 1, { ttl: value })).rejects.toBeInstanceOf(CacheConfigError);
     }
     expect(loader).not.toHaveBeenCalled();
     expect(store.calls).toEqual([]);

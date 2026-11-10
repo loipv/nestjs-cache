@@ -1,6 +1,6 @@
-import type { PutOptions } from '../core/cache-engine.js';
+import type { LoadOptions } from '../core/cache-engine.js';
 import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
-import { compileKeyAt, wrapMethod } from './method-wrapper.js';
+import { assertInstanceMethod, compileKeyAt, putOptionsOf, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheableOptions, KeySpec } from './options.js';
 
 export function Cacheable<
@@ -9,6 +9,7 @@ export function Cacheable<
   R = unknown,
 >(options?: CacheableOptions<K, C, R>): AsyncMethodDecorator<K, C, R> {
   return (target, propertyKey, descriptor) => {
+    assertInstanceMethod(target, propertyKey);
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertStrategyTtls(target, propertyKey, options);
@@ -16,12 +17,8 @@ export function Cacheable<
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
     const namespace = options?.namespace;
-    const putOptions: PutOptions<unknown> = {
-      ttl: options?.ttl,
-      cacheNull: options?.cacheNull,
-      nullTtl: options?.nullTtl,
-      unless: options?.unless as ((result: unknown) => boolean) | undefined,
-    };
+    const loadOptions: LoadOptions<unknown> = putOptionsOf(options);
+    if (options?.lock !== undefined) loadOptions.lock = options.lock;
     wrapMethod(
       target,
       propertyKey,
@@ -36,7 +33,7 @@ export function Cacheable<
           engine.reportError(store, 'key', error);
           return call.invoke();
         }
-        return engine.getOrSet({ store, namespace, key }, call.invoke, putOptions);
+        return engine.getOrSet({ store, namespace, key }, call.invoke, loadOptions);
       },
     );
   };

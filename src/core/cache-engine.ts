@@ -1,10 +1,12 @@
+import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
-import { isEnvelope, isExpired, unwrap, wrap } from './envelope.js';
+import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import { SingleFlight } from './single-flight.js';
+import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 export interface KeyRef {
   store?: string;
@@ -12,19 +14,27 @@ export interface KeyRef {
   key: string;
 }
 
-export interface PutOptions<T> {
+export type PutOptions<T> = {
   ttl?: number;
   cacheNull?: boolean;
   nullTtl?: number;
   unless?: (result: T) => boolean;
-}
+} & StrategyOptions;
+
+/** `lock` takes effect from the locking work; it is accepted and forwarded already. */
+export type LoadOptions<T> = PutOptions<T> & { lock?: boolean };
+
+export type SetOptions = { ttl?: number } & StrategyOptions;
 
 interface Target {
   name: string;
   store: CacheStore;
 }
 
-type Lookup = { found: true; value: unknown } | { found: false };
+type Lookup = { found: true; value: unknown; stale: boolean } | { found: false };
+
+/** Empty values always use `fixed`: it is the strategy that keeps the `nil` marker. */
+const EMPTY_STRATEGY = createStrategy();
 
 function checkDuration(option: string, value: number | undefined): void {
   if (value === undefined) return;
@@ -37,6 +47,32 @@ function checkDuration(option: string, value: number | undefined): void {
 
 function toIntegerMs(ms: number): number {
   return Math.max(1, Math.round(ms));
+}
+
+/**
+ * Validates the strategy options and builds the strategy. `ttl` is the effective ttl the
+ * entry is written with; it is omitted by `get`, which writes nothing.
+ */
+function strategyOf(options: StrategyOptions, ttl: number | undefined): ExpiryStrategy {
+  const { staleTtl, maxTtl } = options;
+  checkDuration('staleTtl', staleTtl);
+  checkDuration('maxTtl', maxTtl);
+  const strategy = createStrategy(options);
+  if (strategy.kind === 'swr' && staleTtl === undefined) {
+    throw new CacheConfigError(
+      "Invalid staleTtl: undefined. The 'swr' strategy requires staleTtl.",
+    );
+  }
+  if (ttl !== undefined && maxTtl !== undefined && maxTtl < ttl) {
+    throw new CacheConfigError(
+      `Invalid maxTtl: ${String(maxTtl)}. It must be >= ttl (${String(ttl)}).`,
+    );
+  }
+  return strategy;
+}
+
+function isEmpty(value: unknown): value is null | undefined {
+  return value === null || value === undefined;
 }
 
 export class CacheEngine {
@@ -55,21 +91,36 @@ export class CacheEngine {
     return [...this.options.stores.keys()];
   }
 
-  async get<T>(ref: KeyRef): Promise<T | undefined> {
-    const result = await this.lookup(this.resolve(ref.store), ref);
-    return result.found ? (result.value as T | undefined) : undefined;
+  /** Never refreshes; `options` selects the read command and the classification only. */
+  async get<T>(ref: KeyRef, options: StrategyOptions = {}): Promise<T | undefined> {
+    const target = this.resolve(ref.store);
+    const strategy = strategyOf(options, undefined);
+    const result = await this.read(target, ref, strategy, this.options.defaults.ttl);
+    if (!result.found) {
+      this.miss(target.name, ref);
+      return undefined;
+    }
+    this.hit(target.name, ref, result.stale);
+    return result.value as T | undefined;
   }
 
   async getOrSet<T>(
     ref: KeyRef,
     loader: () => Promise<T>,
-    options: PutOptions<T> = {},
+    options: LoadOptions<T> = {},
   ): Promise<T> {
     const target = this.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
-    const cached = await this.lookup(target, ref);
-    if (cached.found) return cached.value as T;
+    const ttl = options.ttl ?? this.options.defaults.ttl;
+    const strategy = strategyOf(options, ttl);
+    const cached = await this.read(target, ref, strategy, ttl);
+    // A stale entry is served only under swr; any other reader has a loader and reloads now.
+    if (cached.found && (!cached.stale || strategy.kind === 'swr')) {
+      this.hit(target.name, ref, cached.stale);
+      return cached.value as T;
+    }
+    this.miss(target.name, ref);
     const flightKey = `${target.name}\u0000${fullKey(this.options.prefix, ref.namespace, ref.key)}`;
     return this.singleFlight.run(flightKey, async () => {
       const started = Date.now();
@@ -81,22 +132,27 @@ export class CacheEngine {
         throw error;
       }
       this.emitLoad(target.name, ref, started, true);
-      await this.store(target, ref, value, options, false);
+      await this.store(target, ref, value, options, strategy, false);
       return value;
     });
   }
 
-  async set(ref: KeyRef, value: unknown, ttl?: number): Promise<void> {
+  async set(ref: KeyRef, value: unknown, options: SetOptions = {}): Promise<void> {
     const target = this.resolve(ref.store);
-    checkDuration('ttl', ttl);
-    await this.write(target, ref, value, this.jittered(ttl ?? this.options.defaults.ttl));
+    checkDuration('ttl', options.ttl);
+    const ttl = options.ttl ?? this.options.defaults.ttl;
+    const requested = strategyOf(options, ttl);
+    // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
+    const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
+    await this.write(target, ref, value, strategy, this.ttlFor(strategy, ttl));
   }
 
   async put<T>(ref: KeyRef, value: T, options: PutOptions<T> = {}): Promise<void> {
     const target = this.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
-    await this.store(target, ref, value, options, true);
+    const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl);
+    await this.store(target, ref, value, options, strategy, true);
   }
 
   async delete(
@@ -134,24 +190,37 @@ export class CacheEngine {
     this.events.emit('error', { store: store ?? 'default', operation, error });
   }
 
-  private async lookup({ name, store }: Target, ref: KeyRef): Promise<Lookup> {
+  /**
+   * Reads and classifies an entry without emitting `hit`/`miss`; callers decide which one
+   * applies. `ttl` is the effective ttl, used as the sliding touch ttl.
+   */
+  private async read(
+    { name, store }: Target,
+    ref: KeyRef,
+    strategy: ExpiryStrategy,
+    ttl: number,
+  ): Promise<Lookup> {
     const key = fullKey(this.options.prefix, ref.namespace, ref.key);
+    const plan = strategy.read(toIntegerMs(ttl));
+    const touchTtl = plan.touch ? plan.touchTtl : undefined;
+    // Without getAndTouch, a touching read is a get, then a re-set of the same string.
+    const reSet = touchTtl !== undefined && store.getAndTouch === undefined;
     let raw: string | undefined;
     try {
-      raw = await store.get(key);
+      raw =
+        touchTtl !== undefined && store.getAndTouch !== undefined
+          ? await store.getAndTouch(key, touchTtl)
+          : await store.get(key);
     } catch (error) {
       this.reportError(name, 'get', error);
-      this.miss(name, ref);
       return { found: false };
     }
-    if (raw === undefined) {
-      this.miss(name, ref);
-      return { found: false };
-    }
-    let envelope;
+    if (raw === undefined) return { found: false };
+    let envelope: CacheEnvelope;
     try {
-      envelope = this.options.serializer.deserialize(raw);
-      if (!isEnvelope(envelope)) throw new TypeError('Deserialized value is not a cache envelope');
+      const candidate = this.options.serializer.deserialize(raw);
+      if (!isEnvelope(candidate)) throw new TypeError('Deserialized value is not a cache envelope');
+      envelope = candidate;
     } catch (error) {
       this.reportError(name, 'deserialize', error);
       try {
@@ -159,15 +228,19 @@ export class CacheEngine {
       } catch {
         // cleanup is best effort; the failure is already reported
       }
-      this.miss(name, ref);
       return { found: false };
     }
-    if (isExpired(envelope, Date.now())) {
-      this.miss(name, ref);
-      return { found: false };
+    const state = strategy.classify(envelope, Date.now());
+    if (state === 'expired') return { found: false };
+    if (reSet) {
+      // Never reached for an expired entry, so maxTtl still bounds a sliding entry. Not atomic.
+      try {
+        await store.set(key, raw, touchTtl);
+      } catch (error) {
+        this.reportError(name, 'set', error);
+      }
     }
-    this.events.emit('hit', { store: name, namespace: ref.namespace, key: ref.key, stale: false });
-    return { found: true, value: unwrap(envelope) };
+    return { found: true, value: unwrap(envelope), stale: state === 'stale' };
   }
 
   private async store<T>(
@@ -175,6 +248,7 @@ export class CacheEngine {
     ref: KeyRef,
     value: T,
     options: PutOptions<T>,
+    strategy: ExpiryStrategy,
     deleteWhenEmpty: boolean,
   ): Promise<void> {
     try {
@@ -183,22 +257,19 @@ export class CacheEngine {
       this.reportError(target.name, 'set', error);
       return;
     }
-    if (value === null || value === undefined) {
+    if (isEmpty(value)) {
       if (!(options.cacheNull ?? this.options.defaults.cacheNull)) {
         if (deleteWhenEmpty) {
           await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
         }
         return;
       }
-      await this.write(
-        target,
-        ref,
-        value,
-        toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl),
-      );
+      const nullTtl = toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl);
+      await this.write(target, ref, value, EMPTY_STRATEGY, nullTtl);
       return;
     }
-    await this.write(target, ref, value, this.jittered(options.ttl ?? this.options.defaults.ttl));
+    const ttl = this.ttlFor(strategy, options.ttl ?? this.options.defaults.ttl);
+    await this.write(target, ref, value, strategy, ttl);
   }
 
   private emitLoad(store: string, ref: KeyRef, started: number, success: boolean): void {
@@ -211,25 +282,37 @@ export class CacheEngine {
     });
   }
 
+  /** `ttl` is an integer >= 1, already jittered when the strategy asks for it. */
   private async write(
     { name, store }: Target,
     ref: KeyRef,
     value: unknown,
+    strategy: ExpiryStrategy,
     ttl: number,
   ): Promise<void> {
     const key = fullKey(this.options.prefix, ref.namespace, ref.key);
+    let storeTtl: number;
     try {
-      const raw = this.options.serializer.serialize(wrap(value, Date.now(), ttl));
-      await store.set(key, raw, ttl);
+      const wrapped = strategy.wrap(value, Date.now(), ttl);
+      storeTtl = wrapped.storeTtl;
+      await store.set(key, this.options.serializer.serialize(wrapped.envelope), storeTtl);
     } catch (error) {
       this.reportError(name, 'set', error);
       return;
     }
-    this.events.emit('set', { store: name, namespace: ref.namespace, key: ref.key, ttl });
+    this.events.emit('set', { store: name, namespace: ref.namespace, key: ref.key, ttl: storeTtl });
+  }
+
+  private hit(store: string, ref: KeyRef, stale: boolean): void {
+    this.events.emit('hit', { store, namespace: ref.namespace, key: ref.key, stale });
   }
 
   private miss(store: string, ref: KeyRef): void {
     this.events.emit('miss', { store, namespace: ref.namespace, key: ref.key });
+  }
+
+  private ttlFor(strategy: ExpiryStrategy, ttl: number): number {
+    return strategy.jittered ? this.jittered(ttl) : toIntegerMs(ttl);
   }
 
   private jittered(ttl: number): number {

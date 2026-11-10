@@ -2,8 +2,10 @@ import 'reflect-metadata';
 import { Injectable } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheService } from '../../../src/core/cache.service.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
+import { CacheConfigError } from '../../../src/errors.js';
 import { CacheModule, CachePut } from '../../../src/index.js';
 import { EVENT_NAMES } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -32,6 +34,16 @@ class UserWriter {
   @CachePut({ key: 'p:{0}', condition: (id: string) => id !== 'skip' })
   async conditional(id: string): Promise<string> {
     this.calls++;
+    return id;
+  }
+
+  @CachePut({ key: 'sw:{0}', ttl: 100, strategy: 'swr', staleTtl: 300 })
+  async swr(id: string): Promise<string> {
+    return id;
+  }
+
+  @CachePut({ key: 'sl:{0}', strategy: 'sliding', maxTtl: 120_000 })
+  async sliding(id: string): Promise<string> {
     return id;
   }
 
@@ -101,5 +113,69 @@ describe('@CachePut', () => {
     expect(emitted.filter((e) => e.event === 'error')).toEqual([
       { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
     ]);
+  });
+
+  it('@CachePut writes swr and sliding envelopes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(1_000);
+      await svc.swr('1');
+      expect(fake.data.get('sw:1')?.ttlMs).toBe(400);
+      expect(JSON.parse(fake.data.get('sw:1')!.value)).toEqual({
+        v: 1,
+        value: '1',
+        storedAt: 1_000,
+        staleAt: 1_100,
+        expiresAt: 1_400,
+      });
+      expect(emitted.at(-1)).toEqual({
+        event: 'set',
+        payload: { store: 'default', namespace: undefined, key: 'sw:1', ttl: 400 },
+      });
+      await svc.sliding('2');
+      expect(fake.data.get('sl:2')?.ttlMs).toBe(60_000);
+      expect(JSON.parse(fake.data.get('sl:2')!.value)).toEqual({
+        v: 1,
+        value: '2',
+        storedAt: 1_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes strategy options to put, with only the defined fields', async () => {
+    const put = vi.spyOn(CacheEngine.prototype, 'put');
+    await svc.swr('1');
+    await svc.sliding('2');
+    await svc.conditional('3');
+    await svc.swr('4');
+    expect(put.mock.calls.map((c) => c[2])).toStrictEqual([
+      { ttl: 100, strategy: 'swr', staleTtl: 300 },
+      { strategy: 'sliding', maxTtl: 120_000 },
+      {},
+      { ttl: 100, strategy: 'swr', staleTtl: 300 },
+    ]);
+    // built once at decoration time
+    expect(put.mock.calls[3]![2]).toBe(put.mock.calls[0]![2]);
+  });
+
+  it('reports a static method before validating its options', () => {
+    expect(() => {
+      class S {
+        @CachePut({ nullTtl: -1 }) static a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow(CacheConfigError);
+    expect(() => {
+      class S {
+        @CachePut({ ttl: 0, strategy: 'sliding', maxTtl: 0 }) static b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow('S.b: cache decorators cannot be used on static methods');
   });
 });

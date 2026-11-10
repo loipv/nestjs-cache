@@ -1,12 +1,12 @@
-import type { PutOptions } from '../core/cache-engine.js';
 import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
-import { compileKeyAt, wrapMethod } from './method-wrapper.js';
+import { assertInstanceMethod, compileKeyAt, putOptionsOf, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
 export function CachePut<K extends unknown[] = never[], C extends unknown[] = never[], R = unknown>(
   options?: CachePutOptions<K, C, R>,
 ): AsyncMethodDecorator<K, C, R> {
   return (target, propertyKey, descriptor) => {
+    assertInstanceMethod(target, propertyKey);
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertStrategyTtls(target, propertyKey, options);
@@ -14,12 +14,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
     const namespace = options?.namespace;
-    const putOptions: PutOptions<unknown> = {
-      ttl: options?.ttl,
-      cacheNull: options?.cacheNull,
-      nullTtl: options?.nullTtl,
-      unless: options?.unless as ((result: unknown) => boolean) | undefined,
-    };
+    const putOptions = putOptionsOf(options);
     wrapMethod(
       target,
       propertyKey,

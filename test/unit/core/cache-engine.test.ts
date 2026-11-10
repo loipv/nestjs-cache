@@ -28,7 +28,7 @@ describe('CacheEngine', () => {
   it('uses the default TTL, or the given one, for store and envelope', async () => {
     const { engine, store, emitted } = makeEngine();
     await engine.set({ key: 'a' }, 1);
-    await engine.set({ key: 'b' }, 1, 5_000);
+    await engine.set({ key: 'b' }, 1, { ttl: 5_000 });
     expect(store.data.get('a')?.ttlMs).toBe(60_000);
     expect(store.data.get('b')?.ttlMs).toBe(5_000);
     expect(JSON.parse(store.data.get('b')!.value)).toMatchObject({
@@ -69,7 +69,7 @@ describe('CacheEngine', () => {
 
   it('an envelope past expiresAt is a miss even if the store still holds it', async () => {
     const { engine, emitted } = makeEngine();
-    await engine.set({ key: 'a' }, 1, 1_000);
+    await engine.set({ key: 'a' }, 1, { ttl: 1_000 });
     vi.advanceTimersByTime(1_000);
     expect(await engine.get({ key: 'a' })).toBeUndefined();
     expect(emitted.at(-1)?.event).toBe('miss');
@@ -159,7 +159,7 @@ describe('CacheEngine', () => {
   it('with jitter, envelope expiresAt matches the TTL passed to the store', async () => {
     const { engine, store } = makeEngine({ defaults: { jitter: 0.5 } });
     vi.spyOn(Math, 'random').mockReturnValue(0.3);
-    await engine.set({ key: 'a' }, 1, 1_001);
+    await engine.set({ key: 'a' }, 1, { ttl: 1_001 });
     const entry = store.data.get('a')!;
     const envelope = JSON.parse(entry.value) as { storedAt: number; expiresAt: number };
     expect(entry.ttlMs).not.toBe(1_001);
@@ -226,13 +226,13 @@ describe('CacheEngine', () => {
   it('applies jitter and always passes an integer TTL of at least 1 (Review Focus 4)', async () => {
     const { engine, store } = makeEngine({ defaults: { jitter: 0.5 } });
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    await engine.set({ key: 'low' }, 1, 60_000);
+    await engine.set({ key: 'low' }, 1, { ttl: 60_000 });
     vi.spyOn(Math, 'random').mockReturnValue(0.75);
-    await engine.set({ key: 'high' }, 1, 60_000);
+    await engine.set({ key: 'high' }, 1, { ttl: 60_000 });
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    await engine.set({ key: 'tiny' }, 1, 1);
+    await engine.set({ key: 'tiny' }, 1, { ttl: 1 });
     vi.spyOn(Math, 'random').mockReturnValue(0.3);
-    await engine.set({ key: 'odd' }, 1, 1_001);
+    await engine.set({ key: 'odd' }, 1, { ttl: 1_001 });
     expect(store.data.get('low')?.ttlMs).toBe(30_000);
     expect(store.data.get('high')?.ttlMs).toBe(75_000);
     expect(store.data.get('tiny')?.ttlMs).toBe(1);

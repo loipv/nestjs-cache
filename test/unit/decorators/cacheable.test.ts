@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { Injectable, Scope } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { CacheModule, Cacheable } from '../../../src/index.js';
@@ -82,6 +83,17 @@ class UserService {
   @Cacheable({ store: 'sessions', key: 'sess' })
   async session(): Promise<string> {
     return 's';
+  }
+
+  @Cacheable({ key: 'swr', ttl: 100, strategy: 'swr', staleTtl: 300 })
+  async swr(): Promise<number> {
+    this.calls++;
+    return this.calls;
+  }
+
+  @Cacheable({ key: 'locked', lock: true })
+  async locked(): Promise<number> {
+    return 1;
   }
 
   @Cacheable({ key: 'boom' })
@@ -246,5 +258,65 @@ describe('@Cacheable', () => {
       }
       return Repo;
     }).toThrow(/^Repo\.load: Invalid cache key template "x}"/);
+  });
+
+  it('@Cacheable with swr serves stale data', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      expect(await svc.swr()).toBe(1);
+      expect(fake.data.get('swr')?.ttlMs).toBe(400);
+      vi.setSystemTime(150);
+      emitted.length = 0;
+      expect(await svc.swr()).toBe(1);
+      expect(svc.calls).toBe(1);
+      expect(emitted).toEqual([
+        {
+          event: 'hit',
+          payload: { store: 'default', namespace: undefined, key: 'swr', stale: true },
+        },
+      ]);
+      vi.setSystemTime(400);
+      expect(await svc.swr()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes strategy and lock to getOrSet, with only the defined fields', async () => {
+    const getOrSet = vi.spyOn(CacheEngine.prototype, 'getOrSet');
+    await svc.swr();
+    await svc.locked();
+    await svc.findAll();
+    await svc.withTtl();
+    await svc.swr();
+    expect(getOrSet.mock.calls.map((c) => c[2])).toStrictEqual([
+      { ttl: 100, strategy: 'swr', staleTtl: 300 },
+      { lock: true },
+      {},
+      { ttl: 5_000 },
+      { ttl: 100, strategy: 'swr', staleTtl: 300 },
+    ]);
+    // built once at decoration time
+    expect(getOrSet.mock.calls[4]![2]).toBe(getOrSet.mock.calls[0]![2]);
+  });
+
+  it('reports a static method before validating its options', () => {
+    expect(() => {
+      class S {
+        @Cacheable({ ttl: 0 }) static a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow('S.a: cache decorators cannot be used on static methods');
+    expect(() => {
+      class S {
+        @Cacheable({ strategy: 'swr', staleTtl: -1, key: 'x}' }) static b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow('S.b: cache decorators cannot be used on static methods');
   });
 });
