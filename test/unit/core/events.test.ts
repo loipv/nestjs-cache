@@ -104,9 +104,11 @@ describe('CacheEvents', () => {
     // dropped, and an error payload sent as 'breaker' does not become an error event.
     sink.emit('error', { state: 'open' } as unknown as { operation: 'get'; error: unknown });
     sink.emit('breaker', { operation: 'get', error: 'x' } as unknown as { state: 'open' });
-    expect(seen.map((s) => s.event)).toEqual(['error', 'breaker']);
-    expect(seen[0]?.payload).toMatchObject({ store: 's' });
-    expect(seen[1]?.payload).toMatchObject({ store: 's' });
+    // The fields the event name expects are forwarded as they are, here undefined.
+    expect(seen).toStrictEqual([
+      { event: 'error', payload: { store: 's', operation: undefined, error: undefined } },
+      { event: 'breaker', payload: { store: 's', state: undefined } },
+    ]);
   });
 
   it('sinkFor ignores an unknown event name without throwing', () => {

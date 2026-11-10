@@ -137,9 +137,10 @@ export class EngineIO {
       }
       return { found: false };
     }
-    // Never reached for an expired entry, so maxTtl still bounds a sliding entry. Not atomic.
-    // A stale entry is re-set only for an swr reader; any other reader reloads and overwrites it.
-    if (reSet && (state === 'fresh' || strategy.kind === 'swr')) {
+    // Only a touching reader re-sets, and only a fresh entry: an expired one returned above, so
+    // maxTtl still bounds a sliding entry, and a stale one is reloaded (getOrSet) or only read
+    // (get) by a reader that is not swr. Not atomic.
+    if (reSet && state === 'fresh') {
       try {
         await store.set(key, raw, touchTtl);
       } catch (error) {

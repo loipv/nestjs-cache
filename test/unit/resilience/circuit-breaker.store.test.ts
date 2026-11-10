@@ -777,22 +777,27 @@ describe('late lock handles and duration bounds', () => {
   });
 
   it.each([
-    ['at once', 0],
-    ['after the timeout', 600],
+    ['rejects at once', 0, 'reject'],
+    ['rejects after the timeout', 600, 'reject'],
+    // Control: the same wiring with a late handle does release, so the zero counts above mean something.
+    ['resolves after the timeout', 600, 'resolve'],
   ] as const)(
-    'an inner acquire that rejects %s with its own error releases nothing',
-    async (_, delay) => {
+    'an inner acquire that %s releases only a handle it was given',
+    async (_, delay, outcome) => {
       // setImmediate stays real so the flush below reaches the unhandledRejection check.
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
       const unhandled = vi.fn();
       process.on('unhandledRejection', unhandled);
       try {
         const release = vi.fn(() => Promise.resolve());
+        // The handle that would carry the release; the rejection path never hands it out.
+        const handle: LockHandle = { release };
         const acquire = vi.fn(
           (): Promise<LockHandle | undefined> =>
-            new Promise((_resolve, reject) => {
+            new Promise((resolve, reject) => {
               setTimeout(() => {
-                reject(new Error('acquire failed'));
+                if (outcome === 'resolve') resolve(handle);
+                else reject(new Error('acquire failed'));
               }, delay);
             }),
         );
@@ -806,7 +811,7 @@ describe('late lock handles and duration bounds', () => {
         await vi.advanceTimersByTimeAsync(0);
         await new Promise((resolve) => setImmediate(resolve));
         expect(acquire).toHaveBeenCalledTimes(1);
-        expect(release).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(outcome === 'resolve' ? 1 : 0);
         expect(unhandled).not.toHaveBeenCalled();
       } finally {
         process.off('unhandledRejection', unhandled);
