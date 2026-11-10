@@ -889,6 +889,25 @@ describe('TieredStore batch', () => {
     expect(await l1.get('b')).toBeUndefined();
   });
 
+  /* An invalidation landing right after the backfill started (next microtask, after `a` is written) must still remove b: the backfill writes all entries in one synchronous step. */
+  it('an invalidation right after the backfill starts does not leave a stale b in L1', async () => {
+    l2.data.set('a', { value: 'A', ttlMs: 60_000 });
+    l2.data.set('b', { value: 'B', ttlMs: 60_000 });
+    const realSet = l1.set.bind(l1);
+    vi.spyOn(l1, 'set').mockImplementation((key, value, ttlMs) => {
+      const done = realSet(key, value, ttlMs);
+      if (key === 'a')
+        queueMicrotask(() => {
+          bus.deliver({ origin: 'other', keys: ['b'] });
+        });
+      return done;
+    });
+    expect(await store.getMany(['a', 'b'])).toEqual(['A', 'B']);
+    await flush();
+    expect(await l1.get('a')).toBe('A');
+    expect(await l1.get('b')).toBeUndefined();
+  });
+
   /* setMany writes L2 then L1 (capped TTL) and publishes a single message with all keys. */
   it('setMany publishes one message with every key', async () => {
     await store.setMany([

@@ -81,8 +81,10 @@ export class MemoryStore implements CacheStore {
     return Promise.resolve(keys.map((key) => this.read(key, undefined)));
   }
 
-  async setMany(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void> {
-    for (const { key, value, ttlMs } of entries) await this.set(key, value, ttlMs);
+  /** Writes every entry in one synchronous step, so no other task can interleave between them. */
+  setMany(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void> {
+    for (const { key, value, ttlMs } of entries) void this.set(key, value, ttlMs);
+    return Promise.resolve();
   }
 
   delete(keys: readonly string[]): Promise<void> {
