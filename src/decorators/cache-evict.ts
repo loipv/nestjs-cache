@@ -1,12 +1,13 @@
 import { CacheConfigError } from '../errors.js';
 import { describeMethod } from './metadata.js';
-import { compileKeyAt, wrapMethod } from './method-wrapper.js';
+import { assertInstanceMethod, compileKeyAt, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheEvictOptions, KeySpec } from './options.js';
 
 export function CacheEvict<K extends unknown[] = never[]>(
   options?: CacheEvictOptions<K>,
 ): AsyncMethodDecorator<K, never[], unknown> {
   return (target, propertyKey, descriptor) => {
+    assertInstanceMethod(target, propertyKey);
     const loose = (options ?? {}) as {
       namespace?: string;
       store?: string;

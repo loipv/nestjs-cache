@@ -164,4 +164,15 @@ describe('@CacheEvict', () => {
     expect(fake.calls.map((c) => c.op).sort()).toEqual(['clear', 'set']);
     expect(fake.data.has('users:user:2')).toBe(true);
   });
+
+  it('reports a static method with its class name before validating options', () => {
+    expect(() => {
+      class S {
+        @CacheEvict({ key: [] }) static a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow('S.a: cache decorators cannot be used on static methods');
+  });
 });

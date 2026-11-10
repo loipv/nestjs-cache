@@ -87,6 +87,8 @@ export function wrapMethod(
   entry: CacheMetadataEntry,
   handler: (engine: CacheEngine, call: MethodCall) => Promise<unknown>,
 ): void {
+  // Cheap guard for callers that skip their own check; each decorator also asserts first so
+  // option validation never masks the static-method message.
   assertInstanceMethod(target, propertyKey);
   const original: unknown = descriptor.value;
   if (typeof original !== 'function') {
