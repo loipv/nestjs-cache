@@ -257,6 +257,50 @@ describe('circuitBreaker', () => {
     expect(b.state).toBe('closed');
   });
 
+  it('a half-open probe that throws synchronously reopens with a fresh openDuration', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const sink = makeSink();
+    b.bind(sink);
+    await openWithOneFailure(inner, b);
+    vi.setSystemTime(1_500);
+    vi.spyOn(inner, 'get').mockImplementationOnce(() => {
+      throw new Error('sync probe');
+    });
+    await expect(b.get('k')).rejects.toThrow('sync probe');
+    expect(b.state).toBe('open');
+    expect(breakerStates(sink)).toEqual(['open', 'half-open', 'open']);
+    // Reopened at 1_500, so it stays open until 2_500.
+    vi.setSystemTime(2_499);
+    await expect(b.get('k')).rejects.toBeInstanceOf(CircuitOpenError);
+    vi.setSystemTime(2_500);
+    await expect(b.get('k')).resolves.toBeUndefined();
+    expect(b.state).toBe('closed');
+  });
+
+  it('a probe that times out and then succeeds late leaves the breaker open', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const sink = makeSink();
+    b.bind(sink);
+    await openWithOneFailure(inner, b);
+    vi.setSystemTime(1_000);
+    const slow = hangNextGet(inner);
+    const probe = expect(b.get('k')).rejects.toThrow(TIMEOUT_MESSAGE);
+    await vi.advanceTimersByTimeAsync(500);
+    await probe;
+    expect(b.state).toBe('open');
+    slow.resolve('late');
+    await vi.advanceTimersByTimeAsync(0);
+    // The late success is ignored: still open, no further transition.
+    expect(b.state).toBe('open');
+    expect(breakerStates(sink)).toEqual(['open', 'half-open', 'open']);
+    const calls = inner.calls.length;
+    vi.setSystemTime(2_499);
+    await expect(b.get('k')).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(inner.calls.length).toBe(calls);
+  });
+
   it('a timeout counts as a failure', async () => {
     const inner = new FakeStore();
     const b = circuitBreaker(inner, { failureThreshold: 1 });
@@ -731,6 +775,44 @@ describe('late lock handles and duration bounds', () => {
       process.off('unhandledRejection', unhandled);
     }
   });
+
+  it.each([
+    ['at once', 0],
+    ['after the timeout', 600],
+  ] as const)(
+    'an inner acquire that rejects %s with its own error releases nothing',
+    async (_, delay) => {
+      // setImmediate stays real so the flush below reaches the unhandledRejection check.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      const unhandled = vi.fn();
+      process.on('unhandledRejection', unhandled);
+      try {
+        const release = vi.fn(() => Promise.resolve());
+        const acquire = vi.fn(
+          (): Promise<LockHandle | undefined> =>
+            new Promise((_resolve, reject) => {
+              setTimeout(() => {
+                reject(new Error('acquire failed'));
+              }, delay);
+            }),
+        );
+        const inner = Object.assign(new FakeStore(), { lock: { acquire } });
+        const b = circuitBreaker(inner, { failureThreshold: 5 });
+        const caught = b.lock!.acquire('k', 1_000).catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(700);
+        expect(((await caught) as Error).message).toBe(
+          delay === 0 ? 'acquire failed' : TIMEOUT_MESSAGE,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(release).not.toHaveBeenCalled();
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', unhandled);
+      }
+    },
+  );
 
   it.each(['timeout', 'openDuration'] as const)('rejects %s above the setTimeout limit', (name) => {
     expect(() => circuitBreaker(new FakeStore(), { [name]: 2_147_483_648 })).toThrow(

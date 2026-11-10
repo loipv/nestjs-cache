@@ -637,6 +637,39 @@ describe('TieredStore', () => {
       expect(await l1.get('k')).toBeUndefined();
     });
 
+    it('an older overlapping read neither backfills nor removes the newer token', async () => {
+      const touching = new TouchStore();
+      const replies: ((value: string) => void)[] = [];
+      touching.touch.mockImplementation(
+        (): Promise<string | undefined> =>
+          new Promise((resolve) => {
+            replies.push(resolve);
+          }),
+      );
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      t.bind(sink);
+      const pending = (t as unknown as { pending: Map<string, symbol> }).pending;
+      const older = t.getAndTouch('k', 60_000);
+      await flush();
+      const olderToken = pending.get('k');
+      const newer = t.getAndTouch('k', 60_000);
+      await flush();
+      expect(replies).toHaveLength(2);
+      const newerToken = pending.get('k');
+      expect(newerToken).toBeDefined();
+      expect(newerToken).not.toBe(olderToken);
+
+      replies[0]!('v1');
+      expect(await older).toBe('v1');
+      expect(await l1.get('k')).toBeUndefined(); // the older read did not backfill
+      expect(pending.get('k')).toBe(newerToken); // and left the newer token in place
+
+      replies[1]!('v2');
+      expect(await newer).toBe('v2');
+      expect(await l1.get('k')).toBe('v2'); // the newer read still backfills
+      expect(pending.size).toBe(0);
+    });
+
     it('reports an L2 failure as get and resolves undefined', async () => {
       const touching = new TouchStore();
       const boom = new Error('boom');
@@ -670,6 +703,22 @@ describe('TieredStore', () => {
       await store.set('k', 'v', 1_000);
       expect(await l1.get('k')).toBe('v');
       expect(bus.published).toEqual([]);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    it('L2 open circuit on get and getAndTouch reports nothing', async () => {
+      l2.failNext('get', new CircuitOpenError());
+      expect(await store.get('k')).toBeUndefined();
+      // No getAndTouch on L2: the touching read falls back to l2.get.
+      l2.failNext('get', new CircuitOpenError());
+      expect(await store.getAndTouch('k', 1_000)).toBeUndefined();
+      const touching = Object.assign(new FakeStore(), {
+        getAndTouch: vi.fn(() => Promise.reject(new CircuitOpenError())),
+      });
+      const t = tieredStore({ l1, l2: touching, invalidation: bus });
+      t.bind(sink);
+      expect(await t.getAndTouch('k', 1_000)).toBeUndefined();
+      expect(touching.getAndTouch).toHaveBeenCalledOnce();
       expect(sink.emit).not.toHaveBeenCalled();
     });
 

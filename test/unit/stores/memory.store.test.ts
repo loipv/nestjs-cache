@@ -115,6 +115,22 @@ describe('MemoryStore', () => {
     expect(await s.get('b')).toBe('w');
   });
 
+  it('getAndTouch removes an expired entry from the store', async () => {
+    const s = memoryStore({ maxEntries: 2 });
+    const size = (): number => (s as unknown as { entries: Map<string, unknown> }).entries.size;
+    await s.set('a', 'v', 1_000);
+    await s.set('live', 'l', 60_000);
+    vi.advanceTimersByTime(1_000);
+    expect(await s.getAndTouch('a', 5_000)).toBeUndefined();
+    // Removed by the read itself, not left for the capacity sweep of a later set.
+    expect(size()).toBe(1);
+    // A third insert finds a free slot: the live entry is not evicted.
+    await s.set('b', 'w', 1_000);
+    expect(size()).toBe(2);
+    expect(await s.get('live')).toBe('l');
+    expect(await s.get('b')).toBe('w');
+  });
+
   it('getAndTouch moves the entry to most-recently-used', async () => {
     const s = memoryStore({ maxEntries: 2 });
     await s.set('a', '1', 10_000);

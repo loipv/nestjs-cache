@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SingleFlight } from '../../../src/core/single-flight.js';
 import { makeEngine } from '../helpers/engine.js';
 
 const SWR = { ttl: 100, strategy: 'swr', staleTtl: 1_000 } as const;
@@ -192,6 +193,22 @@ describe('CacheEngine swr background refresh', () => {
     await vi.runAllTimersAsync();
     expect(emitted.map((e) => e.event)).toEqual(['hit', 'load', 'error']);
     expect(emitted[2]?.payload).toMatchObject({ operation: 'set' });
+  });
+
+  it('a stale read during a running refresh starts no second flight', async () => {
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', SWR);
+    vi.setSystemTime(150);
+    const run = vi.spyOn(SingleFlight.prototype, 'run');
+    const loader = vi.fn(() => delayed(50, 'new'));
+    expect(await engine.getOrSet({ key: 'k' }, loader, SWR)).toBe('old');
+    expect(run).toHaveBeenCalledTimes(1);
+    // The refresh is still running: `has()` short-circuits before `run` is called again.
+    expect(await engine.getOrSet({ key: 'k' }, loader, SWR)).toBe('old');
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(await engine.get({ key: 'k' })).toBe('new');
   });
 
   it('fresh reads never refresh', async () => {

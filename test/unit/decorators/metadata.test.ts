@@ -224,11 +224,17 @@ describe('decorator metadata', () => {
           return Promise.resolve();
         }
       }
-      const [a, b, c, d] = getCacheMetadata(S);
-      expect(a?.lock).toBe(true);
-      expect(b?.lock).toBeUndefined();
-      expect(c?.lock).toBeUndefined();
-      expect(d?.lock).toBeUndefined();
+      // toStrictEqual: `lock` must be an own key, set to undefined when not requested.
+      expect(getCacheMetadata(S)).toStrictEqual([
+        { kind: 'cacheable', method: 'a', store: 'default', lock: true },
+        { kind: 'cacheable', method: 'b', store: 'default', lock: undefined },
+        { kind: 'put', method: 'c', store: 'default', lock: undefined },
+        { kind: 'evict', method: 'd', store: 'default', lock: undefined },
+      ]);
+      const [, b, c, d] = getCacheMetadata(S);
+      expect(b).toHaveProperty('lock', undefined);
+      expect(c).toHaveProperty('lock', undefined);
+      expect(d).toHaveProperty('lock', undefined);
     });
   });
 });

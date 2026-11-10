@@ -7,6 +7,9 @@ import { CacheEvict, CacheModule, CachePut } from '../../../src/index.js';
 import { EVENT_NAMES } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
+/** A readonly key list, as `as const` produces. */
+const READONLY_KEYS = ['user:{0}', (id: string) => `profile:${id}`] as const;
+
 type Entry = string | { op: 'delete'; keys: readonly string[] } | { op: 'clear'; prefix: string };
 
 const log: Entry[] = [];
@@ -48,6 +51,11 @@ class UserRemover {
 
   @CacheEvict({ namespace: 'users', key: ['user:{0}', (id: string) => `profile:${id}`] })
   async removeMany(id: string): Promise<void> {
+    log.push(`method ${id}`);
+  }
+
+  @CacheEvict({ namespace: 'users', key: READONLY_KEYS })
+  async removeReadonly(id: string): Promise<void> {
     log.push(`method ${id}`);
   }
 
@@ -124,6 +132,12 @@ describe('@CacheEvict', () => {
   it('evicts every key in an array', async () => {
     await svc.removeMany('1');
     expect(fake.calls).toEqual([{ op: 'delete', args: [['users:user:1', 'users:profile:1']] }]);
+  });
+
+  it('evicts every key in a readonly array', async () => {
+    await svc.removeReadonly('3');
+    expect(fake.calls).toEqual([{ op: 'delete', args: [['users:user:3', 'users:profile:3']] }]);
+    expect(log).toEqual(['method 3', { op: 'delete', keys: ['users:user:3', 'users:profile:3'] }]);
   });
 
   it('clears the namespace with allEntries', async () => {

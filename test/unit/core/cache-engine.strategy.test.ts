@@ -100,7 +100,7 @@ describe('CacheEngine with expiry strategies', () => {
   });
 
   it('0.1 envelopes stay readable after upgrade (Review Focus 1)', async () => {
-    const { engine, store } = makeEngine();
+    const { engine, store, emitted } = makeEngine();
     store.data.set('k', {
       value: JSON.stringify({ v: 1, value: 'old', storedAt: 0, expiresAt: 100 }),
       ttlMs: 100,
@@ -109,6 +109,13 @@ describe('CacheEngine with expiry strategies', () => {
     expect(
       await engine.getOrSet({ key: 'k' }, async () => 'new', { strategy: 'swr', staleTtl: 1_000 }),
     ).toBe('old');
+    // A 0.1 envelope has no staleAt: before expiresAt it is a fresh hit, with no refresh.
+    expect(emitted).toEqual([
+      {
+        event: 'hit',
+        payload: { store: 'default', namespace: undefined, key: 'k', stale: false },
+      },
+    ]);
     vi.setSystemTime(100);
     expect(
       await engine.getOrSet({ key: 'k' }, async () => 'new', { strategy: 'swr', staleTtl: 1_000 }),
@@ -153,6 +160,17 @@ describe('CacheEngine with expiry strategies', () => {
     store.calls.length = 0;
     expect(await engine.get({ key: 'k' })).toBeUndefined();
     expect(store.calls).toEqual([{ op: 'get', args: ['k'] }]);
+  });
+
+  it('a non-touching swr read of an entry past expiresAt issues no delete', async () => {
+    const { engine, store, emitted } = makeEngine();
+    await engine.set({ key: 'k' }, 'v', { ttl: 100, strategy: 'swr', staleTtl: 300 });
+    vi.setSystemTime(400);
+    store.calls.length = 0;
+    emitted.length = 0;
+    expect(await engine.get({ key: 'k' }, { strategy: 'swr', staleTtl: 300 })).toBeUndefined();
+    expect(store.calls).toEqual([{ op: 'get', args: ['k'] }]);
+    expect(emitted.map((e) => e.event)).toEqual(['miss']);
   });
 
   it('sliding hits through getAndTouch without re-setting the entry', async () => {

@@ -196,6 +196,26 @@ describe('CacheModule', () => {
       );
     });
 
+    it('logs the startup lock warning before any store is bound', async () => {
+      const order: string[] = [];
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => {
+        order.push(
+          `warn ${/^Cache store "([^"]+)"/.exec(String(message))?.[1] ?? String(message)}`,
+        );
+      });
+      const first = new FakeStore();
+      const second = new FakeStore();
+      first.bind.mockImplementation(() => order.push('bind default'));
+      second.bind.mockImplementation(() => order.push('bind other'));
+      await boot(
+        CacheModule.forRoot({
+          stores: { default: first, other: second },
+          defaults: { lock: { enabled: true } },
+        }),
+      );
+      expect(order).toEqual(['warn default', 'warn other', 'bind default', 'bind other']);
+    });
+
     it('no lock warnings when nothing asks for a lock', async () => {
       const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       await boot(CacheModule.forRoot());

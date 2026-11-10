@@ -172,6 +172,14 @@ describe('@CachePut', () => {
     }).toThrow(CacheConfigError);
     expect(() => {
       class S {
+        @CachePut({ nullTtl: -1 }) static a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow('S.a: cache decorators cannot be used on static methods');
+    expect(() => {
+      class S {
         @CachePut({ ttl: 0, strategy: 'sliding', maxTtl: 0 }) static b(): Promise<number> {
           return Promise.resolve(1);
         }

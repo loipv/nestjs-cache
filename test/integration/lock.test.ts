@@ -8,6 +8,17 @@ import type { IoredisLike } from '../../src/stores/ioredis.adapter.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { startRedis } from './helpers/redis.js';
 
+/** Runs every step in order; each later step runs in a `finally`, so one failure leaks nothing. */
+async function closeAll(steps: readonly (() => Promise<unknown>)[]): Promise<void> {
+  const [first, ...rest] = steps;
+  if (first === undefined) return;
+  try {
+    await first();
+  } finally {
+    await closeAll(rest);
+  }
+}
+
 describe('RedisLock primitives', () => {
   let redis: { url: string; stop(): Promise<void> };
   let client: Redis;
@@ -22,8 +33,7 @@ describe('RedisLock primitives', () => {
   });
 
   afterAll(async () => {
-    await client.quit();
-    await redis.stop();
+    await closeAll([() => client.quit(), () => redis.stop()]);
   });
 
   it('acquire, contend, release against real Redis', async () => {
@@ -86,9 +96,11 @@ describe('distributed lock across two apps', () => {
   });
 
   afterAll(async () => {
-    for (const ref of refs) await ref.close();
-    for (const client of clients) await client.quit();
-    await redis.stop();
+    await closeAll([
+      ...refs.map((ref) => () => ref.close()),
+      ...clients.map((client) => () => client.quit()),
+      () => redis.stop(),
+    ]);
   });
 
   it('loads once across the cluster when two instances miss together', async () => {

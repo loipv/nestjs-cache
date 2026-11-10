@@ -47,6 +47,32 @@ describe('CacheEngine with an open circuit', () => {
     expect(names(emitted)).not.toContain('error');
   });
 
+  it('an open circuit on the sliding re-set emits no error', async () => {
+    const { engine, store, emitted } = makeEngine();
+    await engine.set({ key: 'k' }, 'v', { strategy: 'sliding' });
+    store.failNext('set', new CircuitOpenError());
+    store.calls.length = 0;
+    emitted.length = 0;
+    expect(await engine.get({ key: 'k' }, { strategy: 'sliding' })).toBe('v');
+    expect(store.calls.map((c) => c.op)).toEqual(['get', 'set']);
+    expect(names(emitted)).toEqual(['hit']);
+  });
+
+  it('an open circuit on the deserialize cleanup delete emits no error of its own', async () => {
+    const { engine, store, emitted } = makeEngine();
+    store.data.set('k', { value: 'not json', ttlMs: 1_000 });
+    store.failNext('delete', new CircuitOpenError());
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(store.calls.map((c) => c.op)).toEqual(['get', 'delete']);
+    // Only the deserialize failure itself is reported.
+    expect(
+      emitted
+        .filter((e) => e.event === 'error')
+        .map((e) => (e.payload as { operation: string }).operation),
+    ).toEqual(['deserialize']);
+    expect(names(emitted)).toEqual(['error', 'miss']);
+  });
+
   it('real store errors are still reported', async () => {
     const { engine, store, emitted } = makeEngine();
     store.failNext('get', new Error('x'));
