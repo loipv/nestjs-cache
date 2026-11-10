@@ -244,7 +244,12 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - Each instance caches the token in memory for `versioning.cacheTtl` ms (default `1_000`), so another instance sees a
   clear within that time. The instance that clears sees it at once.
 - `delete`, `@CacheEvict` with keys and a `put` of an empty value read the token fresh from the store and delete under
-  both the fresh and the cached token: one extra `GET` per delete.
+  both the fresh and the cached token: one extra `GET` per delete. On a `tieredStore` the "fresh" read is served from
+  L1, so a delete that races a `clear` on another instance, before that instance's invalidation message arrives, can
+  still use the previous token.
+- Turning `versioned: true` on for a namespace that already has entries changes its keys: the existing
+  `<prefix>:<namespace>:*` entries are no longer read, `clear` no longer reaches them, and they expire by their own TTL.
+  The namespace starts cold.
 - Names must match exactly. A sub-namespace such as `users:admin` is not versioned by `users: { versioned: true }`;
   list it on its own.
 - Namespaces starting with `__` are reserved and rejected (see [Error behaviour](#error-behaviour)).
@@ -254,6 +259,10 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - A `tieredStore` never rejects. If you clear while L2 is down, the new token reaches L1 only, and once it expires
   that instance can return to the old token and the data written before the clear. This is the same class of problem as
   clearing a two-tier cache while L2 is down in 0.3.
+- The same applies to reads. While L2 is unreachable, a `tieredStore` cannot tell a lost version key from a failed
+  read. Once the L1 copy of the version key expires (after `l1Ttl`), each instance creates its own token, the namespace
+  reads cold (every request runs the loader), and writes made during the outage are orphaned when L2 returns. No stale
+  data is served. A fix is planned for 0.5.
 
 ## Batch operations
 
@@ -295,6 +304,7 @@ const users = await cache.getOrSetMany<User>(
   first of them.
 - `CacheStore` has the optional `getMany` and `setMany`. `redisStore` uses one `MGET` when the client has `mget`;
   other stores are called key by key.
+- `setMany` with a duplicated key keeps the last value.
 - `setMany` entries must be `[key, value]` pairs. An element that is not a pair throws a `TypeError` from
   destructuring.
 - With a versioned namespace the batch methods read the token once for the call.
@@ -773,7 +783,7 @@ event and does not reach the caller.
 - **Default keys use the class name.** Minifiers that rename classes change the default keys. `Map`/`Set` arguments are ignored by the default key, which makes different caches collide; use an explicit `key`.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
-- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires.
+- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is unreachable, a two-tier store cannot tell a lost version key from a failed read: after `l1Ttl` each instance creates its own token, the namespace reads cold and writes made during the outage are orphaned when L2 returns (no stale data is served; a fix is planned for 0.5). Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
 - **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.

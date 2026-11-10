@@ -22,3 +22,5 @@ Changed:
 - Custom `LockProvider`s now receive that complete key.
 - Namespaces starting with `__` are reserved and throw `CacheConfigError`.
 - `CacheOperation` gains `'version'`.
+- Enabling `versioned: true` on an existing namespace changes its keys: existing entries start cold and expire by their
+  TTL.
