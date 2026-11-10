@@ -1,5 +1,6 @@
 import type { FactoryProvider, ModuleMetadata } from '@nestjs/common';
 import type { CacheLogLevel } from '../core/events.js';
+import { isReservedNamespace } from '../core/key-builder.js';
 import { CacheConfigError } from '../errors.js';
 import { jsonSerializer, type Serializer } from '../serializers/json.serializer.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
@@ -32,6 +33,10 @@ export interface CacheModuleOptions {
    * Defaults to `false`; key callbacks are never escaped.
    */
   escapeKeyArgs?: boolean;
+  /** Namespaces with `versioned: true` get O(1) `clear` through a version token in their keys. */
+  namespaces?: { [namespace: string]: { versioned?: boolean } };
+  /** `cacheTtl` (ms, default 1000) is how long a version token is cached in this process. */
+  versioning?: { cacheTtl?: number };
 }
 
 export interface CacheModuleAsyncOptions {
@@ -56,6 +61,8 @@ export interface ResolvedCacheOptions {
   serializer: Serializer;
   logging: { level: CacheLogLevel };
   escapeKeyArgs: boolean;
+  versionedNamespaces: ReadonlySet<string>;
+  versionCacheTtl: number;
 }
 
 const DEFAULT_TTL = 60_000;
@@ -150,6 +157,53 @@ function escapeKeyArgsOf(value: unknown): boolean {
   return value;
 }
 
+function versionedNamespacesOf(value: unknown): ReadonlySet<string> {
+  const set = new Set<string>();
+  if (value === undefined) return set;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw invalid('namespaces', value, 'must be an object');
+  }
+  for (const [ns, entry] of Object.entries(value)) {
+    if (isReservedNamespace(ns)) {
+      throw new CacheConfigError(
+        `Invalid cache option namespaces: ${ns} (names starting with "__" are reserved)`,
+      );
+    }
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw invalid(`namespaces.${ns}`, entry, 'must be an object');
+    }
+    const { versioned } = entry as { versioned?: unknown };
+    if (versioned === undefined) continue;
+    if (typeof versioned !== 'boolean') {
+      throw invalid(`namespaces.${ns}.versioned`, versioned, 'must be a boolean');
+    }
+    if (versioned) set.add(ns);
+  }
+  return set;
+}
+
+function versionCacheTtlOf(value: unknown): number {
+  if (value === undefined) return 1_000;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw invalid('versioning', value, 'must be an object');
+  }
+  const { cacheTtl } = value as { cacheTtl?: unknown };
+  if (cacheTtl === undefined) return 1_000;
+  if (
+    typeof cacheTtl !== 'number' ||
+    !Number.isFinite(cacheTtl) ||
+    cacheTtl < 1 ||
+    cacheTtl > 2_147_483_647
+  ) {
+    throw invalid(
+      'versioning.cacheTtl',
+      cacheTtl,
+      'must be a finite number between 1 and 2147483647',
+    );
+  }
+  return cacheTtl;
+}
+
 export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheOptions {
   const defaults = options.defaults ?? {};
   const lock = lockDefaults(defaults.lock);
@@ -171,5 +225,7 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
     serializer: options.serializer ?? jsonSerializer,
     logging: loggingOf(options.logging),
     escapeKeyArgs: escapeKeyArgsOf(options.escapeKeyArgs),
+    versionedNamespaces: versionedNamespacesOf(options.namespaces),
+    versionCacheTtl: versionCacheTtlOf(options.versioning),
   };
 }

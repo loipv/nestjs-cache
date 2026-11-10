@@ -14,6 +14,7 @@ export type CacheOperation =
   | 'subscribe'
   | 'refresh'
   | 'lock'
+  | 'version'
   /** Only used in logs, for a failing metrics update; an `error` event never carries it. */
   | 'metrics';
 
