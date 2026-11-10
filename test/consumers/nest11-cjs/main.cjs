@@ -16,10 +16,22 @@ class UserService {
     this.calls += 1;
     return { id };
   }
+  swrCalls = 0;
+  async findSwr(id) {
+    this.swrCalls += 1;
+    return { id };
+  }
 }
 const descriptor = Object.getOwnPropertyDescriptor(UserService.prototype, 'find');
 lib.Cacheable({ namespace: 'users', key: 'user:{0}' })(UserService.prototype, 'find', descriptor);
 Object.defineProperty(UserService.prototype, 'find', descriptor);
+const swrDescriptor = Object.getOwnPropertyDescriptor(UserService.prototype, 'findSwr');
+lib.Cacheable({ namespace: 'users', key: 'swr:{0}', strategy: 'swr', staleTtl: 60_000 })(
+  UserService.prototype,
+  'findSwr',
+  swrDescriptor,
+);
+Object.defineProperty(UserService.prototype, 'findSwr', swrDescriptor);
 Injectable()(UserService);
 class AppModule {}
 Module({ imports: [lib.CacheModule.forRoot({ isGlobal: true })], providers: [UserService] })(
@@ -31,6 +43,9 @@ Module({ imports: [lib.CacheModule.forRoot({ isGlobal: true })], providers: [Use
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.deepEqual(await users.find('1'), { id: '1' });
   assert.equal(users.calls, 1);
+  assert.deepEqual(await users.findSwr('1'), { id: '1' });
+  assert.deepEqual(await users.findSwr('1'), { id: '1' });
+  assert.equal(users.swrCalls, 1);
   assert.equal(
     (await app.get(lib.CacheService).get('user:1', { namespace: 'users' })) !== undefined,
     true,
