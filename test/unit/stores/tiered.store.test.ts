@@ -555,6 +555,10 @@ describe('TieredStore', () => {
     const fakeLock = { acquire: vi.fn() };
     const withLock = Object.assign(new FakeStore(), { lock: fakeLock });
     expect(tieredStore({ l1: memoryStore(), l2: withLock }).lock).toBe(fakeLock);
-    expect(tieredStore({ l1: memoryStore(), l2: new FakeStore() }).lock).toBeUndefined();
+    expect('lock' in tieredStore({ l1: memoryStore(), l2: withLock })).toBe(true);
+    const without = tieredStore({ l1: memoryStore(), l2: new FakeStore() });
+    expect(without.lock).toBeUndefined();
+    expect('lock' in without).toBe(false);
+    expect(Object.keys(without)).not.toContain('lock');
   });
 });

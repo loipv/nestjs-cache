@@ -72,8 +72,14 @@ describe('RedisStore', () => {
       Object.defineProperty(fake, name, { value: undefined });
       return fake;
     }
-    expect(redisStore({ client: new FakeRedis() }).lock).toBeInstanceOf(RedisLock);
-    expect(redisStore({ client: adapterWithout('setIfAbsent') }).lock).toBeUndefined();
-    expect(redisStore({ client: adapterWithout('deleteIfEquals') }).lock).toBeUndefined();
+    const supported = redisStore({ client: new FakeRedis() });
+    expect(supported.lock).toBeInstanceOf(RedisLock);
+    expect('lock' in supported).toBe(true);
+    for (const name of ['setIfAbsent', 'deleteIfEquals'] as const) {
+      const store = redisStore({ client: adapterWithout(name) });
+      expect(store.lock).toBeUndefined();
+      expect('lock' in store).toBe(false);
+      expect(Object.keys(store)).not.toContain('lock');
+    }
   });
 });

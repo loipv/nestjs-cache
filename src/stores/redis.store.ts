@@ -22,7 +22,7 @@ function supportsLock(adapter: RedisClientAdapter): adapter is RedisClientAdapte
 export class RedisStore implements CacheStore {
   readonly invalidation: InvalidationBus;
   /** Present only when the adapter implements `setIfAbsent` and `deleteIfEquals`. */
-  readonly lock?: LockProvider;
+  declare readonly lock?: LockProvider;
   private readonly adapter: RedisClientAdapter;
 
   constructor(options: RedisStoreOptions) {

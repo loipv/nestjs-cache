@@ -27,7 +27,7 @@ const DEFAULT_L1_TTL = 10_000;
  */
 export class TieredStore implements CacheStore {
   /** The L2's lock, when it has one. */
-  readonly lock?: LockProvider;
+  declare readonly lock?: LockProvider;
   private readonly l1: CacheStore;
   private readonly l2: CacheStore;
   private readonly l1Ttl: number;
