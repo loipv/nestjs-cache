@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheService } from '../../../src/core/cache.service.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
+import * as strategies from '../../../src/core/strategies/expiry-strategy.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { CacheModule, CachePut } from '../../../src/index.js';
 import { EVENT_NAMES } from '../helpers/engine.js';
@@ -177,5 +178,28 @@ describe('@CachePut', () => {
       }
       return S;
     }).toThrow('S.b: cache decorators cannot be used on static methods');
+  });
+
+  it('builds the expiry strategy once at decoration time, not per call', async () => {
+    const create = vi.spyOn(strategies, 'createStrategy');
+    @Injectable()
+    class Once {
+      @CachePut({ key: 'once:{0}', strategy: 'sliding', maxTtl: 120_000 })
+      async save(id: string): Promise<string> {
+        return id;
+      }
+    }
+    expect(create).toHaveBeenCalledTimes(1);
+    const store = new FakeStore();
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: store } })],
+      providers: [Once],
+    }).compile();
+    await ref.init();
+    const once = ref.get(Once);
+    for (const id of ['a', 'b', 'a', 'c']) expect(await once.save(id)).toBe(id);
+    expect(store.data.has('once:c')).toBe(true);
+    expect(create).toHaveBeenCalledTimes(1);
+    await ref.close();
   });
 });

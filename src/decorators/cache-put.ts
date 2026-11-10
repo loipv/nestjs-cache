@@ -1,5 +1,11 @@
 import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
-import { assertInstanceMethod, compileKeyAt, putOptionsOf, wrapMethod } from './method-wrapper.js';
+import {
+  assertInstanceMethod,
+  compileKeyAt,
+  presetStrategy,
+  putOptionsOf,
+  wrapMethod,
+} from './method-wrapper.js';
 import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
 export function CachePut<K extends unknown[] = never[], C extends unknown[] = never[], R = unknown>(
@@ -15,6 +21,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
     const store = options?.store ?? 'default';
     const namespace = options?.namespace;
     const putOptions = putOptionsOf(options);
+    const strategy = presetStrategy(putOptions);
     wrapMethod(
       target,
       propertyKey,
@@ -30,7 +37,8 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
           engine.reportError(store, 'key', error);
         }
         const result = await call.invoke();
-        if (key !== undefined) await engine.put({ store, namespace, key }, result, putOptions);
+        if (key !== undefined)
+          await engine.put({ store, namespace, key }, result, putOptions, strategy);
         return result;
       },
     );

@@ -26,24 +26,27 @@ export class MemoryStore implements CacheStore {
   }
 
   get(key: string): Promise<string | undefined> {
-    const entry = this.entries.get(key);
-    if (entry === undefined) return Promise.resolve(undefined);
-    this.entries.delete(key);
-    if (Date.now() >= entry.expiresAt) return Promise.resolve(undefined);
-    this.entries.set(key, entry);
-    return Promise.resolve(entry.value);
+    return Promise.resolve(this.read(key, undefined));
   }
 
   /** Reads the entry and resets its TTL to `ttlMs`; a live hit also becomes most recently used. */
   getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    return Promise.resolve(this.read(key, ttlMs));
+  }
+
+  /**
+   * Removes an expired entry; moves a live one to most recently used and, given `touchTtl`,
+   * resets its TTL.
+   */
+  private read(key: string, touchTtl: number | undefined): string | undefined {
     const entry = this.entries.get(key);
-    if (entry === undefined) return Promise.resolve(undefined);
+    if (entry === undefined) return undefined;
     this.entries.delete(key);
     const now = Date.now();
-    if (now >= entry.expiresAt) return Promise.resolve(undefined);
-    entry.expiresAt = now + ttlMs;
+    if (now >= entry.expiresAt) return undefined;
+    if (touchTtl !== undefined) entry.expiresAt = now + touchTtl;
     this.entries.set(key, entry);
-    return Promise.resolve(entry.value);
+    return entry.value;
   }
 
   set(key: string, value: string, ttlMs: number): Promise<void> {

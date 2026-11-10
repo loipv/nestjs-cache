@@ -120,6 +120,29 @@ describe('CacheModuleAsyncOptions', () => {
     );
   });
 
+  it.each([
+    [null, 'null'],
+    ['true', 'true'],
+    [1, '1'],
+    [true, 'true'],
+    [[], ''],
+  ])('rejects a non-object defaults.lock: %j', (value, shown) => {
+    const bad = { defaults: { lock: value } } as unknown as CacheModuleOptions;
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      `Invalid cache option defaults.lock: ${shown} (must be an object)`,
+    );
+  });
+
+  it('treats an undefined defaults.lock as the defaults', () => {
+    expect(resolveOptions({ defaults: { lock: undefined } }).defaults.lock).toEqual({
+      enabled: false,
+      ttl: 10_000,
+      waitTimeout: 3_000,
+      retryDelay: 50,
+    });
+  });
+
   it('rejects a non-boolean enabled', () => {
     const bad = { defaults: { lock: { enabled: 'true' as unknown as boolean } } };
     expect(() => resolveOptions(bad)).toThrow(CacheConfigError);

@@ -38,11 +38,11 @@ describe('RedisLock', () => {
     expect(fake.has('lock:k')).toBe(true);
   });
 
-  it('rounds the TTL to an integer >= 1', async () => {
+  it('rounds the TTL up to an integer >= 1, like ioredisAdapter', async () => {
     const fake = new FakeRedis();
     const lock = new RedisLock(fake);
     await lock.acquire('a', 0.4);
-    await lock.acquire('b', 1.6);
+    await lock.acquire('b', 1.2);
     expect(calls(fake, 'setIfAbsent').map((args) => args[2])).toEqual([1, 2]);
   });
 

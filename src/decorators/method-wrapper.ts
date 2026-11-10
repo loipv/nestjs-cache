@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import type { CacheEngine, PutOptions } from '../core/cache-engine.js';
 import { compileTemplate, defaultKey } from '../core/key-builder.js';
-import { strategyOptionsOf } from '../core/strategies/expiry-strategy.js';
+import {
+  createStrategy,
+  strategyOptionsOf,
+  type ExpiryStrategy,
+} from '../core/strategies/expiry-strategy.js';
 import { CacheConfigError } from '../errors.js';
 import { engineOf, injectEngine } from './inject-engine.js';
 import { addCacheMetadata, describeMethod, type CacheMetadataEntry } from './metadata.js';
@@ -73,6 +77,19 @@ export function putOptionsOf(
   if (options.nullTtl !== undefined) put.nullTtl = options.nullTtl;
   if (options.unless !== undefined) put.unless = options.unless as (result: unknown) => boolean;
   return put;
+}
+
+/**
+ * Builds the strategy of fixed decorator options once, at decoration time. Options that
+ * `createStrategy` rejects yield `undefined`, so the engine still rejects each call with its
+ * usual message, as before.
+ */
+export function presetStrategy(options: StrategyOptions): ExpiryStrategy | undefined {
+  try {
+    return createStrategy(options);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

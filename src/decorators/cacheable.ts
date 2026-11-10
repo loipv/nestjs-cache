@@ -1,6 +1,12 @@
 import type { LoadOptions } from '../core/cache-engine.js';
 import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
-import { assertInstanceMethod, compileKeyAt, putOptionsOf, wrapMethod } from './method-wrapper.js';
+import {
+  assertInstanceMethod,
+  compileKeyAt,
+  presetStrategy,
+  putOptionsOf,
+  wrapMethod,
+} from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheableOptions, KeySpec } from './options.js';
 
 export function Cacheable<
@@ -19,6 +25,7 @@ export function Cacheable<
     const namespace = options?.namespace;
     const loadOptions: LoadOptions<unknown> = putOptionsOf(options);
     if (options?.lock !== undefined) loadOptions.lock = options.lock;
+    const strategy = presetStrategy(loadOptions);
     wrapMethod(
       target,
       propertyKey,
@@ -33,7 +40,7 @@ export function Cacheable<
           engine.reportError(store, 'key', error);
           return call.invoke();
         }
-        return engine.getOrSet({ store, namespace, key }, call.invoke, loadOptions);
+        return engine.getOrSet({ store, namespace, key }, call.invoke, loadOptions, strategy);
       },
     );
   };

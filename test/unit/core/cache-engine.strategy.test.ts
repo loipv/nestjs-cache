@@ -197,6 +197,34 @@ describe('CacheEngine with expiry strategies', () => {
     expect(store.calls).toEqual([{ op: 'get', args: ['missing'] }]);
   });
 
+  it('a sliding reader without getAndTouch does not re-set a stale swr entry', async () => {
+    const { engine, store, emitted } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', { ttl: 100, strategy: 'swr', staleTtl: 300 });
+    vi.setSystemTime(150);
+    store.calls.length = 0;
+    emitted.length = 0;
+    const loader = vi.fn(async () => 'new');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { strategy: 'sliding', ttl: 1_000 })).toBe(
+      'new',
+    );
+    expect(loader).toHaveBeenCalledOnce();
+    // The only set is the reload's write: no wasted re-set of the stale string first.
+    expect(store.calls.map((c) => c.op)).toEqual(['get', 'set']);
+    expect(envelopeOf(store, 'k')).toEqual({ v: 1, value: 'new', storedAt: 150 });
+    expect(emitted.map((e) => e.event)).toEqual(['miss', 'load', 'set']);
+
+    // `get` serves the stale value without re-setting it either.
+    await engine.set({ key: 'j' }, 'old', { ttl: 100, strategy: 'swr', staleTtl: 300 });
+    vi.setSystemTime(300);
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'j' }, { strategy: 'sliding' })).toBe('old');
+    expect(store.calls).toEqual([{ op: 'get', args: ['j'] }]);
+    expect(emitted.at(-1)).toEqual({
+      event: 'hit',
+      payload: { store: 'default', namespace: undefined, key: 'j', stale: true },
+    });
+  });
+
   it('a failed sliding re-set is reported as set and keeps the read result', async () => {
     const { engine, store, emitted } = makeEngine();
     await engine.set({ key: 'k' }, 'v', { strategy: 'sliding' });

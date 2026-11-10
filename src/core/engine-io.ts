@@ -57,7 +57,7 @@ export function isEmpty(value: unknown): value is null | undefined {
  */
 export class EngineIO {
   constructor(
-    readonly options: ResolvedCacheOptions,
+    private readonly options: ResolvedCacheOptions,
     private readonly events: CacheEvents,
   ) {}
 
@@ -137,8 +137,9 @@ export class EngineIO {
       }
       return { found: false };
     }
-    if (reSet) {
-      // Never reached for an expired entry, so maxTtl still bounds a sliding entry. Not atomic.
+    // Never reached for an expired entry, so maxTtl still bounds a sliding entry. Not atomic.
+    // A stale entry is re-set only for an swr reader; any other reader reloads and overwrites it.
+    if (reSet && (state === 'fresh' || strategy.kind === 'swr')) {
       try {
         await store.set(key, raw, touchTtl);
       } catch (error) {

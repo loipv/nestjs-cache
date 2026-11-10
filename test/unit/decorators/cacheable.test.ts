@@ -4,6 +4,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
+import * as strategies from '../../../src/core/strategies/expiry-strategy.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { CacheModule, Cacheable } from '../../../src/index.js';
 import { EVENT_NAMES } from '../helpers/engine.js';
@@ -350,5 +351,46 @@ describe('@Cacheable', () => {
       }
       return S;
     }).toThrow('S.b: cache decorators cannot be used on static methods');
+  });
+
+  it('builds the expiry strategy once at decoration time, not per call', async () => {
+    const create = vi.spyOn(strategies, 'createStrategy');
+    @Injectable()
+    class Once {
+      @Cacheable({ key: 'once:{0}', ttl: 100, strategy: 'swr', staleTtl: 300 })
+      async find(id: string): Promise<string> {
+        return id;
+      }
+    }
+    expect(create).toHaveBeenCalledTimes(1);
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: new FakeStore() } })],
+      providers: [Once],
+    }).compile();
+    await ref.init();
+    const once = ref.get(Once);
+    for (const id of ['a', 'b', 'a', 'c', 'b']) expect(await once.find(id)).toBe(id);
+    expect(create).toHaveBeenCalledTimes(1);
+    await ref.close();
+  });
+
+  it('still rejects each call with an unknown strategy, as before', async () => {
+    const bad = { strategy: 'lru' } as unknown as { strategy: 'fixed' };
+    @Injectable()
+    class Bad {
+      @Cacheable(bad)
+      async find(): Promise<number> {
+        return 1;
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: new FakeStore() } })],
+      providers: [Bad],
+    }).compile();
+    await ref.init();
+    const instance = ref.get(Bad);
+    await expect(instance.find()).rejects.toThrow(CacheConfigError);
+    await expect(instance.find()).rejects.toThrow('Unknown cache strategy: lru');
+    await ref.close();
   });
 });

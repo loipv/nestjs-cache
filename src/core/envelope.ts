@@ -33,7 +33,3 @@ export function isEnvelope(candidate: unknown): candidate is CacheEnvelope {
   const nil = c['nil'];
   return nil === undefined || nil === 'null' || nil === 'undefined';
 }
-
-export function isExpired(envelope: CacheEnvelope, now: number): boolean {
-  return envelope.expiresAt !== undefined && envelope.expiresAt <= now;
-}

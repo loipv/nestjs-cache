@@ -41,11 +41,10 @@ export interface CacheEventSink {
   emit(event: 'breaker', payload: { state: BreakerState }): void;
 }
 
-type SinkPayload = { operation: CacheOperation; error: unknown } | { state: BreakerState };
-
-function isBreakerPayload(payload: SinkPayload): payload is { state: BreakerState } {
-  return 'state' in payload;
-}
+/** One tuple per sink overload, so the event name narrows its payload. */
+type SinkArgs =
+  | [event: 'error', payload: { operation: CacheOperation; error: unknown }]
+  | [event: 'breaker', payload: { state: BreakerState }];
 
 type Listener<E extends keyof CacheEventMap> = (payload: CacheEventMap[E]) => void;
 
@@ -85,14 +84,25 @@ export class CacheEvents {
     }
   }
 
-  /** @internal Builds the sink passed to `CacheStore.bind`; not part of the public API. */
+  /**
+   * @internal Builds the sink passed to `CacheStore.bind`; not part of the public API.
+   * The event name alone picks the event; the overloads tie each name to its payload.
+   */
   sinkFor(store: string): CacheEventSink {
     return {
-      emit: (event: 'error' | 'breaker', payload: SinkPayload): void => {
-        if (event === 'breaker' && isBreakerPayload(payload)) {
-          this.emit('breaker', { store, state: payload.state });
-        } else if (!isBreakerPayload(payload)) {
-          this.emit('error', { store, operation: payload.operation, error: payload.error });
+      emit: (...[event, payload]: SinkArgs): void => {
+        switch (event) {
+          case 'error':
+            this.emit('error', { store, operation: payload.operation, error: payload.error });
+            return;
+          case 'breaker':
+            this.emit('breaker', { store, state: payload.state });
+            return;
+          default: {
+            // Unreachable for typed callers; an untyped store's unknown event is ignored.
+            const unreachable: never = event;
+            return unreachable;
+          }
         }
       },
     };

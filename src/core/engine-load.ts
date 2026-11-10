@@ -1,3 +1,4 @@
+import type { ResolvedDefaults } from '../module/cache.options.js';
 import type { LockProvider } from '../stores/cache-store.interface.js';
 import {
   servable,
@@ -37,8 +38,11 @@ export class EngineLoad {
   private readonly singleFlight = new SingleFlight();
   private readonly lockSettings: LockSettings;
 
-  constructor(private readonly io: EngineIO) {
-    const { ttl, waitTimeout, retryDelay } = io.options.defaults.lock;
+  constructor(
+    private readonly io: EngineIO,
+    lockDefaults: ResolvedDefaults['lock'],
+  ) {
+    const { ttl, waitTimeout, retryDelay } = lockDefaults;
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
   }
 

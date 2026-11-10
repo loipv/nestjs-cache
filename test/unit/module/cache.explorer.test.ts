@@ -174,6 +174,43 @@ describe('CacheExplorer', () => {
     await ref.close();
   });
 
+  it('warns once per method and store, across two modules', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Multi {
+      @Cacheable({ lock: true, store: 'a' })
+      @Cacheable({ lock: true, store: 'b' })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+      @Cacheable({ lock: true, store: 'a' })
+      list(): Promise<number> {
+        return Promise.resolve(2);
+      }
+    }
+    @Module({ providers: [Multi] })
+    class A {}
+    @Module({ providers: [Multi] })
+    class B {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        CacheModule.forRoot({
+          isGlobal: true,
+          stores: { default: memoryStore(), a: memoryStore(), b: memoryStore() },
+        }),
+        A,
+        B,
+      ],
+    }).compile();
+    await ref.init();
+    const messages = warnSpy.mock.calls.map((call) => String(call[0]));
+    expect([...messages].sort()).toEqual([
+      'Multi.find sets lock: true but cache store "a" has no distributed lock; falling back to in-process coalescing',
+      'Multi.find sets lock: true but cache store "b" has no distributed lock; falling back to in-process coalescing',
+      'Multi.list sets lock: true but cache store "a" has no distributed lock; falling back to in-process coalescing',
+    ]);
+    await ref.close();
+  });
+
   it('does not warn when the store has a lock', async () => {
     const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const store = new FakeStore();

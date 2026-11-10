@@ -94,6 +94,33 @@ describe('CacheEvents', () => {
     expect(seen).toEqual([{ store: 'sessions', state: 'open' }]);
   });
 
+  it('sinkFor picks the event by name, whatever the payload shape', () => {
+    const ev = new CacheEvents();
+    const seen: { event: string; payload: unknown }[] = [];
+    ev.on('error', (payload) => seen.push({ event: 'error', payload }));
+    ev.on('breaker', (payload) => seen.push({ event: 'breaker', payload }));
+    const sink = ev.sinkFor('s');
+    // Misuse the overloads prevent at compile time: a breaker payload sent as 'error' is not
+    // dropped, and an error payload sent as 'breaker' does not become an error event.
+    sink.emit('error', { state: 'open' } as unknown as { operation: 'get'; error: unknown });
+    sink.emit('breaker', { operation: 'get', error: 'x' } as unknown as { state: 'open' });
+    expect(seen.map((s) => s.event)).toEqual(['error', 'breaker']);
+    expect(seen[0]?.payload).toMatchObject({ store: 's' });
+    expect(seen[1]?.payload).toMatchObject({ store: 's' });
+  });
+
+  it('sinkFor ignores an unknown event name without throwing', () => {
+    const ev = new CacheEvents();
+    const seen: unknown[] = [];
+    ev.on('error', (p) => seen.push(p));
+    ev.on('breaker', (p) => seen.push(p));
+    const sink = ev.sinkFor('s');
+    expect(() => {
+      sink.emit('bogus' as 'error', { operation: 'get', error: 'x' });
+    }).not.toThrow();
+    expect(seen).toEqual([]);
+  });
+
   it('delivers lock events', () => {
     const ev = new CacheEvents();
     const seen: unknown[] = [];

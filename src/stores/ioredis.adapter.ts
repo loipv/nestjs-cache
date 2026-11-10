@@ -1,4 +1,3 @@
-import { RELEASE_SCRIPT } from './redis-lock.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 
 /**
@@ -27,6 +26,10 @@ export interface IoredisLike {
   /** Optional. Closes the connection at once; used when `quit` does not settle in time. */
   disconnect?(): void;
 }
+
+/** Deletes the key only when it still holds the caller's token (the `RedisLock` release). */
+export const RELEASE_SCRIPT =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
 
 /** How long `close` waits for QUIT before it drops the subscriber connection. */
 const CLOSE_TIMEOUT_MS = 1_000;

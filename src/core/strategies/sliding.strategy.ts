@@ -1,5 +1,5 @@
 import type { CacheEnvelope } from '../envelope.js';
-import { classifyEnvelope, type ExpiryStrategy } from './expiry-strategy.js';
+import { classifyEnvelope, type ExpiryStrategy } from './classify.js';
 
 export function slidingStrategy(maxTtl?: number): ExpiryStrategy {
   return {

@@ -31,13 +31,18 @@ function checkDuration(option: string, value: number | undefined): void {
 
 /**
  * Validates the strategy options and builds the strategy. `ttl` is the effective ttl the
- * entry is written with; it is omitted by `get`, which writes nothing.
+ * entry is written with; it is omitted by `get`, which writes nothing. `preset` is a strategy
+ * already built from these same options; every check still runs, in the same order.
  */
-function strategyOf(options: StrategyOptions, ttl: number | undefined): ExpiryStrategy {
+function strategyOf(
+  options: StrategyOptions,
+  ttl: number | undefined,
+  preset?: ExpiryStrategy,
+): ExpiryStrategy {
   const { staleTtl, maxTtl } = options;
   checkDuration('staleTtl', staleTtl);
   checkDuration('maxTtl', maxTtl);
-  const strategy = createStrategy(options);
+  const strategy = preset ?? createStrategy(options);
   if (strategy.kind === 'swr' && staleTtl === undefined) {
     throw new CacheConfigError(
       "Invalid staleTtl: undefined. The 'swr' strategy requires staleTtl.",
@@ -61,7 +66,7 @@ export class CacheEngine {
     events: CacheEvents,
   ) {
     this.io = new EngineIO(options, events);
-    this.load = new EngineLoad(this.io);
+    this.load = new EngineLoad(this.io, options.defaults.lock);
   }
 
   hasStore(name: string): boolean {
@@ -90,16 +95,21 @@ export class CacheEngine {
     return result.value as T | undefined;
   }
 
+  /**
+   * @param preset Internal: the strategy built from `options` at decoration time, so a
+   * decorated call does not rebuild it. It must come from `createStrategy(options)`.
+   */
   async getOrSet<T>(
     ref: KeyRef,
     loader: () => Promise<T>,
     options: LoadOptions<T> = {},
+    preset?: ExpiryStrategy,
   ): Promise<T> {
     const target = this.io.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
-    const strategy = strategyOf(options, ttl);
+    const strategy = strategyOf(options, ttl, preset);
     const cached = await this.io.read(target, ref, strategy, ttl);
     const locking = options.lock ?? this.options.defaults.lock.enabled;
     const lock = locking ? target.store.lock : undefined;
@@ -123,11 +133,17 @@ export class CacheEngine {
     await this.io.write(target, ref, value, strategy, this.io.ttlFor(strategy, ttl));
   }
 
-  async put<T>(ref: KeyRef, value: T, options: PutOptions<T> = {}): Promise<void> {
+  /** @param preset Internal: as for `getOrSet`. */
+  async put<T>(
+    ref: KeyRef,
+    value: T,
+    options: PutOptions<T> = {},
+    preset?: ExpiryStrategy,
+  ): Promise<void> {
     const target = this.io.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
-    const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl);
+    const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
     await this.io.store(target, ref, value, options, strategy, true);
   }
 

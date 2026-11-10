@@ -70,6 +70,15 @@ function lockEnabled(value: boolean | undefined): boolean {
   return value;
 }
 
+/** `undefined` means the defaults; anything else that is not a plain object is rejected. */
+function lockDefaults(value: unknown): CacheLockDefaults {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw invalid('defaults.lock', value, 'must be an object');
+  }
+  return value;
+}
+
 function jitterOf(value: number | undefined): number {
   if (value === undefined) return 0;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value >= 1) {
@@ -101,7 +110,7 @@ function resolveStores(stores: CacheModuleOptions['stores']): ReadonlyMap<string
 
 export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheOptions {
   const defaults = options.defaults ?? {};
-  const lock = defaults.lock ?? {};
+  const lock = lockDefaults(defaults.lock);
   return {
     prefix: options.prefix === undefined || options.prefix === '' ? undefined : options.prefix,
     stores: resolveStores(options.stores),

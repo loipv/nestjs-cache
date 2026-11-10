@@ -1,5 +1,5 @@
 import { wrap } from '../envelope.js';
-import { classifyEnvelope, type ExpiryStrategy } from './expiry-strategy.js';
+import { classifyEnvelope, type ExpiryStrategy } from './classify.js';
 
 export function swrStrategy(staleTtl: number): ExpiryStrategy {
   const window = Math.max(1, Math.round(staleTtl));

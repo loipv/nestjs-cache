@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ioredisAdapter } from '../../../src/stores/ioredis.adapter.js';
-import { RELEASE_SCRIPT } from '../../../src/stores/redis-lock.js';
+import { ioredisAdapter, RELEASE_SCRIPT } from '../../../src/stores/ioredis.adapter.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
 import { FakeConnection } from '../helpers/fake-ioredis.js';
 
