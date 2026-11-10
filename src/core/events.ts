@@ -28,6 +28,8 @@ export interface CacheEventMap {
     store: string;
     namespace: string | undefined;
     key: string;
+    /** Only on a batch load (`getOrSetMany`): every key passed to the loader; `key` is the first. */
+    keys?: readonly string[];
     durationMs: number;
     success: boolean;
   };

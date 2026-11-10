@@ -3,6 +3,7 @@ import type { LockProvider } from '../stores/cache-store.interface.js';
 import {
   servable,
   toIntegerMs,
+  type BatchItem,
   type EngineIO,
   type KeyRef,
   type PutOptions,
@@ -28,6 +29,15 @@ export interface LoadPlan<T> {
   lock: LockProvider | undefined;
 }
 
+/** Everything a batch load needs once the facade has validated the call. Batches never lock. */
+export interface BatchPlan<T> {
+  target: Target;
+  namespace: string | undefined;
+  loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>;
+  options: PutOptions<T>;
+  strategy: ExpiryStrategy;
+}
+
 type Located = Pick<LoadPlan<unknown>, 'target' | 'ref'>;
 
 /** A refresh that found the lock held settles its flight without a value. */
@@ -51,7 +61,7 @@ export class EngineLoad {
 
   /** Loads and stores a missing entry; concurrent misses of the key share the load. */
   async onMiss<T>(plan: LoadPlan<T>): Promise<T> {
-    const flightKey = this.flightKey(plan);
+    const flightKey = this.flightKey(plan.target, plan.key);
     const joined = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
     if (joined.loaded) return joined.value;
     // The flight was a refresh that skipped its load: another instance holds the lock.
@@ -64,14 +74,118 @@ export class EngineLoad {
    * the stale value; the flight still rejects, so a miss that joined it gets the loader error.
    */
   refresh<T>(plan: LoadPlan<T>): void {
-    const flightKey = this.flightKey(plan);
+    const flightKey = this.flightKey(plan.target, plan.key);
     if (this.singleFlight.has(flightKey)) return;
     void this.singleFlight
       .run<Outcome<T>>(flightKey, () => this.refreshTask(plan))
       .catch(() => undefined);
   }
 
-  private flightKey({ target, key }: Pick<LoadPlan<unknown>, 'target' | 'key'>): string {
+  /**
+   * Loads the missing batch items, by plain key. An item already in flight (a single-key load
+   * or refresh, or another batch) joins it; the rest share one flight per key, all settled by
+   * one loader call, so a concurrent single-key `getOrSet` joins them. A joined refresh that
+   * skipped its load (another instance held its lock) leaves its items to one more loader
+   * call, outside single-flight. A loader error rejects every flight and the caller.
+   */
+  async onMissMany<T>(
+    plan: BatchPlan<T>,
+    items: readonly BatchItem[],
+  ): Promise<Map<string, unknown>> {
+    const outcomes = await Promise.all(this.flights(plan, items, false));
+    const values = new Map<string, unknown>();
+    const skipped: BatchItem[] = [];
+    items.forEach((item, i) => {
+      const outcome = outcomes[i];
+      if (outcome?.loaded === true) values.set(item.ref.key, outcome.value);
+      else skipped.push(item);
+    });
+    if (skipped.length > 0) {
+      const loaded = await this.loadMany(plan, skipped, false);
+      for (const item of skipped) values.set(item.ref.key, loaded.get(item.ref.key));
+    }
+    return values;
+  }
+
+  /**
+   * Fire and forget: one loader call for the stale items not already in flight, as `refresh`.
+   * A failure is one `refresh` error; the stale values stay.
+   */
+  refreshMany<T>(plan: BatchPlan<T>, items: readonly BatchItem[]): void {
+    const pending = items.filter(
+      (item) => !this.singleFlight.has(this.flightKey(plan.target, item.key)),
+    );
+    for (const flight of this.flights(plan, pending, true)) void flight.catch(() => undefined);
+  }
+
+  /**
+   * One flight per item: an item in flight joins it; the others run one shared `loadMany`,
+   * started by the first of them, so every flight is registered before anything is awaited.
+   */
+  private flights<T>(
+    plan: BatchPlan<T>,
+    items: readonly BatchItem[],
+    refreshing: boolean,
+  ): Promise<Outcome<unknown>>[] {
+    const own = items.filter(
+      (item) => !this.singleFlight.has(this.flightKey(plan.target, item.key)),
+    );
+    let loaded: Promise<ReadonlyMap<string, T>> | undefined;
+    return items.map((item) =>
+      this.singleFlight.run<Outcome<unknown>>(this.flightKey(plan.target, item.key), async () => {
+        loaded ??= this.loadMany(plan, own, refreshing);
+        return { loaded: true, value: (await loaded).get(item.ref.key) };
+      }),
+    );
+  }
+
+  /** Runs the loader for `items` and stores what it returned for them; other keys are ignored. */
+  private async loadMany<T>(
+    plan: BatchPlan<T>,
+    items: readonly BatchItem[],
+    refreshing: boolean,
+  ): Promise<ReadonlyMap<string, T>> {
+    const loaded = await this.runLoader(
+      plan,
+      items.map((item) => item.ref.key),
+      refreshing,
+    );
+    // An omitted key is stored as if the loader had returned `undefined` for it.
+    const values = items.map((item) => ({ ...item, value: loaded.get(item.ref.key) as T }));
+    await this.io.storeMany(plan.target, values, plan.options, plan.strategy);
+    return loaded;
+  }
+
+  /**
+   * One batch loader call and its `load` event (`key` the first key, `keys` all of them). A
+   * rejection, a synchronous throw or a result that is not a Map reaches the caller;
+   * `refreshing` also reports it as `refresh`.
+   */
+  async runLoader<T>(
+    plan: BatchPlan<T>,
+    keys: readonly string[],
+    refreshing: boolean,
+  ): Promise<ReadonlyMap<string, T>> {
+    const { target, namespace, loader } = plan;
+    const ref = { namespace, key: keys[0] ?? '' };
+    const started = Date.now();
+    let loaded: unknown;
+    try {
+      loaded = await loader([...keys]);
+      if (!(loaded instanceof Map)) {
+        const got = loaded === null ? 'null' : typeof loaded;
+        throw new TypeError(`The getOrSetMany loader must resolve a Map, got ${got}.`);
+      }
+    } catch (error) {
+      this.io.emitLoad(target.name, ref, started, false, keys);
+      if (refreshing) this.io.reportError(target.name, 'refresh', error);
+      throw error;
+    }
+    this.io.emitLoad(target.name, ref, started, true, keys);
+    return loaded as ReadonlyMap<string, T>;
+  }
+
+  private flightKey(target: Target, key: ResolvedKey): string {
     return `${target.name}\u0000${key.full}`;
   }
 

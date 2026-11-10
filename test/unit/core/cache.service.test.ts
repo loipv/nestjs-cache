@@ -284,4 +284,65 @@ describe('CacheService', () => {
       await expect(engine.put({ namespace: '__x', key: 'k' }, 1)).rejects.toThrow(reserved);
     });
   });
+  describe('batch methods', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('getMany/setMany/getOrSetMany pass namespace, store, ttl and strategy through', async () => {
+      /* setMany writes to the named store and namespace with the ttl; getMany reads them back
+         in input order; getOrSetMany forwards ttl, strategy and the null/unless options, and
+         its stale swr entry is refreshed in the background. */
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      const other = new FakeStore();
+      const { engine, store } = makeEngine({ stores: { default: new FakeStore(), other } });
+      const service = new CacheService(engine);
+      await service.setMany(
+        [
+          ['a', 1],
+          ['b', 2],
+        ],
+        { namespace: 'n', store: 'other', ttl: 500 },
+      );
+      expect(other.data.get('n:a')?.ttlMs).toBe(500);
+      expect(other.data.get('n:b')?.ttlMs).toBe(500);
+      expect(store.data.size).toBe(0);
+      expect(await service.getMany(['b', 'a', 'c'], { namespace: 'n', store: 'other' })).toEqual([
+        2,
+        1,
+        undefined,
+      ]);
+
+      const swr = { ttl: 100, strategy: 'swr', staleTtl: 300 } as const;
+      await service.setMany([['s', 'x']], swr);
+      expect(store.data.get('s')?.ttlMs).toBe(400);
+      vi.setSystemTime(150);
+      expect(await service.getMany(['s'])).toEqual(['x']);
+      const loader = vi.fn(async (missing: string[]) => new Map(missing.map((k) => [k, `L${k}`])));
+      expect(
+        await service.getOrSetMany(['s', 't', 'u'], loader, {
+          ...swr,
+          cacheNull: true,
+          nullTtl: 9,
+          unless: (v) => v === 'Lu',
+        }),
+      ).toEqual(['x', 'Lt', 'Lu']);
+      expect(loader).toHaveBeenNthCalledWith(1, ['t', 'u']);
+      expect(store.data.get('t')?.ttlMs).toBe(400);
+      expect(store.data.has('u')).toBe(false);
+      await vi.runAllTimersAsync();
+      expect(loader).toHaveBeenLastCalledWith(['s']);
+      expect(await service.getMany(['s'], swr)).toEqual(['Ls']);
+
+      const nulls = vi.fn(async () => new Map<string, string>());
+      await service.getOrSetMany(['z'], nulls, { cacheNull: true, nullTtl: 9 });
+      expect(store.data.get('z')?.ttlMs).toBe(9);
+      await expect(service.getOrSetMany(['a'], loader, { lock: true })).rejects.toThrow(
+        CacheConfigError,
+      );
+      expect(await service.getMany([])).toEqual([]);
+      expect(await service.getOrSetMany([], loader)).toEqual([]);
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import type { StrategyOptions } from '../decorators/options.js';
-import type { CacheEngine, LoadOptions, SetOptions } from './cache-engine.js';
+import type { BatchScope, CacheEngine, LoadOptions, SetOptions } from './cache-engine.js';
 import { strategyOptionsOf } from './strategies/expiry-strategy.js';
 
 export interface KeyOptions {
@@ -26,6 +26,29 @@ function refOf(
   return ref;
 }
 
+function scopeOf(options: KeyOptions): BatchScope {
+  const scope: BatchScope = {};
+  if (options.store !== undefined) scope.store = options.store;
+  if (options.namespace !== undefined) scope.namespace = options.namespace;
+  return scope;
+}
+
+function writeOptionsOf(options: WriteOptions): SetOptions {
+  const write: SetOptions = strategyOptionsOf(options);
+  if (options.ttl !== undefined) write.ttl = options.ttl;
+  return write;
+}
+
+function loadOptionsOf<T>(options: GetOrSetOptions<T>): LoadOptions<T> {
+  const { cacheNull, nullTtl, unless, lock } = options;
+  const load: LoadOptions<T> = writeOptionsOf(options);
+  if (cacheNull !== undefined) load.cacheNull = cacheNull;
+  if (nullTtl !== undefined) load.nullTtl = nullTtl;
+  if (unless !== undefined) load.unless = unless;
+  if (lock !== undefined) load.lock = lock;
+  return load;
+}
+
 export class CacheService {
   constructor(private readonly engine: CacheEngine) {}
 
@@ -44,16 +67,11 @@ export class CacheService {
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- public API (spec 5.3)
   set<T>(key: string, value: T, options: WriteOptions = {}): Promise<void> {
-    const write: SetOptions = strategyOptionsOf(options);
-    if (options.ttl !== undefined) write.ttl = options.ttl;
-    return this.engine.set(refOf(key, options), value, write);
+    return this.engine.set(refOf(key, options), value, writeOptionsOf(options));
   }
 
   delete(key: string | readonly string[], options: KeyOptions = {}): Promise<void> {
-    const scope: { store?: string; namespace?: string } = {};
-    if (options.store !== undefined) scope.store = options.store;
-    if (options.namespace !== undefined) scope.namespace = options.namespace;
-    return this.engine.delete(scope, typeof key === 'string' ? [key] : key);
+    return this.engine.delete(scopeOf(options), typeof key === 'string' ? [key] : key);
   }
 
   clear(namespace: string, options: { store?: string } = {}): Promise<void> {
@@ -61,13 +79,40 @@ export class CacheService {
   }
 
   getOrSet<T>(key: string, loader: () => Promise<T>, options: GetOrSetOptions<T> = {}): Promise<T> {
-    const { ttl, cacheNull, nullTtl, unless, lock } = options;
-    const load: LoadOptions<T> = strategyOptionsOf(options);
-    if (ttl !== undefined) load.ttl = ttl;
-    if (cacheNull !== undefined) load.cacheNull = cacheNull;
-    if (nullTtl !== undefined) load.nullTtl = nullTtl;
-    if (unless !== undefined) load.unless = unless;
-    if (lock !== undefined) load.lock = lock;
-    return this.engine.getOrSet(refOf(key, options), loader, load);
+    return this.engine.getOrSet(refOf(key, options), loader, loadOptionsOf(options));
+  }
+
+  /**
+   * Reads several keys of one namespace and store; results follow `keys`, `undefined` for a
+   * miss. One store read for the batch (MGET on Redis), except with `strategy: 'sliding'`,
+   * which touches each entry with its own `getAndTouch`.
+   */
+  getMany<T>(
+    keys: readonly string[],
+    options: KeyOptions & StrategyOptions = {},
+  ): Promise<(T | undefined)[]> {
+    return this.engine.getMany<T>(scopeOf(options), keys, strategyOptionsOf(options));
+  }
+
+  /** Writes several entries, each as `set` would, with one store call when the store allows. */
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- public API (spec 0.4 2.2)
+  setMany<T>(
+    entries: readonly (readonly [key: string, value: T])[],
+    options: WriteOptions = {},
+  ): Promise<void> {
+    return this.engine.setMany(scopeOf(options), entries, writeOptionsOf(options));
+  }
+
+  /**
+   * `getOrSet` for several keys: hits are served, and the misses are loaded with one
+   * `loader(missing)` call that resolves a Map. A key the loader omits is treated as
+   * `undefined`; keys it was not asked for are ignored. `lock: true` is not supported.
+   */
+  getOrSetMany<T>(
+    keys: readonly string[],
+    loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>,
+    options: GetOrSetOptions<T> = {},
+  ): Promise<(T | undefined)[]> {
+    return this.engine.getOrSetMany(scopeOf(options), keys, loader, loadOptionsOf(options));
   }
 }
