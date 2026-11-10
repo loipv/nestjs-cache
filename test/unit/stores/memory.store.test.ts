@@ -59,6 +59,55 @@ describe('MemoryStore', () => {
     expect(await s.get('live')).toBe('2');
     expect(await s.get('new')).toBe('3');
   });
+  describe('at capacity', () => {
+    const keysOf = (s: object): string[] => [
+      ...(s as { entries: Map<string, unknown> }).entries.keys(),
+    ];
+
+    it('sweeps expired entries when a sweep is due and keeps the live LRU head', async () => {
+      const s = memoryStore({ maxEntries: 3 });
+      await s.set('head', '1', 1e6);
+      await s.set('x', '2', 10);
+      await s.set('y', '3', 10);
+      vi.advanceTimersByTime(11);
+      await s.set('new', '4', 1e6);
+      expect(keysOf(s)).toEqual(['head', 'new']);
+      /* the swept slots are free: the next insert evicts nothing */
+      await s.set('more', '5', 1e6);
+      expect(keysOf(s)).toEqual(['head', 'new', 'more']);
+    });
+
+    it('within 1 s of a sweep evicts the LRU head without scanning for expired entries', async () => {
+      /* the scan costs O(n) per insert, so it runs at most once per second */
+      const s = memoryStore({ maxEntries: 3 });
+      await s.set('p', '1', 1e6);
+      await s.set('q', '2', 1e6);
+      await s.set('mid', '3', 200);
+      await s.set('s', '4', 1e6); // sweep runs: nothing expired yet, so p is evicted
+      expect(keysOf(s)).toEqual(['q', 'mid', 's']);
+      vi.advanceTimersByTime(500); // mid has expired
+      await s.set('u', '5', 1e6); // no sweep due: the head goes, the expired mid survives
+      expect(keysOf(s)).toEqual(['mid', 's', 'u']);
+      vi.advanceTimersByTime(499);
+      await s.set('v', '6', 1e6); // 999 ms after the sweep: still none
+      expect(keysOf(s)).toEqual(['s', 'u', 'v']);
+      await s.set('mid2', '7', 100);
+      expect(keysOf(s)).toEqual(['u', 'v', 'mid2']);
+      vi.advanceTimersByTime(101); // 1 100 ms after the sweep, mid2 expired
+      await s.set('w', '8', 1e6); // a sweep is due again: mid2 is dropped, u and v stay
+      expect(keysOf(s)).toEqual(['u', 'v', 'w']);
+    });
+
+    it('never holds more than maxEntries, whatever the TTLs and timing', async () => {
+      const s = memoryStore({ maxEntries: 5 });
+      for (let i = 0; i < 400; i += 1) {
+        await s.set(`k${String(i % 37)}`, 'v', i % 3 === 0 ? 5 : 1e6);
+        if (i % 7 === 0) vi.advanceTimersByTime(i % 2 === 0 ? 3 : 400);
+        expect(keysOf(s).length).toBeLessThanOrEqual(5);
+      }
+    });
+  });
+
   it('delete removes the listed keys only', async () => {
     const s = memoryStore();
     await s.set('a', '1', 1e6);

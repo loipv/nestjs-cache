@@ -11,11 +11,14 @@ export interface MemoryStoreOptions {
 }
 
 const DEFAULT_MAX_ENTRIES = 1_000;
+/** At capacity, expired entries are swept at most this often (ms); otherwise the LRU goes. */
+const SWEEP_INTERVAL_MS = 1_000;
 
 /** In-process LRU store on Map insertion order. Expiry is lazy; no timers. */
 export class MemoryStore implements CacheStore {
   private readonly entries = new Map<string, Entry>();
   private readonly maxEntries: number;
+  private lastSweepAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: MemoryStoreOptions = {}) {
     const max = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
@@ -58,8 +61,12 @@ export class MemoryStore implements CacheStore {
     if (this.entries.has(key)) {
       this.entries.delete(key);
     } else if (this.entries.size >= this.maxEntries) {
-      for (const [k, e] of this.entries) {
-        if (now >= e.expiresAt) this.entries.delete(k);
+      // A full scan on every insert at capacity is O(n); between sweeps the LRU head is evicted.
+      if (now - this.lastSweepAt >= SWEEP_INTERVAL_MS) {
+        this.lastSweepAt = now;
+        for (const [k, e] of this.entries) {
+          if (now >= e.expiresAt) this.entries.delete(k);
+        }
       }
       if (this.entries.size >= this.maxEntries) {
         const oldest = this.entries.keys().next();
