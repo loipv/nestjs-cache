@@ -11,7 +11,6 @@ import {
 } from './engine-io.js';
 import { EngineLoad } from './engine-load.js';
 import type { CacheEvents, CacheOperation } from './events.js';
-import { namespacePrefix } from './key-builder.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 export type { KeyRef, PutOptions } from './engine-io.js';
@@ -141,14 +140,7 @@ export class CacheEngine {
     if (typeof namespace !== 'string' || namespace === '') {
       throw new CacheConfigError('clear requires a non-empty namespace');
     }
-    const { name, store } = this.io.resolve(storeName);
-    try {
-      await store.clear(namespacePrefix(this.options.prefix, namespace));
-    } catch (error) {
-      this.reportError(name, 'clear', error);
-      return;
-    }
-    this.io.emitClear(name, namespace);
+    await this.io.clear(storeName, namespace);
   }
 
   reportError(store: string | undefined, operation: CacheOperation, error: unknown): void {
