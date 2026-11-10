@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InvalidationMessage } from '../../../src/stores/cache-store.interface.js';
 import { redisInvalidationBus } from '../../../src/stores/redis-invalidation-bus.js';
 import { FakeRedis } from '../helpers/fake-redis.js';
@@ -48,6 +48,10 @@ describe('redisInvalidationBus', () => {
   });
 
   describe('an oversized message', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     const MAX = 1_048_576;
 
     /* a valid message padded with spaces to exactly `length` characters */
@@ -70,7 +74,6 @@ describe('redisInvalidationBus', () => {
         { origin: '', prefix: '' },
         { origin: '', prefix: '' },
       ]);
-      parse.mockRestore();
     });
 
     it('of exactly 1 MiB is still parsed normally', async () => {
