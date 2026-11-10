@@ -111,10 +111,9 @@ describe('CacheEngine.getOrSet', () => {
 
   it('keeps undefined distinct from null', async () => {
     const { engine } = makeEngine({ defaults: { cacheNull: true } });
-    const loader = vi.fn(async (): Promise<undefined> => undefined);
+    const loader = vi.fn(async (): Promise<string | undefined> => undefined);
     await engine.getOrSet({ key: 'a' }, loader);
-    const second: unknown = await engine.getOrSet({ key: 'a' }, loader);
-    expect(second).toBeUndefined();
+    expect(await engine.getOrSet({ key: 'a' }, loader)).toBeUndefined();
     expect(loader).toHaveBeenCalledOnce();
   });
 
