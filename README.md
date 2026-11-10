@@ -428,7 +428,181 @@ works without `emitDecoratorMetadata`; plain constructor injection (`constructor
 Repeated `error` log lines are throttled to one per 30 seconds for each (store, operation) pair; the next line carries a
 `(+N similar errors suppressed)` suffix. Events are still emitted for every occurrence.
 
-`operation` is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`.
+`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`.
+The value `'metrics'` exists in the `CacheOperation` type but is used for logs only and is never emitted as an event.
+
+## Observability
+
+Three optional features: Prometheus metrics, a health check for `@nestjs/terminus`, and a configurable log level.
+They ship from the main entry point and add no runtime or peer dependencies.
+
+### Prometheus
+
+`CachePrometheusModule` records metrics through a Prometheus client that you pass in. Use
+[`@prometheus-io/client`](https://www.npmjs.com/package/@prometheus-io/client), the maintained successor of `prom-client`:
+
+```bash
+npm install @prometheus-io/client
+```
+
+`CachePrometheusModule` reads cache events, so it needs a global `CacheModule`: call
+`CacheModule.forRoot({ isGlobal: true })`. Without it, Nest fails at startup with a missing dependency error.
+
+```ts
+import { Module } from '@nestjs/common';
+import { CacheModule, CachePrometheusModule } from '@loipv/nestjs-cache';
+import * as client from '@prometheus-io/client';
+
+@Module({
+  imports: [
+    CacheModule.forRoot({ isGlobal: true }),
+    CachePrometheusModule.forRoot({
+      client, // the module itself: `import * as client from '...'`
+      registry: client.register, // optional, defaults to client.register
+      prefix: 'cache_', // optional, defaults to 'cache_'
+      buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 5], // optional, for both histograms
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+`prom-client` works the same way, because the library only relies on structural types. Note that `prom-client` 15.1.3
+is deprecated on npm:
+
+```ts
+import { Module } from '@nestjs/common';
+import { CacheModule, CachePrometheusModule } from '@loipv/nestjs-cache';
+import * as client from 'prom-client';
+
+@Module({
+  imports: [CacheModule.forRoot({ isGlobal: true }), CachePrometheusModule.forRoot({ client })],
+})
+export class MetricsAppModule {}
+```
+
+There is also `forRootAsync({ imports, inject, useFactory })`, where `useFactory` returns the same options.
+
+The module does not open an endpoint. Expose the registry yourself, for example with a controller:
+
+```ts
+import { Controller, Get, Header } from '@nestjs/common';
+import * as client from '@prometheus-io/client';
+
+@Controller('metrics')
+export class MetricsController {
+  @Get()
+  @Header('Content-Type', client.register.contentType)
+  metrics(): Promise<string> {
+    return client.register.metrics();
+  }
+}
+```
+
+Metric names below use the default prefix `cache_`:
+
+| Metric                  | Type      | Labels                                                  |
+| ----------------------- | --------- | ------------------------------------------------------- |
+| `requests_total`        | counter   | `store`, `namespace`, `result` (`hit`, `miss`, `stale`) |
+| `errors_total`          | counter   | `store`, `operation`                                    |
+| `load_duration_seconds` | histogram | `store`, `namespace`, `success` (`true`, `false`)       |
+| `lock_wait_seconds`     | histogram | `store`, `acquired` (`true`, `false`)                   |
+| `circuit_breaker_state` | gauge     | `store` (0 = closed, 1 = half-open, 2 = open)           |
+
+- The key is never a label, so cardinality stays bounded. A missing `namespace` is recorded as `""`.
+- There are no metrics for `set`, `delete` or `clear`.
+- A miss that waits on a lock and is then served from the cache emits `miss` first and `hit` after, so it is counted as
+  both a miss and a hit.
+- Registering a name that already exists in the registry throws `CacheConfigError` at startup
+  (`Metric "cache_requests_total" is already registered; use a different prefix or registry`). This happens when two
+  apps in one process share `client.register`; give one of them another `prefix` or `registry`.
+- The metrics are removed from the registry when the app closes, so a second app can start afterwards.
+- A failure while updating a metric is logged with `operation: 'metrics'` and is never emitted as an `error` event, so
+  `errors_total` is not affected.
+
+Custom or fake clients: `PrometheusClientLike` and `RegistryLike` are structural types. A registry needs
+`getSingleMetric`, `removeSingleMetric` and `registerMetric`, and the constructors are typed `new (config: never) => ...`.
+See the TSDoc example on `PrometheusClientLike` for a minimal fake to use in tests.
+
+### Health check
+
+`CacheModule` provides `CacheHealthIndicator`. It does not import `@nestjs/terminus`; `check` returns the shape that
+Terminus expects, and Terminus treats `down` as a failure (HTTP 503).
+
+```ts
+import { Controller, Get } from '@nestjs/common';
+import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
+import { CacheHealthIndicator } from '@loipv/nestjs-cache';
+
+@Controller('health')
+export class HealthController {
+  constructor(
+    private readonly health: HealthCheckService,
+    private readonly cache: CacheHealthIndicator,
+  ) {}
+
+  @Get()
+  @HealthCheck()
+  check() {
+    return this.health.check([() => this.cache.check('cache', { store: 'default', timeout: 500 })]);
+  }
+}
+```
+
+`check(key, { store, timeout })`: `store` defaults to `'default'` and `timeout` to `1000` ms. The call resolves to one of:
+
+- `{ [key]: { status: 'up' } }`
+- `{ [key]: { status: 'up', ping: 'unsupported' } }` when the store has no `ping`
+- `{ [key]: { status: 'down', message } }`, where `message` is the error message, `'circuit open'` for an open breaker,
+  or `'timed out after <timeout> ms'`
+
+It never rejects, except with `CacheConfigError` for an unknown store name or a `timeout` that is not a finite number
+from 1 to 2147483647. It does not emit `error` events, and a `ping` that rejects after the timeout is handled.
+
+| Store                 | `ping`                                                                     |
+| --------------------- | -------------------------------------------------------------------------- |
+| `memoryStore`         | Always resolves                                                            |
+| `redisStore`          | Redis `PING`. Present only when the Redis client adapter has `ping`        |
+| `tieredStore`         | Calls the L2 store's `ping`. Present only when L2 has it                   |
+| `circuitBreaker(...)` | Goes through the breaker: rejects with `CircuitOpenError` while it is open |
+| Store without `ping`  | Reported as `up` with `ping: 'unsupported'`                                |
+
+`ioredisAdapter` provides `ping`. A hand-written `IoredisLike` stub must now add `ping()`.
+
+### Logging
+
+```ts
+CacheModule.forRoot({ logging: { level: 'error' } }); // 'off' | 'error' | 'debug'
+```
+
+Any other value throws `CacheConfigError`.
+
+| Level               | What is logged                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'error'` (default) | The 0.2 logs: throttled store errors, startup and decorator warnings, plus circuit breaker logs (opened at `warn`, closed at `log`, never throttled) |
+| `'debug'`           | Everything in `'error'`, plus one debug line per `hit`, `miss`, `set`, `delete`, `clear`, `load` and `lock` event                                    |
+| `'off'`             | Nothing from the library, with one exception (below)                                                                                                 |
+
+`'off'` silences store error logs, breaker logs, startup lock warnings, explorer and decorator warnings, the tiered
+store's missing-bus warning, and metrics collector failures. Events are still emitted, so your own listeners and the
+metrics keep working. The exception is the decorator warning
+`<Class>.<method> was called on an instance not created by Nest; caching is skipped.`: it is logged at every level,
+once per method, because no cache configuration exists at that point.
+
+Debug lines have the form `Cache <event> <store> <key or namespace>[ <detail>]`. Keys appear in debug logs only:
+
+```text
+[Nest] DEBUG [CacheModule] Cache hit default users:user:1 stale
+[Nest] DEBUG [CacheModule] Cache load default users:user:1 12ms ok
+[Nest] DEBUG [CacheModule] Cache lock default users:user:1 waited 50ms acquired
+```
+
+### Grafana
+
+`grafana/dashboard.json` in the repository is a sample dashboard (it is not part of the npm package). In Grafana,
+open Dashboards, New, Import, upload the file and pick your Prometheus datasource for `DS_PROMETHEUS`. It assumes the
+default `cache_` prefix and has a `store` variable. Panels: hit ratio, requests by result, errors by operation, load
+p95, lock wait p95 and breaker state.
 
 ## Error behaviour
 
@@ -489,7 +663,7 @@ The library does not rely on `emitDecoratorMetadata`.
 ## Roadmap
 
 - **0.2 - Resilience (done):** distributed lock (cross-instance stampede protection), per-store circuit breaker, `'swr'` (stale-while-revalidate) and `'sliding'` TTL strategies.
-- **0.3 - Observability:** Prometheus metrics (`@loipv/nestjs-cache/prometheus`) with a sample Grafana dashboard, configurable log level with debug hit/miss logs, and a `@nestjs/terminus` health indicator (`@loipv/nestjs-cache/terminus`).
+- **0.3 - Observability (done):** Prometheus metrics (`CachePrometheusModule`) with a sample Grafana dashboard, configurable log level with debug logs, circuit breaker logs, and a `@nestjs/terminus` health indicator (`CacheHealthIndicator`). All from the main entry point.
 
 ## License
 

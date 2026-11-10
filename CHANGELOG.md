@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- `CachePrometheusModule` (`forRoot` and `forRootAsync`) that records cache metrics through a Prometheus client you pass in (`@prometheus-io/client` or `prom-client`), with the `PrometheusClientLike`, `RegistryLike` and `CachePrometheusOptions` types.
+- `CacheHealthIndicator` and `CacheHealthResult`, a health check in the shape `@nestjs/terminus` expects.
+- `CacheStore.ping` (optional), implemented by the memory, Redis, tiered and circuit breaker stores.
+- `logging.level` (`'off'`, `'error'` or `'debug'`) and the `CacheLogLevel` type.
+- Log lines when a circuit breaker opens (`warn`) or closes (`log`).
+- Sample Grafana dashboard in `grafana/dashboard.json` (in the repository, not in the npm package).
+
+### Changed
+
+- Metrics and health ship from the main entry point, not from the `/prometheus` and `/terminus` subpaths planned earlier. The CommonJS build would otherwise bundle a second copy of the `CacheEvents` class into each entry point, and the metrics collector and the module would then use different classes.
+- Prometheus clients are passed in by the user; there is no new peer dependency.
+- `IoredisLike` gained a required `ping()`. Real ioredis clients are unaffected, but hand-written stubs must add it.
+- `CacheEventSink` gained an optional `logLevel` field. This is additive.
+- `CacheOperation` gained the value `'metrics'`, used for logs only; `error` events never carry it.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added

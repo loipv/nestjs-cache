@@ -1,6 +1,6 @@
 {
   "name": "@loipv/nestjs-cache",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching",
   "license": "MIT",
   "repository": {
