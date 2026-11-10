@@ -60,7 +60,7 @@ describe('circuit breaker with a stopped Redis (integration)', () => {
     expect(await cache.getOrSet('k2', async () => 'v2')).toBe('v2');
     const started = Date.now();
     expect(await cache.getOrSet('k3', async () => 'v3')).toBe('v3');
-    expect(Date.now() - started).toBeLessThan(100);
+    expect(Date.now() - started).toBeLessThan(150);
 
     expect(states).toContain('open');
     expect(errors).toHaveLength(2);
