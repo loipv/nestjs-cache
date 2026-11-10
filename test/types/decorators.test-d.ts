@@ -99,3 +99,60 @@ export class Rejected {
     return Promise.resolve();
   }
 }
+
+export class Accepted02 {
+  @Cacheable({ strategy: 'swr', staleTtl: 300_000 })
+  a(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  @Cacheable({ strategy: 'sliding', maxTtl: 3_600_000, ttl: 60_000 })
+  b(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  @Cacheable({ lock: true, strategy: 'fixed' })
+  c(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  @CachePut({ key: 'user:{0}', strategy: 'swr', staleTtl: 1_000 })
+  d(id: string): Promise<User> {
+    return Promise.resolve({ id });
+  }
+  @Cacheable({
+    key: (q: SearchQuery, page: number) => `${q.term}:${page}`,
+    condition: (q: SearchQuery) => q.term.length > 2,
+    strategy: 'swr',
+    staleTtl: 10_000,
+    lock: true,
+  })
+  e(q: SearchQuery, page: number): Promise<User[]> {
+    return Promise.resolve([]);
+  }
+}
+
+export class Rejected02 {
+  // @ts-expect-error swr cần staleTtl
+  @Cacheable({ strategy: 'swr' })
+  a(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  // @ts-expect-error sliding không nhận staleTtl
+  @Cacheable({ strategy: 'sliding', staleTtl: 1 })
+  b(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  // @ts-expect-error fixed không nhận staleTtl
+  @Cacheable({ staleTtl: 1 })
+  c(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  // @ts-expect-error CachePut không có lock
+  @CachePut({ lock: true })
+  d(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  // @ts-expect-error CacheEvict không có strategy
+  @CacheEvict({ strategy: 'swr', staleTtl: 1 })
+  e(): Promise<void> {
+    return Promise.resolve();
+  }
+}

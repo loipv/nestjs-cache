@@ -5,6 +5,7 @@ export interface CacheMetadataEntry {
   kind: 'cacheable' | 'put' | 'evict';
   method: string | symbol;
   store: string;
+  lock: boolean | undefined;
 }
 
 type Holder = { [CACHE_METADATA]?: CacheMetadataEntry[] };
@@ -47,6 +48,22 @@ export function assertPositiveFinite(
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new CacheConfigError(
       `${describeMethod(target, method)}: ${field} must be a finite number > 0, got ${String(value)}`,
+    );
+  }
+}
+
+/** Validates `staleTtl`/`maxTtl` and the `maxTtl >= ttl` relation at definition time. */
+export function assertStrategyTtls(
+  target: object,
+  method: string | symbol,
+  options: { ttl?: number; staleTtl?: number; maxTtl?: number } | undefined,
+): void {
+  assertPositiveFinite(target, method, 'staleTtl', options?.staleTtl);
+  assertPositiveFinite(target, method, 'maxTtl', options?.maxTtl);
+  const { ttl, maxTtl } = options ?? {};
+  if (ttl !== undefined && maxTtl !== undefined && maxTtl < ttl) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: maxTtl (${String(maxTtl)}) must be >= ttl (${String(ttl)})`,
     );
   }
 }

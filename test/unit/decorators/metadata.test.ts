@@ -130,4 +130,105 @@ describe('decorator metadata', () => {
       return S;
     }).toThrow(CacheConfigError);
   });
+
+  describe('0.2 definition-time checks', () => {
+    it.each([0, -1, Number.NaN])('rejects staleTtl %s', (v) => {
+      expect(() => {
+        class S {
+          @Cacheable({ strategy: 'swr', staleTtl: v }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow(CacheConfigError);
+      expect(() => {
+        class S {
+          @Cacheable({ strategy: 'swr', staleTtl: v }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow(/S\.a/);
+    });
+
+    it.each([0, -1, Number.NaN])('rejects maxTtl %s', (v) => {
+      expect(() => {
+        class S {
+          @CachePut({ strategy: 'sliding', maxTtl: v }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow(/S\.a: maxTtl/);
+    });
+
+    it('rejects maxTtl below ttl at definition', () => {
+      expect(() => {
+        class S {
+          @Cacheable({ strategy: 'sliding', ttl: 10, maxTtl: 5 }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow('S.a: maxTtl (5) must be >= ttl (10)');
+    });
+
+    it('accepts maxTtl equal to ttl, or maxTtl without ttl', () => {
+      expect(() => {
+        class S {
+          @Cacheable({ strategy: 'sliding', ttl: 5, maxTtl: 5 }) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+          @Cacheable({ strategy: 'sliding', maxTtl: 5 }) b(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).not.toThrow();
+    });
+
+    it('rejects static methods', () => {
+      expect(() => {
+        class S {
+          @Cacheable() static a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      }).toThrow('S.a: cache decorators cannot be used on static methods');
+    });
+
+    it('rejects an empty evict key list', () => {
+      expect(() => {
+        class S {
+          @CacheEvict({ key: [] }) a(): Promise<void> {
+            return Promise.resolve();
+          }
+        }
+        return S;
+      }).toThrow('S.a: key must not be an empty array');
+    });
+
+    it('records the lock flag', () => {
+      class S {
+        @Cacheable({ lock: true }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+        @Cacheable() b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+        @CachePut() c(): Promise<number> {
+          return Promise.resolve(1);
+        }
+        @CacheEvict() d(): Promise<void> {
+          return Promise.resolve();
+        }
+      }
+      const [a, b, c, d] = getCacheMetadata(S);
+      expect(a?.lock).toBe(true);
+      expect(b?.lock).toBeUndefined();
+      expect(c?.lock).toBeUndefined();
+      expect(d?.lock).toBeUndefined();
+    });
+  });
 });

@@ -25,6 +25,11 @@ export function CacheEvict<K extends unknown[] = never[]>(
         throw new CacheConfigError(`${where}: allEntries cannot be combined with key`);
       }
     }
+    if (Array.isArray(loose.key) && loose.key.length === 0) {
+      throw new CacheConfigError(
+        `${describeMethod(target, propertyKey)}: key must not be an empty array`,
+      );
+    }
     const specs: readonly (KeySpec<never[]> | undefined)[] = Array.isArray(loose.key)
       ? (loose.key as readonly KeySpec<never[]>[])
       : [loose.key as KeySpec<never[]> | undefined];
@@ -36,7 +41,7 @@ export function CacheEvict<K extends unknown[] = never[]>(
       target,
       propertyKey,
       descriptor,
-      { kind: 'evict', method: propertyKey, store },
+      { kind: 'evict', method: propertyKey, store, lock: undefined },
       async (engine, call) => {
         // Keys are built before the method runs, from the arguments as passed.
         let evict: (() => Promise<void>) | undefined;

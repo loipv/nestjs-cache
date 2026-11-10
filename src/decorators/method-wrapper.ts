@@ -54,6 +54,11 @@ export function wrapMethod(
   entry: CacheMetadataEntry,
   handler: (engine: CacheEngine, call: MethodCall) => Promise<unknown>,
 ): void {
+  if (typeof target === 'function') {
+    throw new CacheConfigError(
+      `${(target as { name: string }).name}.${String(propertyKey)}: cache decorators cannot be used on static methods`,
+    );
+  }
   const original: unknown = descriptor.value;
   if (typeof original !== 'function') {
     throw new CacheConfigError(

@@ -1,5 +1,5 @@
 import type { PutOptions } from '../core/cache-engine.js';
-import { assertPositiveFinite } from './metadata.js';
+import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
 import { compileKeyAt, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheableOptions, KeySpec } from './options.js';
 
@@ -11,6 +11,7 @@ export function Cacheable<
   return (target, propertyKey, descriptor) => {
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
+    assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
@@ -25,7 +26,7 @@ export function Cacheable<
       target,
       propertyKey,
       descriptor,
-      { kind: 'cacheable', method: propertyKey, store },
+      { kind: 'cacheable', method: propertyKey, store, lock: options?.lock },
       (engine, call) => {
         let key: string;
         try {

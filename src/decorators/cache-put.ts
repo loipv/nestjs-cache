@@ -1,5 +1,5 @@
 import type { PutOptions } from '../core/cache-engine.js';
-import { assertPositiveFinite } from './metadata.js';
+import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
 import { compileKeyAt, wrapMethod } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
@@ -9,6 +9,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
   return (target, propertyKey, descriptor) => {
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
+    assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
@@ -23,7 +24,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
       target,
       propertyKey,
       descriptor,
-      { kind: 'put', method: propertyKey, store },
+      { kind: 'put', method: propertyKey, store, lock: undefined },
       async (engine, call) => {
         // Condition and key are evaluated before the method runs, so a method
         // that mutates its arguments still writes under the key the caller asked for.

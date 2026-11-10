@@ -1,5 +1,8 @@
 export type KeySpec<A extends unknown[]> = string | ((...args: A) => string);
-export type StrategyOptions = { strategy?: 'fixed' };
+export type StrategyOptions =
+  | { strategy?: 'fixed'; staleTtl?: never; maxTtl?: never }
+  | { strategy: 'swr'; staleTtl: number; maxTtl?: never }
+  | { strategy: 'sliding'; maxTtl?: number; staleTtl?: never };
 interface TargetOptions {
   namespace?: string;
   store?: string;
@@ -13,8 +16,9 @@ interface WritePolicy<C extends unknown[], R> {
 }
 export type CacheableOptions<K extends unknown[], C extends unknown[], R> = TargetOptions &
   StrategyOptions &
-  WritePolicy<C, R> & { key?: KeySpec<K> };
+  WritePolicy<C, R> & { key?: KeySpec<K>; lock?: boolean };
 export type CachePutOptions<K extends unknown[], C extends unknown[], R> = TargetOptions &
+  StrategyOptions &
   WritePolicy<C, R> & { key?: KeySpec<K> };
 export type CacheEvictOptions<A extends unknown[]> =
   | (TargetOptions & {
