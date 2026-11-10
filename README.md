@@ -293,8 +293,11 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 | ioredis      | `^5 \|\| ^6` (optional peer) |
 | Redis server | 6.2 or later                 |
 
-The package ships both ESM and CommonJS builds. Internal tokens use `Symbol.for('@loipv/nestjs-cache:...')`,
-so both builds loaded in one process share the same identifiers. The library does not rely on `emitDecoratorMetadata`.
+The package ships both ESM and CommonJS builds. The injection tokens use `Symbol.for('@loipv/nestjs-cache:...')`,
+so they are shared when both builds are loaded in one process, and `instanceof CacheConfigError` matches errors
+from either build. Classes are not shared: `CacheService`, `CacheEvents` and the other classes are injected by
+class, so import the package from one build only (do not mix `import` and `require` of it in one app).
+The library does not rely on `emitDecoratorMetadata`.
 
 ## Roadmap
 
