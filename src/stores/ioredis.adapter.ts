@@ -21,7 +21,12 @@ export interface IoredisLike {
   subscribe(...channels: string[]): Promise<unknown>;
   on(event: string, listener: (...args: never[]) => void): unknown;
   quit(): Promise<unknown>;
+  /** Optional. Closes the connection at once; used when `quit` does not settle in time. */
+  disconnect?(): void;
 }
+
+/** How long `close` waits for QUIT before it drops the subscriber connection. */
+const CLOSE_TIMEOUT_MS = 1_000;
 
 export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
   return {
@@ -51,33 +56,123 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
   };
 }
 
+interface Subscription {
+  status: 'pending' | 'ok' | 'failed';
+  done: Promise<void>;
+}
+
+/** Calls every handler; a throwing handler never reaches the others or the ioredis emitter. */
+function notifyAll<A extends unknown[]>(
+  handlers: readonly ((...args: A) => void)[],
+  ...args: A
+): void {
+  for (const handler of handlers) {
+    try {
+      handler(...args);
+    } catch {
+      // swallowed: this runs inside ioredis event listeners
+    }
+  }
+}
+
 function createSubscriber(connection: IoredisLike): RedisSubscriberAdapter {
   const handlers = new Map<string, (message: string) => void>();
+  /**
+   * The latest SUBSCRIBE per channel. ioredis restores a channel on reconnect only once a
+   * SUBSCRIBE was confirmed, so channels whose SUBSCRIBE failed are sent again on 'ready'.
+   */
+  const subscriptions = new Map<string, Subscription>();
   const reconnectHandlers: Array<() => void> = [];
+  const errorHandlers: Array<(error: unknown) => void> = [];
   let readyCount = 0;
   let closing: Promise<void> | undefined;
 
+  const send = (channel: string): Promise<void> => {
+    const subscription: Subscription = { status: 'pending', done: Promise.resolve() };
+    // The executor turns a synchronous throw into a rejection, so nothing throws into ioredis.
+    const sent = new Promise((resolve) => {
+      resolve(connection.subscribe(channel));
+    });
+    subscription.done = sent.then(
+      () => {
+        subscription.status = 'ok';
+      },
+      (error: unknown) => {
+        subscription.status = 'failed';
+        throw error;
+      },
+    );
+    subscriptions.set(channel, subscription);
+    return subscription.done;
+  };
+
+  // Without an 'error' listener ioredis prints "Unhandled error event" on every failed reconnect.
+  connection.on('error', (error: unknown) => {
+    notifyAll(errorHandlers, error);
+  });
   connection.on('message', (channel: string, message: string) => {
     handlers.get(channel)?.(message);
   });
   connection.on('ready', () => {
     readyCount += 1;
-    if (readyCount > 1) for (const handler of reconnectHandlers) handler();
+    if (readyCount > 1) notifyAll(reconnectHandlers);
+    if (closing !== undefined) return;
+    for (const [channel, subscription] of subscriptions) {
+      if (subscription.status !== 'failed') continue;
+      // Messages published while the channel was not subscribed are lost: treat it as a reconnect.
+      send(channel).then(
+        () => {
+          notifyAll(reconnectHandlers);
+        },
+        (error: unknown) => {
+          notifyAll(errorHandlers, error);
+        },
+      );
+    }
   });
 
   return {
-    async subscribe(channel, onMessage) {
+    subscribe(channel, onMessage) {
       handlers.set(channel, onMessage);
-      await connection.subscribe(channel);
+      const current = subscriptions.get(channel);
+      if (current !== undefined && current.status !== 'failed') return current.done;
+      return send(channel);
     },
     onReconnect(handler) {
       reconnectHandlers.push(handler);
     },
+    onError(handler) {
+      errorHandlers.push(handler);
+    },
     close() {
-      closing ??= connection.quit().then(() => undefined);
+      closing ??= closeConnection(connection);
       return closing;
     },
   };
+}
+
+/** QUIT, or drop the connection if QUIT has not settled after `CLOSE_TIMEOUT_MS`. Never rejects. */
+async function closeConnection(connection: IoredisLike): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(true);
+    }, CLOSE_TIMEOUT_MS);
+  });
+  const quit = new Promise((resolve) => {
+    resolve(connection.quit());
+  }).then(
+    () => false,
+    () => true,
+  );
+  const force = await Promise.race([quit, timedOut]);
+  clearTimeout(timer);
+  if (!force) return;
+  try {
+    connection.disconnect?.();
+  } catch {
+    // close never rejects
+  }
 }
 
 export function isRedisClientAdapter(

@@ -96,4 +96,35 @@ describe('redisInvalidationBus', () => {
     await bus.close();
     expect(fake.subscribers).toHaveLength(0);
   });
+
+  it('a later subscribe retries after a rejected one, on the same connection (F1)', async () => {
+    const fake = new FakeRedis();
+    fake.subscribeFailures.push(new Error('unreachable'));
+    const bus = redisInvalidationBus({ client: fake });
+    const handler = vi.fn();
+    await expect(bus.subscribe(handler)).rejects.toThrow('unreachable');
+    await expect(bus.subscribe(handler)).resolves.toBeUndefined();
+    expect(fake.subscribers).toHaveLength(1);
+    expect(fake.subscribers[0]!.subscribeCalls).toBe(2);
+    // the same handler passed twice is registered once
+    fake.subscribers[0]!.deliver('{"origin":"a","keys":["k"]}');
+    expect(handler).toHaveBeenCalledTimes(1);
+    // once subscribed, the promise is shared again
+    await bus.subscribe(vi.fn());
+    expect(fake.subscribers[0]!.subscribeCalls).toBe(2);
+  });
+
+  it('forwards subscriber errors to onError handlers registered before or after subscribe (F2)', async () => {
+    const fake = new FakeRedis();
+    const bus = redisInvalidationBus({ client: fake });
+    const before = vi.fn();
+    const after = vi.fn();
+    bus.onError?.(before);
+    await bus.subscribe(() => undefined);
+    bus.onError?.(after);
+    const error = new Error('ECONNREFUSED');
+    fake.subscribers[0]!.triggerError(error);
+    expect(before).toHaveBeenCalledWith(error);
+    expect(after).toHaveBeenCalledWith(error);
+  });
 });

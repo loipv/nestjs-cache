@@ -18,13 +18,24 @@ export type InvalidationMessage =
 export interface InvalidationBus {
   /** Broadcasts a message to every subscribed instance. */
   publish(message: InvalidationMessage): Promise<void>;
-  /** Registers the handler that receives messages from the channel. */
+  /**
+   * Registers the handler that receives messages from the channel. If it rejects, the bus
+   * should keep trying to subscribe (for example when its connection becomes ready), and a
+   * later call should retry rather than return the same rejection.
+   */
   subscribe(handler: (message: InvalidationMessage) => void): Promise<void>;
   /**
-   * Registers a handler called after the connection is re-established.
-   * Messages may have been missed meanwhile, so receivers clear their L1.
+   * Registers a handler called after the connection is re-established, or after a
+   * subscription that had failed is established later. Messages may have been missed
+   * meanwhile, so receivers clear their L1.
    */
   onReconnect(handler: () => void): void;
+  /**
+   * Optional. Registers a handler for errors the bus handles internally, such as a lost
+   * subscriber connection or a failed re-subscribe. `TieredStore` reports them as `error`
+   * events with `operation: 'subscribe'`. Handlers must not throw.
+   */
+  onError?(handler: (error: unknown) => void): void;
   /** Releases the bus connection. Called at shutdown; must be idempotent. */
   close(): Promise<void>;
 }

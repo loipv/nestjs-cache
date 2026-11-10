@@ -68,10 +68,20 @@ export class TieredStore implements CacheStore {
     if (this.subscribed) return;
     this.subscribed = true;
     const bus = this.bus;
-    try {
-      bus.onReconnect(this.onReconnect);
-    } catch (error) {
-      this.report('subscribe', error);
+    const registrations = [
+      () => {
+        bus.onReconnect(this.onReconnect);
+      },
+      () => {
+        bus.onError?.(this.onBusError);
+      },
+    ];
+    for (const register of registrations) {
+      try {
+        register();
+      } catch (error) {
+        this.report('subscribe', error);
+      }
     }
     // Startup must not wait on the bus: subscribe runs in the background.
     void this.attempt('subscribe', () => bus.subscribe(this.onMessage));
@@ -152,6 +162,11 @@ export class TieredStore implements CacheStore {
     // Messages may have been missed while disconnected.
     this.pending.clear();
     void this.attempt('clear', () => this.l1.clear(''));
+  };
+
+  /** Errors the bus handles internally, such as a lost subscriber connection. */
+  private readonly onBusError = (error: unknown): void => {
+    this.report('subscribe', error);
   };
 
   private forgetKeys(keys: readonly string[]): void {

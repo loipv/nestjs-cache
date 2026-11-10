@@ -42,35 +42,47 @@ function parseMessage(raw: string): InvalidationMessage | undefined {
 export function createRedisBus(adapter: RedisClientAdapter, channel: string): InvalidationBus {
   const handlers: Array<(message: InvalidationMessage) => void> = [];
   const reconnectHandlers: Array<() => void> = [];
+  const errorHandlers: Array<(error: unknown) => void> = [];
   let subscriber: RedisSubscriberAdapter | undefined;
   let subscribed: Promise<void> | undefined;
+
+  const dispatch = (raw: string): void => {
+    const message = parseMessage(raw);
+    if (message === undefined) return;
+    for (const h of handlers) {
+      try {
+        h(message);
+      } catch {
+        // one failing handler must not stop the others or reach the ioredis listener
+      }
+    }
+  };
 
   return {
     async publish(message) {
       await adapter.publish(channel, JSON.stringify(message));
     },
     subscribe(handler) {
-      handlers.push(handler);
-      if (subscribed === undefined) {
+      if (!handlers.includes(handler)) handlers.push(handler);
+      if (subscriber === undefined) {
         subscriber = adapter.createSubscriber();
         for (const onReconnect of reconnectHandlers) subscriber.onReconnect(onReconnect);
-        subscribed = subscriber.subscribe(channel, (raw) => {
-          const message = parseMessage(raw);
-          if (message === undefined) return;
-          for (const h of handlers) {
-            try {
-              h(message);
-            } catch {
-              // one failing handler must not stop the others or reach the ioredis listener
-            }
-          }
-        });
+        for (const onError of errorHandlers) subscriber.onError?.(onError);
       }
+      // A rejected attempt is forgotten, so a later call subscribes again.
+      subscribed ??= subscriber.subscribe(channel, dispatch).catch((error: unknown) => {
+        subscribed = undefined;
+        throw error;
+      });
       return subscribed;
     },
     onReconnect(handler) {
       reconnectHandlers.push(handler);
       subscriber?.onReconnect(handler);
+    },
+    onError(handler) {
+      errorHandlers.push(handler);
+      subscriber?.onError?.(handler);
     },
     async close() {
       await subscriber?.close();

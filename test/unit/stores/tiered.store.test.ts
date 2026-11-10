@@ -2,8 +2,10 @@ import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { CacheConfigError } from '../../../src/errors.js';
 import { memoryStore, type MemoryStore } from '../../../src/stores/memory.store.js';
+import { redisStore } from '../../../src/stores/redis.store.js';
 import { tieredStore, type TieredStore } from '../../../src/stores/tiered.store.js';
 import { FakeBus } from '../helpers/fake-bus.js';
+import { FakeConnection } from '../helpers/fake-ioredis.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 const anyString: unknown = expect.any(String);
@@ -181,6 +183,60 @@ describe('TieredStore', () => {
       operation: 'subscribe',
       error: anyError,
     });
+  });
+
+  it('reports bus errors as subscribe errors (F2)', () => {
+    const error = new Error('ECONNREFUSED');
+    expect(() => {
+      bus.triggerError(error);
+    }).not.toThrow();
+    expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'subscribe', error });
+  });
+
+  it('works with a bus that has no onError, and reports a throwing onError (F2)', async () => {
+    const plain = Object.assign(new FakeBus(), { onError: undefined });
+    const s = tieredStore({ l1: memoryStore(), l2: new FakeStore(), invalidation: plain });
+    expect(() => {
+      s.bind({ emit: vi.fn() });
+    }).not.toThrow();
+
+    const throwing = new FakeBus();
+    throwing.onError = (): never => {
+      throw new Error('onError failed');
+    };
+    const remote = new FakeStore();
+    const t = tieredStore({ l1: memoryStore(), l2: remote, invalidation: throwing });
+    const local = { emit: vi.fn() };
+    t.bind(local);
+    expect(local.emit).toHaveBeenCalledWith('error', { operation: 'subscribe', error: anyError });
+    await t.set('k', 'v', 60_000);
+    throwing.deliver({ origin: 'other', keys: ['k'] });
+    remote.data.clear();
+    expect(await t.get('k')).toBeUndefined(); // still subscribed
+  });
+
+  it('ends up subscribed once Redis is reachable after a failed first subscribe (F1)', async () => {
+    const client = new FakeConnection();
+    const connection = client.prepareDuplicate();
+    connection.failNextSubscribe();
+    const local = memoryStore();
+    const s = tieredStore({ l1: local, l2: redisStore({ client: client.asIoredis() }) });
+    const events = { emit: vi.fn() };
+    s.bind(events);
+    await flush();
+    expect(events.emit).toHaveBeenCalledWith('error', { operation: 'subscribe', error: anyError });
+
+    await local.set('cached-while-unsubscribed', 'v', 60_000);
+    connection.emit('ready'); // Redis is reachable: the first ready after the failure
+    await flush();
+    // messages were missed while unsubscribed, so L1 is emptied as on a reconnect
+    expect(await local.get('cached-while-unsubscribed')).toBeUndefined();
+
+    await s.set('k', 'v', 60_000);
+    expect(await local.get('k')).toBe('v');
+    await client.publish('nestjs-cache:invalidate', '{"origin":"other","keys":["k"]}');
+    await flush();
+    expect(await local.get('k')).toBeUndefined();
   });
 
   it('swallows failures before bind', async () => {

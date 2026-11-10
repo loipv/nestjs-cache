@@ -10,6 +10,7 @@ export class FakeBus implements InvalidationBus {
   closed = false;
   private readonly handlers: Array<(message: InvalidationMessage) => void> = [];
   private readonly reconnectHandlers: Array<() => void> = [];
+  private readonly errorHandlers: Array<(error: unknown) => void> = [];
   private readonly failures = new Map<Op, Error[]>();
 
   failNext(op: Op, error: Error = new Error(`${op} failed`)): void {
@@ -36,6 +37,10 @@ export class FakeBus implements InvalidationBus {
     this.reconnectHandlers.push(handler);
   }
 
+  onError(handler: (error: unknown) => void): void {
+    this.errorHandlers.push(handler);
+  }
+
   close(): Promise<void> {
     this.closed = true;
     return Promise.resolve();
@@ -48,5 +53,9 @@ export class FakeBus implements InvalidationBus {
 
   triggerReconnect(): void {
     for (const handler of this.reconnectHandlers) handler();
+  }
+
+  triggerError(error: unknown): void {
+    for (const handler of this.errorHandlers) handler(error);
   }
 }

@@ -5,16 +5,34 @@ import type {
 
 export class FakeSubscriber implements RedisSubscriberAdapter {
   closed = false;
+  subscribeCalls = 0;
   private readonly handlers = new Map<string, Array<(message: string) => void>>();
   private readonly reconnectHandlers: Array<() => void> = [];
+  private readonly errorHandlers: Array<(error: unknown) => void> = [];
+  private readonly subscribeFailures: Error[] = [];
+
+  failNextSubscribe(error: Error = new Error('subscribe failed')): void {
+    this.subscribeFailures.push(error);
+  }
 
   async subscribe(channel: string, onMessage: (message: string) => void): Promise<void> {
-    this.handlers.set(channel, [onMessage]);
+    this.subscribeCalls += 1;
     await Promise.resolve();
+    const failure = this.subscribeFailures.shift();
+    if (failure) throw failure;
+    this.handlers.set(channel, [onMessage]);
   }
 
   onReconnect(handler: () => void): void {
     this.reconnectHandlers.push(handler);
+  }
+
+  onError(handler: (error: unknown) => void): void {
+    this.errorHandlers.push(handler);
+  }
+
+  triggerError(error: unknown): void {
+    for (const handler of this.errorHandlers) handler(error);
   }
 
   async close(): Promise<void> {
@@ -103,8 +121,12 @@ export class FakeRedis implements RedisClientAdapter {
     await Promise.resolve();
   }
 
+  /** Failures queued for the next subscriber's SUBSCRIBE calls. */
+  readonly subscribeFailures: Error[] = [];
+
   createSubscriber(): FakeSubscriber {
     const subscriber = new FakeSubscriber();
+    for (const error of this.subscribeFailures.splice(0)) subscriber.failNextSubscribe(error);
     this.subscribers.push(subscriber);
     return subscriber;
   }
