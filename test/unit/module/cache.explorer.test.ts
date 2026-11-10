@@ -1,15 +1,22 @@
 import 'reflect-metadata';
 import { Controller, Injectable, Scope } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { Logger } from '@nestjs/common';
-import { describe, expect, it, vi } from 'vitest';
+import { Logger, Module } from '@nestjs/common';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheEvict } from '../../../src/decorators/cache-evict.js';
 import { CachePut } from '../../../src/decorators/cache-put.js';
 import { Cacheable } from '../../../src/decorators/cacheable.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
+import { CacheConfigError } from '../../../src/errors.js';
+import { FakeLock } from '../helpers/fake-lock.js';
+import { FakeStore } from '../helpers/fake-store.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
 
 describe('CacheExplorer', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('fails startup for an unknown store on a provider', async () => {
     class Bad {
       @Cacheable({ store: 'nope' })
@@ -145,5 +152,60 @@ describe('CacheExplorer', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     await ref.close();
     warnSpy.mockRestore();
+  });
+
+  it('warns once for the same class provided in two modules', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Shared {
+      @Cacheable({ lock: true })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    @Module({ providers: [Shared] })
+    class A {}
+    @Module({ providers: [Shared] })
+    class B {}
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ isGlobal: true }), A, B],
+    }).compile();
+    await ref.init();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    await ref.close();
+  });
+
+  it('does not warn when the store has a lock', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const store = new FakeStore();
+    Object.assign(store, { lock: new FakeLock() });
+    class Locked {
+      @Cacheable({ lock: true })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: store } })],
+      providers: [Locked],
+    }).compile();
+    await ref.init();
+    expect(warnSpy).not.toHaveBeenCalled();
+    await ref.close();
+  });
+
+  it('still throws for an unknown store and logs no warning', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Unknown {
+      @Cacheable({ store: 'nope', lock: true })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      providers: [Unknown],
+    }).compile();
+    await expect(ref.init()).rejects.toThrow(CacheConfigError);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
