@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadWithLock } from '../../../src/core/lock-runner.js';
 import { CacheConfigError } from '../../../src/errors.js';
-import { circuitBreaker, CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
+import {
+  circuitBreaker,
+  CircuitBreakerStore,
+  CircuitOpenError,
+} from '../../../src/resilience/circuit-breaker.store.js';
 import type {
   CacheStore,
   InvalidationBus,
@@ -557,10 +561,10 @@ describe('circuitBreaker', () => {
       'Invalid circuitBreaker option failureThreshold: 1.5 (must be an integer >= 1)',
     );
     expect(() => circuitBreaker(new FakeStore(), { openDuration: 0 })).toThrow(
-      'Invalid circuitBreaker option openDuration: 0 (must be a finite number > 0)',
+      'Invalid circuitBreaker option openDuration: 0 (must be a finite number > 0 and <= 2147483647)',
     );
     expect(() => circuitBreaker(new FakeStore(), { timeout: -1 })).toThrow(
-      'Invalid circuitBreaker option timeout: -1 (must be a finite number > 0)',
+      'Invalid circuitBreaker option timeout: -1 (must be a finite number > 0 and <= 2147483647)',
     );
   });
 
@@ -689,10 +693,58 @@ describe('CircuitOpenError identity', () => {
   });
 });
 
+describe('late lock handles and duration bounds', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('releases a handle that resolves after the acquire timeout', async () => {
+    vi.useFakeTimers();
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const release = vi.fn(() => Promise.resolve());
+      const lock = {
+        acquire: () =>
+          new Promise<LockHandle>((resolve) => {
+            setTimeout(() => {
+              resolve({ release });
+            }, 600);
+          }),
+      };
+      const inner = Object.assign(new FakeStore(), { lock });
+      const sink = makeSink();
+      const b = circuitBreaker(inner, { failureThreshold: 5 });
+      b.bind(sink);
+      const guarded = b.lock!.acquire('k', 1_000);
+      const caught = guarded.catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(((await caught) as Error).message).toBe(TIMEOUT_MESSAGE);
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(release).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(b.state).toBe('closed');
+      expect(sink.emit).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it.each(['timeout', 'openDuration'] as const)('rejects %s above the setTimeout limit', (name) => {
+    expect(() => circuitBreaker(new FakeStore(), { [name]: 2_147_483_648 })).toThrow(
+      `Invalid circuitBreaker option ${name}: 2147483648 (must be a finite number > 0 and <= 2147483647)`,
+    );
+    expect(() => circuitBreaker(new FakeStore(), { [name]: 2_147_483_647 })).not.toThrow();
+  });
+});
+
 describe('index exports', () => {
   it('exports circuitBreaker and CircuitOpenError', async () => {
     const index = await import('../../../src/index.js');
     expect(index.circuitBreaker).toBe(circuitBreaker);
     expect(index.CircuitOpenError).toBe(CircuitOpenError);
+    expect(index.CircuitBreakerStore).toBe(CircuitBreakerStore);
   });
 });

@@ -19,6 +19,8 @@ export interface CircuitBreakerOptions {
 const DEFAULT_FAILURE_THRESHOLD = 5;
 const DEFAULT_OPEN_DURATION = 10_000;
 const DEFAULT_TIMEOUT = 500;
+/** Largest delay `setTimeout` accepts; anything above overflows to 1 ms. */
+const MAX_TIMER_DELAY = 2_147_483_647;
 
 /** Rejection of an operation that the circuit breaker did not pass to the store. */
 export class CircuitOpenError extends Error {
@@ -39,9 +41,14 @@ export class CircuitOpenError extends Error {
 
 function positiveNumber(name: string, value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > MAX_TIMER_DELAY
+  ) {
     throw new CacheConfigError(
-      `Invalid circuitBreaker option ${name}: ${String(value)} (must be a finite number > 0)`,
+      `Invalid circuitBreaker option ${name}: ${String(value)} (must be a finite number > 0 and <= ${String(MAX_TIMER_DELAY)})`,
     );
   }
   return value;
@@ -103,7 +110,21 @@ export class CircuitBreakerStore implements CacheStore {
       const lock = inner.lock;
       this.lock = {
         acquire: async (key, ttlMs) => {
-          const handle = await this.guard(() => lock.acquire(key, ttlMs));
+          let raw: Promise<LockHandle | undefined> | undefined;
+          let handle: LockHandle | undefined;
+          try {
+            handle = await this.guard(() => (raw = lock.acquire(key, ttlMs)));
+          } catch (error) {
+            // A handle that arrives after the call was rejected would hold the lock until its
+            // ttl. Release it directly: unguarded, so it neither counts nor gets refused.
+            raw
+              ?.then(
+                (late) => late?.release(),
+                () => undefined,
+              )
+              .catch(() => undefined);
+            throw error;
+          }
           return handle === undefined ? undefined : this.guardHandle(handle);
         },
       };

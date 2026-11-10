@@ -46,5 +46,9 @@ export type { IoredisLike } from './stores/ioredis.adapter.js';
 export type { RedisClientAdapter, RedisSubscriberAdapter } from './stores/redis-client.adapter.js';
 export { TieredStore, tieredStore } from './stores/tiered.store.js';
 export type { TieredStoreOptions } from './stores/tiered.store.js';
-export { circuitBreaker, CircuitOpenError } from './resilience/circuit-breaker.store.js';
+export {
+  circuitBreaker,
+  CircuitBreakerStore,
+  CircuitOpenError,
+} from './resilience/circuit-breaker.store.js';
 export type { CircuitBreakerOptions } from './resilience/circuit-breaker.store.js';
