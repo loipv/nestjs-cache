@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
@@ -46,6 +46,12 @@ class UserWriter {
   @CachePut({ key: 'sl:{0}', strategy: 'sliding', maxTtl: 120_000 })
   async sliding(id: string): Promise<string> {
     return id;
+  }
+
+  @CachePut({ key: '{0}' })
+  async putRaw(id: string): Promise<string> {
+    this.calls++;
+    return `raw${id}`;
   }
 
   @CachePut()
@@ -112,6 +118,16 @@ describe('@CachePut', () => {
     expect(svc.calls).toBe(1);
     expect(fake.calls).toEqual([]);
     expect(emitted.filter((e) => e.event === 'error')).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+    ]);
+  });
+
+  it('runs the method and skips the write when the key renders empty', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.putRaw('')).toBe('raw');
+    expect(svc.calls).toBe(1);
+    expect(fake.calls).toEqual([]);
+    expect(emitted).toEqual([
       { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
     ]);
   });

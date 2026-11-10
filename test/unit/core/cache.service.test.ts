@@ -55,6 +55,79 @@ describe('CacheService', () => {
     }
   });
 
+  describe('an empty key', () => {
+    /* fullKey(prefix, namespace, '') collapses to `prefix:namespace`: it would collide with a
+       namespace-less key and escape clear(namespace), so '' is a key error, as in decorators */
+    const keyErrors = (emitted: { event: string; payload: unknown }[]): unknown[] =>
+      emitted.filter((e) => e.event === 'error').map((e) => e.payload);
+    const keyError = {
+      store: 'default',
+      operation: 'key',
+      error: new TypeError('Cache key must not be empty'),
+    };
+
+    it.each([{}, { prefix: 'app' }])(
+      'get is a miss without a store call or a miss event (%j)',
+      async (options) => {
+        const { engine, store, emitted } = makeEngine(options);
+        const service = new CacheService(engine);
+        await store.set(options.prefix === undefined ? 'n' : 'app:n', 'x', 1_000);
+        store.calls.length = 0;
+        expect(await service.get('', { namespace: 'n' })).toBeUndefined();
+        expect(await service.get('')).toBeUndefined();
+        expect(store.calls).toEqual([]);
+        expect(emitted).toEqual([
+          { event: 'error', payload: keyError },
+          { event: 'error', payload: keyError },
+        ]);
+      },
+    );
+
+    it('getOrSet runs the loader each time and stores nothing', async () => {
+      const { engine, store, emitted } = makeEngine();
+      const service = new CacheService(engine);
+      const loader = vi.fn(() => Promise.resolve('v'));
+      expect(await service.getOrSet('', loader, { namespace: 'n' })).toBe('v');
+      expect(await service.getOrSet('', loader, { namespace: 'n', lock: true })).toBe('v');
+      expect(loader).toHaveBeenCalledTimes(2);
+      expect(store.calls).toEqual([]);
+      expect(keyErrors(emitted)).toEqual([keyError, keyError]);
+      expect(emitted.filter((e) => e.event !== 'error')).toEqual([]);
+    });
+
+    it('getOrSet still lets a loader rejection reach the caller', async () => {
+      const { engine } = makeEngine();
+      const service = new CacheService(engine);
+      await expect(service.getOrSet('', () => Promise.reject(new Error('db')))).rejects.toThrow(
+        'db',
+      );
+    });
+
+    it('set and delete are no-ops', async () => {
+      const { engine, store, emitted } = makeEngine();
+      const service = new CacheService(engine);
+      await service.set('', 1, { namespace: 'n' });
+      await service.delete('', { namespace: 'n' });
+      /* one empty key in a list skips the whole delete, as a failing key in @CacheEvict does */
+      await service.delete(['a', ''], { namespace: 'n' });
+      await engine.put({ namespace: 'n', key: '' }, 1);
+      expect(store.calls).toEqual([]);
+      expect(keyErrors(emitted)).toEqual([keyError, keyError, keyError, keyError]);
+      expect(emitted.filter((e) => e.event !== 'error')).toEqual([]);
+    });
+
+    it('invalid options and unknown stores are still rejected first', async () => {
+      const { engine } = makeEngine();
+      const service = new CacheService(engine);
+      await expect(service.get('', { store: 'nope' })).rejects.toThrow(CacheConfigError);
+      await expect(service.set('', 1, { ttl: 0 })).rejects.toThrow(CacheConfigError);
+      await expect(service.getOrSet('', () => Promise.resolve(1), { ttl: -1 })).rejects.toThrow(
+        CacheConfigError,
+      );
+      await expect(service.delete('', { store: 'nope' })).rejects.toThrow(CacheConfigError);
+    });
+  });
+
   describe('strategy options', () => {
     afterEach(() => {
       vi.restoreAllMocks();

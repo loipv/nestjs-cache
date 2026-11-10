@@ -64,6 +64,18 @@ class UserRemover {
     log.push('method');
   }
 
+  @CacheEvict({ namespace: 'users', key: '{0}' })
+  async removeRaw(id: string): Promise<string> {
+    this.calls++;
+    return `removed ${id}`;
+  }
+
+  @CacheEvict({ namespace: 'users', key: ['user:{0}', '{0}'] })
+  async removeRawMany(id: string): Promise<string> {
+    this.calls++;
+    return `removed ${id}`;
+  }
+
   @CacheEvict()
   async byFilter(filter: Map<string, string>): Promise<number> {
     this.calls++;
@@ -168,6 +180,20 @@ describe('@CacheEvict', () => {
       { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
     ]);
   });
+
+  it.each(['removeRaw', 'removeRawMany'] as const)(
+    '%s skips the eviction but runs the method when a key renders empty',
+    async (method) => {
+      /* deleting 'users' would hit the bare namespace key, never an entry of the namespace */
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      expect(await svc[method]('')).toBe('removed ');
+      expect(svc.calls).toBe(1);
+      expect(fake.calls).toEqual([]);
+      expect(emitted).toEqual([
+        { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+      ]);
+    },
+  );
 
   it('stacks two @CacheEvict, and @CachePut with @CacheEvict', async () => {
     await svc.removeTwice('1');

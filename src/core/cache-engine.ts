@@ -8,8 +8,10 @@ import {
   servable,
   type KeyRef,
   type PutOptions,
+  type Target,
 } from './engine-io.js';
 import { EngineLoad } from './engine-load.js';
+import { emptyKeyError, isEmptyKey } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
@@ -90,6 +92,7 @@ export class CacheEngine {
   async get<T>(ref: KeyRef, options: StrategyOptions = {}): Promise<T | undefined> {
     const target = this.io.resolve(ref.store);
     const strategy = strategyOf(options, undefined);
+    if (this.emptyKey(target, [ref.key])) return undefined;
     const result = await this.io.read(target, ref, strategy, this.options.defaults.ttl);
     if (!result.found) {
       this.io.miss(target.name, ref);
@@ -114,6 +117,7 @@ export class CacheEngine {
     checkDuration('nullTtl', options.nullTtl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
+    if (this.emptyKey(target, [ref.key])) return loader();
     const cached = await this.io.read(target, ref, strategy, ttl);
     const locking = options.lock ?? this.options.defaults.lock.enabled;
     const lock = locking ? target.store.lock : undefined;
@@ -132,6 +136,7 @@ export class CacheEngine {
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl);
+    if (this.emptyKey(target, [ref.key])) return;
     // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
     const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
     await this.io.write(target, ref, value, strategy, this.io.ttlFor(strategy, ttl));
@@ -148,11 +153,17 @@ export class CacheEngine {
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
     const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
+    if (this.emptyKey(target, [ref.key])) return;
     await this.io.store(target, ref, value, options, strategy, true);
   }
 
-  delete(scope: { store?: string; namespace?: string }, keys: readonly string[]): Promise<void> {
-    return this.io.delete(scope, keys);
+  async delete(
+    scope: { store?: string; namespace?: string },
+    keys: readonly string[],
+  ): Promise<void> {
+    // One empty key skips the whole delete, as a key that cannot be built does in @CacheEvict.
+    if (this.emptyKey(this.io.resolve(scope.store), keys)) return;
+    await this.io.delete(scope, keys);
   }
 
   async clear(namespace: string, storeName?: string): Promise<void> {
@@ -165,5 +176,12 @@ export class CacheEngine {
 
   reportError(store: string | undefined, operation: CacheOperation, error: unknown): void {
     this.io.reportError(store, operation, error);
+  }
+
+  /** Reports an empty key as a key error; the caller then skips the cache. */
+  private emptyKey(target: Target, keys: readonly string[]): boolean {
+    if (!keys.some(isEmptyKey)) return false;
+    this.io.reportError(target.name, 'key', emptyKeyError());
+    return true;
   }
 }

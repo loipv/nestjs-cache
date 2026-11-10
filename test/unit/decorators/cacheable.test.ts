@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Injectable, Scope } from '@nestjs/common';
+import { Injectable, Logger, Scope } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
@@ -58,6 +58,18 @@ class UserService {
   async badKey(id: string): Promise<string> {
     this.calls++;
     return `v${id}`;
+  }
+
+  @Cacheable({ key: '{0}' })
+  async raw(id: string): Promise<string> {
+    this.calls++;
+    return `raw${id}`;
+  }
+
+  @Cacheable({ key: (id: string) => id })
+  async rawCallback(id: string): Promise<string> {
+    this.calls++;
+    return `raw${id}`;
   }
 
   @Cacheable()
@@ -192,6 +204,28 @@ describe('@Cacheable', () => {
     expect((errors[0]!.payload as { error: Error }).error.message).toBe('bad key 1');
     expect(fake.calls).toEqual([]);
   });
+
+  it.each([
+    ['template', 'raw'],
+    ['callback', 'rawCallback'],
+  ] as const)(
+    'treats a %s key that renders empty as a key error and runs the method uncached',
+    async (_kind, method) => {
+      /* '' would collapse the full key to the bare namespace (or prefix), so it is never used */
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      expect(await svc[method]('')).toBe('raw');
+      expect(await svc[method]('')).toBe('raw');
+      expect(svc.calls).toBe(2);
+      expect(fake.calls).toEqual([]);
+      const errors = emitted.filter((e) => e.event === 'error');
+      expect(errors).toHaveLength(2);
+      expect(errors[0]!.payload).toMatchObject({ store: 'default', operation: 'key' });
+      expect((errors[0]!.payload as { error: Error }).error.message).toBe(
+        'Cache key must not be empty',
+      );
+      expect(emitted.filter((e) => e.event !== 'error')).toEqual([]);
+    },
+  );
 
   it('falls back to the method for Map arguments with the default key (Review Focus 5)', async () => {
     const a = await svc.byFilter(new Map([['role', 'admin']]));

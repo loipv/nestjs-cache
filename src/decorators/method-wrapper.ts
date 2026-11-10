@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import type { CacheEngine, PutOptions } from '../core/cache-engine.js';
-import { compileTemplate, defaultKey } from '../core/key-builder.js';
+import { compileTemplate, defaultKey, emptyKeyError, isEmptyKey } from '../core/key-builder.js';
 import {
   createStrategy,
   strategyOptionsOf,
@@ -136,14 +136,17 @@ export function wrapMethod(
   descriptor.value = wrapper;
 }
 
-/** Compiles a key spec at declaration time; a malformed template throws here. */
+/**
+ * Compiles a key spec at declaration time; a malformed template throws here. The built
+ * function throws for a key that cannot be built, including one that renders empty.
+ */
 export function compileKey(spec: KeySpec<never[]> | undefined): (call: MethodCall) => string {
   if (spec === undefined) {
     return (call) => defaultKey(call.className, call.methodName, call.args);
   }
   if (typeof spec === 'string') {
     const render = compileTemplate(spec);
-    return (call) => render(call.args);
+    return (call) => nonEmpty(render(call.args));
   }
   const build = spec as (...args: unknown[]) => unknown;
   return (call) => {
@@ -151,8 +154,13 @@ export function compileKey(spec: KeySpec<never[]> | undefined): (call: MethodCal
     if (typeof key !== 'string') {
       throw new TypeError(`Key callback returned ${typeof key}, expected a string`);
     }
-    return key;
+    return nonEmpty(key);
   };
+}
+
+function nonEmpty(key: string): string {
+  if (isEmptyKey(key)) throw emptyKeyError();
+  return key;
 }
 
 /** `compileKey` with the declaring class and method named in a template error. */

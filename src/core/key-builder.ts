@@ -153,6 +153,18 @@ export function defaultKey(
   return `${base}:${hash}`;
 }
 
+/**
+ * An empty key is a key error: `fullKey(prefix, namespace, '')` collapses to `prefix:namespace`,
+ * which collides with a namespace-less key and is not covered by `clear(namespace)`.
+ */
+export function isEmptyKey(key: string): boolean {
+  return key === '';
+}
+
+export function emptyKeyError(): TypeError {
+  return new TypeError('Cache key must not be empty');
+}
+
 export function fullKey(
   prefix: string | undefined,
   namespace: string | undefined,
