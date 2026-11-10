@@ -38,7 +38,7 @@ class AppModule {}
 const registry = new promClient.Registry();
 Module({
   imports: [
-    lib.CacheModule.forRoot({ isGlobal: true }),
+    lib.CacheModule.forRoot({ isGlobal: true, namespaces: { users: { versioned: true } } }),
     lib.CachePrometheusModule.forRoot({ client: promClient, registry }),
   ],
   providers: [UserService],
@@ -63,6 +63,21 @@ Module({
     (await app.get(lib.CacheService).get('user:1', { namespace: 'users' })) !== undefined,
     true,
   );
+  // Versioned namespace and batch API.
+  const cache = app.get(lib.CacheService);
+  let batchCalls = 0;
+  const loadUsers = async (missing) => {
+    batchCalls += 1;
+    return new Map(missing.map((id) => [id, { id }]));
+  };
+  const batch = await cache.getOrSetMany(['1', '2'], loadUsers, { namespace: 'users' });
+  assert.deepEqual(batch, [{ id: '1' }, { id: '2' }]);
+  assert.equal(batchCalls, 1);
+  await cache.getOrSetMany(['1', '2'], loadUsers, { namespace: 'users' });
+  assert.equal(batchCalls, 1);
+  await cache.clear('users');
+  await cache.getOrSetMany(['1', '2'], loadUsers, { namespace: 'users' });
+  assert.equal(batchCalls, 2);
   await app.close();
   console.log('ok');
 })().catch((error) => {

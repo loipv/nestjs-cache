@@ -78,16 +78,19 @@ CacheModule.forRootAsync({
 
 Module options:
 
-| Option               | Type                                                  | Default                      | Meaning                                                             |
-| -------------------- | ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------- |
-| `prefix`             | `string`                                              | none                         | Prefix for every key                                                |
-| `stores`             | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`    |
-| `defaults.ttl`       | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                               |
-| `defaults.jitter`    | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]` |
-| `defaults.cacheNull` | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                       |
-| `defaults.nullTtl`   | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                         |
-| `serializer`         | `Serializer`                                          | JSON                         | Envelope serializer                                                 |
-| `isGlobal`           | `boolean`                                             | `false`                      | Register the module globally                                        |
+| Option                | Type                                                  | Default                      | Meaning                                                              |
+| --------------------- | ----------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------- |
+| `prefix`              | `string`                                              | none                         | Prefix for every key                                                 |
+| `stores`              | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`     |
+| `defaults.ttl`        | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                                |
+| `defaults.jitter`     | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]`  |
+| `defaults.cacheNull`  | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                        |
+| `defaults.nullTtl`    | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                          |
+| `namespaces`          | `{ [ns]: { versioned?: boolean } }`                   | none                         | Turns on [versioned namespaces](#versioned-namespaces) (exact names) |
+| `versioning.cacheTtl` | `number` (ms)                                         | `1_000`                      | How long an instance keeps a namespace version in memory             |
+| `escapeKeyArgs`       | `boolean`                                             | `false`                      | Escapes `%` and `:` in string and number template arguments          |
+| `serializer`          | `Serializer`                                          | JSON                         | Envelope serializer                                                  |
+| `isGlobal`            | `boolean`                                             | `false`                      | Register the module globally                                         |
 
 `redisStore({ client, channel? })` accepts an ioredis instance (or a `RedisClientAdapter`). The default
 Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (the store uses `GETEX`).
@@ -170,6 +173,7 @@ are rejected with `CacheConfigError`, as is a `cacheNull` that is not a boolean.
 The full key is `<prefix>:<namespace>:<key>`; missing parts are dropped together with their `:`.
 
 - **Template:** `{N}` is the Nth argument (from 0); `{N.a.b}` reads a nested property. Primitives use `String()`, objects use JSON with sorted keys. Templates are positional because parameter names do not exist at runtime. A malformed template throws at class definition.
+- **`escapeKeyArgs: true`** (module option) rewrites `%` as `%25` and `:` as `%3A` in the string and number arguments rendered into a template, so an argument cannot address another namespace. Callback keys and keys you pass to `CacheService` are never escaped. Turning it on changes the keys of arguments that contain `:` or `%`, so those entries start cold.
 - **Callback:** receives the method arguments and returns a string.
 - **Default:** `<ClassName>.<methodName>`, followed by `:<hash>` when there are arguments. The hash is the first 16 hex characters of the SHA-1 of the arguments' JSON (sorted keys).
 - If a key cannot be built (unserializable argument, a callback that throws, a template or callback that renders an empty string), the cache is skipped, the original method runs and an `error` event with `operation: 'key'` is emitted. In a `@CacheEvict` key list, a key that renders empty is dropped (one `error` event) and the other keys are still evicted; a key builder that throws skips the whole eviction.
@@ -183,6 +187,19 @@ class CacheService {
   delete(key: string | readonly string[], options?: KeyOptions): Promise<void>;
   clear(namespace: string, options?: { store?: string }): Promise<void>;
   getOrSet<T>(key: string, loader: () => Promise<T>, options?: GetOrSetOptions<T>): Promise<T>;
+  getMany<T>(
+    keys: readonly string[],
+    options?: KeyOptions & StrategyOptions,
+  ): Promise<(T | undefined)[]>;
+  setMany<T>(
+    entries: readonly (readonly [key: string, value: T])[],
+    options?: WriteOptions,
+  ): Promise<void>;
+  getOrSetMany<T>(
+    keys: readonly string[],
+    loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>,
+    options?: GetOrSetOptions<T>,
+  ): Promise<(T | undefined)[]>;
 }
 ```
 
@@ -196,12 +213,91 @@ const user = await cache.getOrSet('user:1', () => repo.find('1'), {
 
 `KeyOptions` is `{ namespace?, store? }`, `WriteOptions` adds `ttl` and the strategy options, and `GetOrSetOptions`
 adds `cacheNull`, `nullTtl`, `unless` and `lock`. `get` returns `undefined` on a miss. `clear` needs a non-empty namespace and rejects
-`''` with `CacheConfigError`. `T` is your assertion; the library does not
+`''` with `CacheConfigError`. A `namespace` that starts with `__` is reserved and also rejects with `CacheConfigError`. `T` is your assertion; the library does not
 validate stored data at runtime.
 
 An empty key is a key error (`error` with `operation: 'key'`): `get` returns `undefined`, `getOrSet` runs the loader
 without caching, and `set` does nothing. `delete` drops the empty keys, emits one `error` event and still deletes
 the others; `delete('')` alone does nothing.
+
+## Versioned namespaces
+
+By default `clear(namespace)` and `@CacheEvict({ allEntries: true })` walk the store (`SCAN` and delete on Redis),
+which is slow for a large namespace. A versioned namespace clears with one write instead.
+
+```ts
+CacheModule.forRoot({
+  prefix: 'myapp',
+  stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) },
+  namespaces: { users: { versioned: true } },
+  versioning: { cacheTtl: 1_000 },
+});
+
+await cache.set('user:1', user, { namespace: 'users' }); // key: myapp:users@<token>:user:1
+await cache.clear('users'); // one SET of a new token; no SCAN
+```
+
+- A versioned namespace keeps a token in the key `<prefix>:__version__:<namespace>` and writes data under
+  `<prefix>:<namespace>@<token>:<key>`. The token key has a 30-day TTL that every `clear` refreshes.
+- `clear` and `@CacheEvict({ allEntries: true })` write a new token. Old entries are never deleted; they become
+  unreachable and expire by their own TTL.
+- Each instance caches the token in memory for `versioning.cacheTtl` ms (default `1_000`), so another instance sees a
+  clear within that time. The instance that clears sees it at once.
+- `delete`, `@CacheEvict` with keys and a `put` of an empty value read the token fresh from the store and delete under
+  both the fresh and the cached token: one extra `GET` per delete.
+- Names must match exactly. A sub-namespace such as `users:admin` is not versioned by `users: { versioned: true }`;
+  list it on its own.
+- Namespaces starting with `__` are reserved and rejected (see [Error behaviour](#error-behaviour)).
+- If the token cannot be read or written, an `error` event with `operation: 'version'` is emitted. A `get` is then a
+  miss without a `miss` event, `getOrSet` runs the loader without writing the result, and `set` and `delete` do
+  nothing.
+- A `tieredStore` never rejects. If you clear while L2 is down, the new token reaches L1 only, and once it expires
+  that instance can return to the old token and the data written before the clear. This is the same class of problem as
+  clearing a two-tier cache while L2 is down in 0.3.
+
+## Batch operations
+
+`getMany`, `setMany` and `getOrSetMany` read and write many keys of one namespace in a call.
+
+```ts
+const [a, b] = await cache.getMany<User>(['user:1', 'user:2'], { namespace: 'users' });
+
+await cache.setMany(
+  [
+    ['user:1', userOne],
+    ['user:2', userTwo],
+  ],
+  { namespace: 'users', ttl: 30_000 },
+);
+
+const users = await cache.getOrSetMany<User>(
+  ['user:1', 'user:2', 'user:3'],
+  async (missing) => {
+    const rows = await repo.findByKeys(missing); // only the keys not in the cache
+    return new Map(rows.map((row) => [row.key, row.user]));
+  },
+  { namespace: 'users', ttl: 30_000, cacheNull: true },
+);
+```
+
+- Results are in input order. A key read twice in one call is read and loaded once. An empty key gives `undefined`
+  and one `error` event with `operation: 'key'`. `[]` makes no store call.
+- The loader receives only the misses and returns a `Map`. A requested key missing from the `Map` is treated as a
+  `null` result and follows `cacheNull`. Keys in the `Map` that were not requested are ignored: not cached, not
+  returned. An error from the loader, or a return value that is not a `Map`, reaches the caller.
+- Loading is single-flight per key and shared with `getOrSet` in the same process: concurrent `getOrSetMany(['a', 'b'])`
+  and `getOrSetMany(['b', 'c'])` call their loaders with `['a', 'b']` and `['c']`.
+- `swr` serves stale values and refreshes them with one loader call for the stale keys. `sliding` makes `getMany`
+  call `getAndTouch` for each key (per key, not one batch call).
+- `getOrSetMany` with `lock: true` throws `CacheConfigError`, and `defaults.lock.enabled` is ignored for batches.
+  Coalescing is per process.
+- The `load` event fires once per loader call and carries `keys` (all the keys passed to the loader); `key` is the
+  first of them.
+- `CacheStore` has the optional `getMany` and `setMany`. `redisStore` uses one `MGET` when the client has `mget`;
+  other stores are called key by key.
+- `setMany` entries must be `[key, value]` pairs. An element that is not a pair throws a `TypeError` from
+  destructuring.
+- With a versioned namespace the batch methods read the token once for the call.
 
 ## Null caching and TTL jitter
 
@@ -311,7 +407,8 @@ await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock:
   With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup. For `lock: true` on a method whose store has no lock, `CacheExplorer` logs the
   warning once per class, method and store.
 - A request answered from the cache after waiting for the lock emits `miss` and then `hit` for the same request; do not double-count it in metrics.
-- Lock keys are `lock:<fullKey>`. Without a `prefix`, do not use a namespace literally named `lock`: `clear('lock')` would delete live locks. Setting a `prefix` avoids this.
+- Lock keys are `<prefix>:__lock__:<namespace>:<key>` (`__lock__:<namespace>:<key>` without a `prefix`; for a versioned namespace the namespace part is `<namespace>@<token>`). They live under your prefix, so a `clear` of a namespace never deletes them. Namespaces starting with `__` are reserved for this reason. A custom `LockProvider` receives this complete key.
+- **Rolling deploy from 0.3:** 0.3 used `lock:<fullKey>`. While 0.3 and 0.4 nodes run together they do not exclude each other, so a loader can run twice during the deploy.
 - The lock is **not auto-extended.** If a load runs longer than `lock.ttl`, the lock expires and another instance
   may load the same key too (a duplicated load, never a wrong value). Set `lock.ttl` above your slowest load.
 - A waiter that finds the value returns it, and coalesced waiters in one process produce one `hit` per flight. If
@@ -369,6 +466,8 @@ interface CacheStore {
   delete(keys: readonly string[]): Promise<void>;
   clear(prefix: string): Promise<void>;
   getAndTouch?(key: string, ttlMs: number): Promise<string | undefined>; // used by 'sliding'
+  getMany?(keys: readonly string[]): Promise<(string | undefined)[]>; // used by getMany / getOrSetMany
+  setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>; // used by setMany
   readonly lock?: LockProvider; // used by the distributed lock
   readonly invalidation?: InvalidationBus;
   bind?(events: CacheEventSink): void;
@@ -378,7 +477,7 @@ interface CacheStore {
 
 `getAndTouch` should be implemented by stores that can do it atomically: without it, `sliding` falls back to a `get`
 followed by a `set`, which is not atomic. `lock` is a `LockProvider` (`acquire(key, ttlMs)` returns a `LockHandle` or
-`undefined`; `LockHandle.release()` frees it). Leave both members out when unsupported; do not define them as
+`undefined`; `LockHandle.release()` frees it). `getMany` and `setMany` are optional: without them the engine calls `get` and `set` for each key. Leave these members out when unsupported; do not define them as
 `undefined`.
 
 A custom store can be the L2 of a `tieredStore`. L1 synchronisation is separate from storage: `tieredStore`
@@ -418,22 +517,22 @@ export class CacheMonitor {
 `on` returns an unsubscribe function. A listener that throws is swallowed and logged. `@Inject(CacheEvents)`
 works without `emitDecoratorMetadata`; plain constructor injection (`constructor(events: CacheEvents)`) needs it.
 
-| Event     | Payload                                                             |
-| --------- | ------------------------------------------------------------------- |
-| `hit`     | `store`, `namespace`, `key`, `stale` (`true` for `swr` stale reads) |
-| `miss`    | `store`, `namespace`, `key`                                         |
-| `set`     | `store`, `namespace`, `key`, `ttl`                                  |
-| `delete`  | `store`, `namespace`, `keys`                                        |
-| `clear`   | `store`, `namespace`                                                |
-| `load`    | `store`, `namespace`, `key`, `durationMs`, `success`                |
-| `error`   | `store`, `operation`, `error`                                       |
-| `lock`    | `store`, `namespace`, `key`, `waitedMs`, `acquired`                 |
-| `breaker` | `store`, `state` (`'closed'`, `'open'` or `'half-open'`)            |
+| Event     | Payload                                                                   |
+| --------- | ------------------------------------------------------------------------- |
+| `hit`     | `store`, `namespace`, `key`, `stale` (`true` for `swr` stale reads)       |
+| `miss`    | `store`, `namespace`, `key`                                               |
+| `set`     | `store`, `namespace`, `key`, `ttl`                                        |
+| `delete`  | `store`, `namespace`, `keys`                                              |
+| `clear`   | `store`, `namespace`                                                      |
+| `load`    | `store`, `namespace`, `key`, `durationMs`, `success`, `keys` (batch only) |
+| `error`   | `store`, `operation`, `error`                                             |
+| `lock`    | `store`, `namespace`, `key`, `waitedMs`, `acquired`                       |
+| `breaker` | `store`, `state` (`'closed'`, `'open'` or `'half-open'`)                  |
 
 Repeated `error` log lines are throttled to one per 30 seconds for each (store, operation) pair; the next line carries a
 `(+N similar errors suppressed)` suffix. Events are still emitted for every occurrence.
 
-`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`.
+`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`, `version`.
 The value `'metrics'` exists in the `CacheOperation` type but is used for logs only and is never emitted as an event.
 
 ## Observability
@@ -573,7 +672,7 @@ from 1 to 2147483647. It does not emit `error` events, and a `ping` that rejects
 | `circuitBreaker(...)` | Goes through the breaker: rejects with `CircuitOpenError` while it is open |
 | Store without `ping`  | Reported as `up` with `ping: 'unsupported'`                                |
 
-`ioredisAdapter` provides `ping`. A hand-written `IoredisLike` stub must now add `ping()`.
+`ioredisAdapter` provides `ping` and `mget` only when the client has them; both are optional members of `IoredisLike`, so a hand-written stub can leave them out (health then reports `ping: 'unsupported'`).
 
 With ioredis's default offline queue, a `ping` that timed out stays queued until ioredis gives up
 (`maxRetriesPerRequest`, default 20), so frequent checks while Redis is down queue PINGs until then. Set
@@ -621,25 +720,26 @@ p95, lock wait p95 and breaker state.
 
 Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
-| Situation                                                    | Behaviour                                                                                              |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                        |
-| Store write fails                                            | The result is still returned, `error` is emitted                                                       |
-| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                |
-| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field |
-| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped         |
-| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`            |
-| The original method throws                                   | The error reaches the caller, nothing is stored                                                        |
-| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                       |
+| Situation                                                    | Behaviour                                                                                                                                    |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                                                              |
+| Store write fails                                            | The result is still returned, `error` is emitted                                                                                             |
+| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                                                      |
+| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field                                       |
+| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped                                               |
+| Namespace version cannot be read or written                  | `error` with `operation: 'version'`; `get` is a miss without a `miss` event, `getOrSet` loads without writing, `set` and `delete` do nothing |
+| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                  |
+| The original method throws                                   | The error reaches the caller, nothing is stored                                                                                              |
+| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                                                             |
 
 `CacheConfigError` is thrown only in these cases:
 
-| When                                | Cases                                                                                                                                                                                                                            |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })` |
-| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                 |
-| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store); a decorator naming an unknown store                               |
-| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`                                       |
+| When                                | Cases                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; a namespace starting with `__`                                                 |
+| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                 |
+| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store |
+| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`           |
 
 Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.
@@ -648,13 +748,13 @@ event and does not reach the caller.
 
 - **Redis is a trust boundary.** Anyone who can write to it can forge cached values, expiry timestamps and
   invalidation messages; the library checks their shape, not their authenticity. Use a dedicated Redis, or an ACL user
-  limited to your keys, the lock keys and the channel (for `prefix: 'myapp'`: `~myapp:*`, `~lock:myapp:*` and
-  `&<your channel>`).
+  limited to your keys and the channel (for `prefix: 'myapp'`: `~myapp:*` and `&<your channel>`). Lock keys live under
+  the prefix since 0.4, so they need no separate pattern.
 - **Set `prefix` when the Redis is shared**, and give each app its own invalidation `channel`. The default channel,
   `nestjs-cache:invalidate`, is shared by every app on that Redis.
 - **Template keys render string arguments verbatim.** An argument containing `:` can address a key in another
   (sub-)namespace. Do not put untrusted input with `:` into template keys; use the default hashed key or a key callback
-  that encodes it.
+  that encodes it, or set `escapeKeyArgs: true`, which escapes `%` and `:` in template arguments.
 - **Keys appear in debug logs and in invalidation messages.** Do not put secrets or personal data in keys; hash them.
 - **The health check result includes the store's error message**, which can contain host names. Expose the health
   route internally only.
@@ -673,6 +773,8 @@ event and does not reach the caller.
 - **Default keys use the class name.** Minifiers that rename classes change the default keys. `Map`/`Set` arguments are ignored by the default key, which makes different caches collide; use an explicit `key`.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
+- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires.
+- **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.
 - **Concurrent misses** on one key in one process are coalesced into one load, and options from callers that join an in-flight load are ignored (the first caller's `ttl`/`cacheNull`/`unless` apply). Use the distributed lock to coalesce across instances.
@@ -700,6 +802,7 @@ The library does not rely on `emitDecoratorMetadata`.
 
 - **0.2 - Resilience (done):** distributed lock (cross-instance stampede protection), per-store circuit breaker, `'swr'` (stale-while-revalidate) and `'sliding'` TTL strategies.
 - **0.3 - Observability (done):** Prometheus metrics (`CachePrometheusModule`) with a sample Grafana dashboard, configurable log level with debug logs, circuit breaker logs, and a `@nestjs/terminus` health indicator (`CacheHealthIndicator`). All from the main entry point.
+- **0.4 - Versioned namespaces and batches (done):** O(1) `clear` for opt-in versioned namespaces, `getMany`/`setMany`/`getOrSetMany`, `escapeKeyArgs`, lock keys under the prefix, and an optional `ping`.
 
 ## Releasing
 
