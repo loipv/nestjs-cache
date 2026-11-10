@@ -66,7 +66,7 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
- * `getAndTouch`, `lock.acquire` and `LockHandle.release` are guarded: each races a timeout, and
+ * `getAndTouch`, `getMany`, `setMany`, `lock.acquire` and `LockHandle.release` are guarded: each races a timeout, and
  * `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.
  * `invalidation`, `bind` and `close` are forwarded unchanged.
@@ -74,6 +74,12 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 export class CircuitBreakerStore implements CacheStore {
   /** Present only when the inner store has `getAndTouch`. */
   declare readonly getAndTouch?: (key: string, ttlMs: number) => Promise<string | undefined>;
+  /** Present only when the inner store has `getMany`; one batch counts as one outcome. */
+  declare readonly getMany?: (keys: readonly string[]) => Promise<(string | undefined)[]>;
+  /** Present only when the inner store has `setMany`; one batch counts as one outcome. */
+  declare readonly setMany?: (
+    entries: readonly { key: string; value: string; ttlMs: number }[],
+  ) => Promise<void>;
   /** Present only when the inner store has a lock; `acquire` and `release` are guarded. */
   declare readonly lock?: LockProvider;
   /** Present only when the inner store has `ping`; guarded like every other operation. */
@@ -107,6 +113,14 @@ export class CircuitBreakerStore implements CacheStore {
     if (inner.getAndTouch !== undefined) {
       const touch = inner.getAndTouch.bind(inner);
       this.getAndTouch = (key, ttlMs) => this.guard(() => touch(key, ttlMs));
+    }
+    if (inner.getMany !== undefined) {
+      const getMany = inner.getMany.bind(inner);
+      this.getMany = (keys) => this.guard(() => getMany(keys));
+    }
+    if (inner.setMany !== undefined) {
+      const setMany = inner.setMany.bind(inner);
+      this.setMany = (entries) => this.guard(() => setMany(entries));
     }
     if (inner.lock !== undefined) {
       const lock = inner.lock;

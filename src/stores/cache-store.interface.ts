@@ -88,6 +88,17 @@ export interface CacheStore {
    */
   getAndTouch?(key: string, ttlMs: number): Promise<string | undefined>;
   /**
+   * Optional. Reads several keys at once. The result has one element per key, in the same order,
+   * `undefined` for a miss or an expired entry. An empty list resolves `[]` without any command.
+   * When missing, callers fall back to one `get` per key.
+   */
+  getMany?(keys: readonly string[]): Promise<(string | undefined)[]>;
+  /**
+   * Optional. Stores several entries at once; each `ttlMs` is an integer >= 1. An empty list
+   * resolves without any command. When missing, callers fall back to one `set` per entry.
+   */
+  setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>;
+  /**
    * Optional. Distributed lock backed by this store. Absent when the store cannot lock; the
    * engine then falls back to a per-process lock.
    */

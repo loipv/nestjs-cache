@@ -191,3 +191,39 @@ describe('MemoryStore', () => {
     expect(await s.get('c')).toBe('3');
   });
 });
+
+describe('MemoryStore batch', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /* getMany returns values in input order, undefined for misses and expired entries. */
+  it('getMany keeps the input order and returns undefined for misses and expired entries', async () => {
+    const store = memoryStore();
+    await store.set('a', '1', 1_000);
+    await store.set('b', '2', 100);
+    await store.set('c', '3', 1_000);
+    vi.advanceTimersByTime(500);
+    expect(await store.getMany(['c', 'x', 'b', 'a'])).toEqual(['3', undefined, undefined, '1']);
+    expect(await store.getMany([])).toEqual([]);
+  });
+
+  /* setMany stores every entry with its TTL and evicts the LRU entry at maxEntries. */
+  it('setMany stores entries with their TTL and respects maxEntries', async () => {
+    const store = memoryStore({ maxEntries: 2 });
+    await store.setMany([
+      { key: 'a', value: '1', ttlMs: 1_000 },
+      { key: 'b', value: '2', ttlMs: 100 },
+      { key: 'c', value: '3', ttlMs: 1_000 },
+    ]);
+    expect(await store.get('a')).toBeUndefined();
+    expect(await store.get('c')).toBe('3');
+    vi.advanceTimersByTime(200);
+    expect(await store.get('b')).toBeUndefined();
+    await store.setMany([]);
+  });
+});

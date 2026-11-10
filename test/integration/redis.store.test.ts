@@ -34,6 +34,32 @@ describe('RedisStore (integration)', () => {
     expect(await store.get('i:a')).toBeUndefined();
   });
 
+  /* getMany against a real Redis returns values in input order using exactly one MGET. */
+  it('getMany returns the right order with one MGET', async () => {
+    const counts = new Map<string, number>();
+    const counted = new Proxy(client, {
+      get(target, prop, receiver) {
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          counts.set(String(prop), (counts.get(String(prop)) ?? 0) + 1);
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const store = redisStore({ client: counted });
+    await store.setMany([
+      { key: 'm:a', value: '1', ttlMs: 5_000 },
+      { key: 'm:c', value: '3', ttlMs: 5_000 },
+    ]);
+    counts.clear();
+    expect(await store.getMany(['m:c', 'm:b', 'm:a'])).toEqual(['3', undefined, '1']);
+    expect(counts.get('mget')).toBe(1);
+    expect(counts.get('get')).toBeUndefined();
+    expect(await store.getMany([])).toEqual([]);
+    expect(counts.get('mget')).toBe(1);
+  });
+
   it('clear removes only the prefix, including glob characters', async () => {
     const store = redisStore({ client });
     for (let i = 0; i < 250; i += 1) await store.set(`a[1]:${i}`, 'v', 60_000);

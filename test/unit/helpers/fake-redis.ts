@@ -74,8 +74,17 @@ export class FakeRedis implements RedisClientAdapter {
   readonly data = new Map<string, string>();
   /** Optional, like the adapter member: tests assign it to make this fake ping-capable. */
   declare ping?: () => Promise<void>;
+  /** Optional, like the adapter member: `delete fake.mget` to exercise the fallback. */
+  declare mget?: (keys: readonly string[]) => Promise<(string | undefined)[]>;
   /** Stable scan order, so deleting mid-scan does not shift the cursor. */
   private readonly order: string[] = [];
+
+  constructor() {
+    this.mget = (keys) => {
+      this.record('mget', keys);
+      return Promise.resolve(keys.map((key) => this.data.get(key)));
+    };
+  }
 
   private record(name: string, ...args: unknown[]): void {
     this.commands.push({ name, args });

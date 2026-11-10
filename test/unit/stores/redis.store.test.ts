@@ -83,3 +83,47 @@ describe('RedisStore', () => {
     }
   });
 });
+
+describe('RedisStore batch', () => {
+  /* With mget available, getMany issues exactly one MGET and no GET, in input order. */
+  it('getMany issues exactly one mget', async () => {
+    const fake = new FakeRedis();
+    fake.data.set('a', '1');
+    fake.data.set('c', '3');
+    const store = redisStore({ client: fake });
+    expect(await store.getMany(['c', 'b', 'a'])).toEqual(['3', undefined, '1']);
+    expect(fake.commands.map((c) => c.name)).toEqual(['mget']);
+    expect(fake.commands[0]?.args).toEqual([['c', 'b', 'a']]);
+  });
+
+  /* An empty list sends no command. */
+  it('getMany of an empty list sends no command', async () => {
+    const fake = new FakeRedis();
+    expect(await redisStore({ client: fake }).getMany([])).toEqual([]);
+    expect(fake.commands).toEqual([]);
+  });
+
+  /* Without mget, getMany falls back to one get per key. */
+  it('getMany without mget issues one get per key', async () => {
+    const fake = new FakeRedis();
+    delete fake.mget;
+    fake.data.set('a', '1');
+    const store = redisStore({ client: fake });
+    expect(await store.getMany(['a', 'b'])).toEqual(['1', undefined]);
+    expect(fake.commands.map((c) => c.name)).toEqual(['get', 'get']);
+  });
+
+  /* setMany writes each entry with its own ttlMs. */
+  it('setMany writes each entry with its ttlMs', async () => {
+    const fake = new FakeRedis();
+    const store = redisStore({ client: fake });
+    await store.setMany([
+      { key: 'a', value: '1', ttlMs: 5 },
+      { key: 'b', value: '2', ttlMs: 9 },
+    ]);
+    expect(fake.commands).toEqual([
+      { name: 'set', args: ['a', '1', 5] },
+      { name: 'set', args: ['b', '2', 9] },
+    ]);
+  });
+});

@@ -117,6 +117,62 @@ export class TieredStore implements CacheStore {
   }
 
   /**
+   * Reads several keys: L1 first, then one L2 read for the misses, backfilling L1 (with `l1Ttl`)
+   * only the keys not invalidated meanwhile. A failing tier counts as misses; an L2 failure is
+   * reported once for the batch.
+   */
+  async getMany(keys: readonly string[]): Promise<(string | undefined)[]> {
+    if (keys.length === 0) return [];
+    let local: (string | undefined)[] = [];
+    try {
+      local = await readMany(this.l1, keys);
+    } catch (error) {
+      this.report('get', error);
+    }
+    const result = keys.map((_, i) => local[i]);
+    const missed = keys.filter((_, i) => result[i] === undefined);
+    if (missed.length === 0) return result;
+
+    const tokens = new Map<string, symbol>();
+    for (const key of missed) {
+      const token = Symbol(key);
+      tokens.set(key, token);
+      this.pending.set(key, token);
+    }
+    let remote: (string | undefined)[] = [];
+    try {
+      remote = await readMany(this.l2, missed);
+    } catch (error) {
+      this.report('get', error);
+    }
+    const backfill: { key: string; value: string; ttlMs: number }[] = [];
+    missed.forEach((key, i) => {
+      const current = this.pending.get(key) === tokens.get(key);
+      if (current) this.pending.delete(key);
+      const value = remote[i];
+      if (value === undefined) return;
+      if (current) backfill.push({ key, value, ttlMs: this.l1Ttl });
+    });
+    if (backfill.length > 0) await this.attempt('set', () => writeMany(this.l1, backfill));
+    let next = 0;
+    return keys.map((_, i) => result[i] ?? remote[next++]);
+  }
+
+  /**
+   * Writes L2 first, then L1 (each TTL capped at `l1Ttl`), then publishes one message with every
+   * key, unless the L2 refused the write because its circuit is open.
+   */
+  async setMany(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void> {
+    if (entries.length === 0) return;
+    const refused = await this.attempt('set', () => writeMany(this.l2, entries));
+    this.forgetKeys(entries.map((e) => e.key));
+    const capped = entries.map((e) => ({ ...e, ttlMs: Math.min(e.ttlMs, this.l1Ttl) }));
+    await this.attempt('set', () => writeMany(this.l1, capped));
+    if (refused instanceof CircuitOpenError) return;
+    await this.publish({ origin: this.origin, keys: entries.map((e) => e.key) });
+  }
+
+  /**
    * Reads the value and resets its TTL to `ttlMs` on L2 (through `l2.getAndTouch` when it has
    * one, otherwise `l2.get`). L1 is read but never extended; a backfill lives `min(ttlMs, l1Ttl)`.
    */
@@ -258,6 +314,21 @@ export class TieredStore implements CacheStore {
       // a failing sink must never reach the caller
     }
   }
+}
+
+function readMany(store: CacheStore, keys: readonly string[]): Promise<(string | undefined)[]> {
+  return store.getMany === undefined
+    ? Promise.all(keys.map((key) => store.get(key)))
+    : store.getMany(keys);
+}
+
+function writeMany(
+  store: CacheStore,
+  entries: readonly { key: string; value: string; ttlMs: number }[],
+): Promise<unknown> {
+  return store.setMany === undefined
+    ? Promise.all(entries.map((e) => store.set(e.key, e.value, e.ttlMs)))
+    : store.setMany(entries);
 }
 
 async function quietly(fn: () => Promise<unknown> | undefined): Promise<void> {

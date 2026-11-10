@@ -14,6 +14,7 @@ import type {
 import { FakeBus } from '../helpers/fake-bus.js';
 import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
+import { memoryStore } from '../../../src/stores/memory.store.js';
 
 const TIMEOUT_MESSAGE = 'Cache store operation timed out after 500 ms';
 
@@ -833,5 +834,32 @@ describe('index exports', () => {
     expect(index.circuitBreaker).toBe(circuitBreaker);
     expect(index.CircuitOpenError).toBe(CircuitOpenError);
     expect(index.CircuitBreakerStore).toBe(CircuitBreakerStore);
+  });
+});
+
+describe('circuitBreaker batch', () => {
+  /* The batch members are present only when the inner store has them. */
+  it('getMany and setMany exist only when the inner store has them', async () => {
+    const plain = circuitBreaker(new FakeStore());
+    expect('getMany' in plain).toBe(false);
+    expect('setMany' in plain).toBe(false);
+    const inner = memoryStore();
+    const b = circuitBreaker(inner);
+    expect('getMany' in b).toBe(true);
+    expect('setMany' in b).toBe(true);
+    await b.setMany?.([{ key: 'a', value: '1', ttlMs: 1_000 }]);
+    expect(await b.getMany?.(['a', 'z'])).toEqual(['1', undefined]);
+  });
+
+  /* An open circuit rejects both batch calls without reaching the store; one batch is one failure. */
+  it('an open circuit rejects getMany with CircuitOpenError', async () => {
+    const inner = memoryStore();
+    const spy = vi.spyOn(inner, 'getMany').mockRejectedValue(new Error('down'));
+    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    await expect(b.getMany?.(['a', 'b', 'c'])).rejects.toThrow('down');
+    expect(b.state).toBe('open');
+    await expect(b.getMany?.(['a'])).rejects.toBeInstanceOf(CircuitOpenError);
+    await expect(b.setMany?.([])).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });

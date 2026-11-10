@@ -797,3 +797,168 @@ describe('TieredStore', () => {
     });
   });
 });
+
+describe('TieredStore batch', () => {
+  /** A FakeStore with getMany/setMany that count batch calls. */
+  class BatchStore extends FakeStore {
+    getManyCalls: (readonly string[])[] = [];
+    setManyCalls: unknown[] = [];
+    getManyFn: ((keys: readonly string[]) => Promise<(string | undefined)[]>) | undefined;
+    getMany(keys: readonly string[]): Promise<(string | undefined)[]> {
+      this.getManyCalls.push(keys);
+      if (this.getManyFn) return this.getManyFn(keys);
+      return Promise.resolve(keys.map((k) => this.data.get(k)?.value));
+    }
+    setMany(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void> {
+      this.setManyCalls.push(entries);
+      for (const e of entries) this.data.set(e.key, { value: e.value, ttlMs: e.ttlMs });
+      return Promise.resolve();
+    }
+  }
+
+  let l1: MemoryStore;
+  let l2: BatchStore;
+  let bus: FakeBus;
+  let sink: { emit: Mock };
+  let store: TieredStore;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    l1 = memoryStore();
+    l2 = new BatchStore();
+    bus = new FakeBus();
+    sink = { emit: vi.fn() };
+    store = tieredStore({ l1, l2, invalidation: bus });
+    store.bind(sink);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /* L1 hits are not re-read; one L2 call serves the misses, which are then backfilled with l1Ttl. */
+  it('getMany reads L2 once for the L1 misses and backfills', async () => {
+    await l1.set('a', 'A', 60_000);
+    l2.data.set('b', { value: 'B', ttlMs: 60_000 });
+    l2.data.set('c', { value: 'C', ttlMs: 60_000 });
+    expect(await store.getMany(['a', 'b', 'x', 'c'])).toEqual(['A', 'B', undefined, 'C']);
+    expect(l2.getManyCalls).toEqual([['b', 'x', 'c']]);
+    l2.data.clear();
+    expect(await store.getMany(['b', 'c'])).toEqual(['B', 'C']);
+    vi.advanceTimersByTime(10_000);
+    expect(await store.getMany(['b', 'c'])).toEqual([undefined, undefined]);
+  });
+
+  /* When every key hits L1, L2 is not read at all; an empty list does nothing. */
+  it('getMany skips L2 when L1 has everything', async () => {
+    await l1.set('a', 'A', 60_000);
+    expect(await store.getMany(['a'])).toEqual(['A']);
+    expect(await store.getMany([])).toEqual([]);
+    expect(l2.getManyCalls).toEqual([]);
+  });
+
+  /* Without batch support on the tiers, per-key get is used. */
+  it('getMany falls back to per-key get when the tiers lack getMany', async () => {
+    const plain = new FakeStore();
+    plain.data.set('b', { value: 'B', ttlMs: 1_000 });
+    const t = tieredStore({ l1: new FakeStore(), l2: plain, invalidation: bus });
+    expect(await t.getMany(['a', 'b'])).toEqual([undefined, 'B']);
+    expect(plain.calls.filter((c) => c.op === 'get')).toHaveLength(2);
+  });
+
+  /* A remote invalidation for b between the L2 call and its resolution blocks b's backfill only. */
+  it('an invalidation during the L2 read prevents the backfill of that key only', async () => {
+    l2.data.set('a', { value: 'A', ttlMs: 60_000 });
+    l2.data.set('b', { value: 'B', ttlMs: 60_000 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    l2.getManyFn = async (keys) => {
+      await gate;
+      return keys.map((k) => l2.data.get(k)?.value);
+    };
+    const pending = store.getMany(['a', 'b']);
+    await flush();
+    bus.deliver({ origin: 'other', keys: ['b'] });
+    release();
+    expect(await pending).toEqual(['A', 'B']);
+    l2.data.clear();
+    expect(await l1.get('a')).toBe('A');
+    expect(await l1.get('b')).toBeUndefined();
+  });
+
+  /* setMany writes L2 then L1 (capped TTL) and publishes a single message with all keys. */
+  it('setMany publishes one message with every key', async () => {
+    await store.setMany([
+      { key: 'a', value: '1', ttlMs: 60_000 },
+      { key: 'b', value: '2', ttlMs: 500 },
+    ]);
+    expect(l2.data.get('a')?.ttlMs).toBe(60_000);
+    expect(l2.data.get('b')?.ttlMs).toBe(500);
+    expect(await l1.get('a')).toBe('1');
+    vi.advanceTimersByTime(600);
+    expect(await l1.get('b')).toBeUndefined();
+    vi.advanceTimersByTime(10_000);
+    expect(await l1.get('a')).toBeUndefined();
+    expect(bus.published).toHaveLength(1);
+    expect(bus.published[0]).toEqual({ origin: anyString, keys: ['a', 'b'] });
+  });
+
+  /* An open L2 circuit skips the publish and reports nothing. */
+  it('setMany with an open L2 circuit skips the publish', async () => {
+    const inner = new BatchStore();
+    const t = tieredStore({
+      l1: memoryStore(),
+      l2: circuitBreaker(inner, { failureThreshold: 1 }),
+      invalidation: bus,
+    });
+    t.bind(sink);
+    inner.failNext('set', new Error('down'));
+    await t.set('x', '1', 1_000);
+    sink.emit.mockClear();
+    bus.published.length = 0;
+    await t.setMany([{ key: 'k', value: 'v', ttlMs: 1_000 }]);
+    expect(await t.get('k')).toBe('v');
+    expect(bus.published).toEqual([]);
+    expect(sink.emit).not.toHaveBeenCalledWith('error', expect.anything());
+  });
+
+  /* Review Focus 5: a rejecting L2 yields L1 hits plus undefined, no rejection, one error. */
+  it('getMany with a rejecting L2 returns L1 hits and reports one error', async () => {
+    await l1.set('a', 'A', 60_000);
+    l2.getManyFn = () => Promise.reject(new Error('down'));
+    expect(await store.getMany(['a', 'b', 'c'])).toEqual(['A', undefined, undefined]);
+    const errors = sink.emit.mock.calls.filter((c) => c[0] === 'error');
+    expect(errors).toEqual([['error', { operation: 'get', error: anyError }]]);
+  });
+
+  /* Per-key fallback with a failing L2 also reports a single error for the batch. */
+  it('getMany with a failing per-key L2 reports one error', async () => {
+    const plain = new FakeStore();
+    plain.failNext('get');
+    plain.failNext('get');
+    const t = tieredStore({ l1: memoryStore(), l2: plain, invalidation: bus });
+    t.bind(sink);
+    expect(await t.getMany(['a', 'b'])).toEqual([undefined, undefined]);
+    expect(sink.emit.mock.calls.filter((c) => c[0] === 'error')).toHaveLength(1);
+  });
+
+  /* Review Focus 5: an open circuit on L2 gives L1 hits plus misses and no error event. */
+  it('getMany with an open L2 circuit returns L1 hits and no error', async () => {
+    const inner = new BatchStore();
+    const t = tieredStore({
+      l1,
+      l2: circuitBreaker(inner, { failureThreshold: 1 }),
+      invalidation: bus,
+    });
+    t.bind(sink);
+    inner.getManyFn = () => Promise.reject(new Error('down'));
+    await l1.set('a', 'A', 1_000);
+    await t.getMany(['z']); // opens the circuit
+    sink.emit.mockClear();
+    expect(await t.getMany(['a', 'b'])).toEqual(['A', undefined]);
+    expect(sink.emit.mock.calls.filter((c) => c[0] === 'error')).toEqual([]);
+  });
+});
