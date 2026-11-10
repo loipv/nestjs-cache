@@ -6,6 +6,7 @@ import {
   type EngineIO,
   type KeyRef,
   type PutOptions,
+  type ResolvedKey,
   type Target,
 } from './engine-io.js';
 import { loadWithLock, refreshWithLock, type LockHooks, type LockSettings } from './lock-runner.js';
@@ -16,6 +17,8 @@ import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
 export interface LoadPlan<T> {
   target: Target;
   ref: KeyRef;
+  /** Resolved once by the facade, so the load, its lock and its write use one version. */
+  key: ResolvedKey;
   loader: () => Promise<T>;
   options: PutOptions<T>;
   strategy: ExpiryStrategy;
@@ -68,8 +71,8 @@ export class EngineLoad {
       .catch(() => undefined);
   }
 
-  private flightKey({ target, ref }: Located): string {
-    return `${target.name}\u0000${this.io.keyOf(ref)}`;
+  private flightKey({ target, key }: Pick<LoadPlan<unknown>, 'target' | 'key'>): string {
+    return `${target.name}\u0000${key.full}`;
   }
 
   private async missTask<T>(plan: LoadPlan<T>): Promise<{ loaded: true; value: T }> {
@@ -82,13 +85,13 @@ export class EngineLoad {
 
   /** A value found while waiting for another holder is served with a single `hit`. */
   private async loadLocked<T>(plan: LoadPlan<T>, lock: LockProvider): Promise<T> {
-    const { target, ref, strategy, ttl } = plan;
+    const { target, ref, key, strategy, ttl } = plan;
     const result = await loadWithLock<{ value: T; stale: boolean }>(
       lock,
-      this.io.lockKeyOf(ref),
+      key.lock,
       this.lockSettings,
       async () => {
-        const cached = await this.io.read(target, ref, strategy, ttl);
+        const cached = await this.io.read(target, key, strategy, ttl);
         return servable(cached, strategy)
           ? { found: true, value: { value: cached.value as T, stale: cached.stale } }
           : { found: false };
@@ -108,7 +111,7 @@ export class EngineLoad {
     let outcome: Outcome<T> = { loaded: false };
     await refreshWithLock(
       plan.lock,
-      this.io.lockKeyOf(plan.ref),
+      plan.key.lock,
       this.lockSettings.ttl,
       async () => {
         outcome = { loaded: true, value: await this.loadAndStore(plan, true) };
@@ -131,7 +134,7 @@ export class EngineLoad {
 
   /** A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. */
   private async loadAndStore<T>(plan: LoadPlan<T>, refreshing: boolean): Promise<T> {
-    const { target, ref, loader, options, strategy } = plan;
+    const { target, ref, key, loader, options, strategy } = plan;
     const started = Date.now();
     let value: T;
     try {
@@ -142,7 +145,7 @@ export class EngineLoad {
       throw error;
     }
     this.io.emitLoad(target.name, ref, started, true);
-    await this.io.store(target, ref, value, options, strategy, false);
+    await this.io.store(target, ref, key, value, options, strategy, false);
     return value;
   }
 }

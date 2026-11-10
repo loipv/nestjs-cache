@@ -7,6 +7,7 @@ import type { CacheStore } from '../stores/cache-store.interface.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
 import { fullKey, lockKey, namespacePrefix } from './key-builder.js';
+import type { NamespaceVersions } from './namespace-versions.js';
 import {
   classifyEnvelope,
   createStrategy,
@@ -29,6 +30,12 @@ export type PutOptions<T> = {
 export interface Target {
   name: string;
   store: CacheStore;
+}
+
+/** The data key and the lock key of one entry, carrying the namespace version if any. */
+export interface ResolvedKey {
+  full: string;
+  lock: string;
 }
 
 export type Lookup = { found: true; value: unknown; stale: boolean } | { found: false };
@@ -69,14 +76,41 @@ export class EngineIO {
   constructor(
     private readonly options: ResolvedCacheOptions,
     private readonly events: CacheEvents,
+    private readonly versions: NamespaceVersions,
   ) {}
 
-  keyOf(ref: { namespace?: string | undefined; key: string }): string {
-    return fullKey(this.options.prefix, ref.namespace, ref.key);
+  /**
+   * The keys of `ref` in `target`. A namespace that is not versioned resolves synchronously, so
+   * callers await only a promise and the 0.3 path gains no await. A versioned namespace reads
+   * its token; on a failure it reports one `version` error and resolves `undefined`, and the
+   * caller then skips the cache.
+   */
+  resolveKey(
+    target: Target,
+    ref: { namespace?: string | undefined; key: string },
+  ): ResolvedKey | Promise<ResolvedKey | undefined> {
+    const { namespace, key } = ref;
+    if (namespace === undefined || !this.versions.isVersioned(namespace)) {
+      return this.keysOf(namespace, key);
+    }
+    return this.versionedNamespace(target, namespace).then((resolved) =>
+      resolved === undefined ? undefined : this.keysOf(resolved, key),
+    );
   }
 
-  lockKeyOf(ref: { namespace?: string | undefined; key: string }): string {
-    return lockKey(this.options.prefix, ref.namespace, ref.key);
+  private keysOf(namespace: string | undefined, key: string): ResolvedKey {
+    const { prefix } = this.options;
+    return { full: fullKey(prefix, namespace, key), lock: lockKey(prefix, namespace, key) };
+  }
+
+  /** `<ns>@<v>`, or `undefined` after reporting a `version` error. Never rejects. */
+  private async versionedNamespace(target: Target, namespace: string): Promise<string | undefined> {
+    try {
+      return `${namespace}@${await this.versions.current(target, namespace)}`;
+    } catch (error) {
+      this.reportError(target.name, 'version', error);
+      return undefined;
+    }
   }
 
   resolve(name: string | undefined): Target {
@@ -102,11 +136,10 @@ export class EngineIO {
    */
   async read(
     { name, store }: Target,
-    ref: KeyRef,
+    { full: key }: ResolvedKey,
     strategy: ExpiryStrategy,
     ttl: number,
   ): Promise<Lookup> {
-    const key = this.keyOf(ref);
     const plan = strategy.read(toIntegerMs(ttl));
     const touchTtl = plan.touch ? plan.touchTtl : undefined;
     // Without getAndTouch, a touching read is a get, then a re-set of the same string.
@@ -191,6 +224,7 @@ export class EngineIO {
   async store<T>(
     target: Target,
     ref: KeyRef,
+    key: ResolvedKey,
     value: T,
     options: PutOptions<T>,
     strategy: ExpiryStrategy,
@@ -204,28 +238,26 @@ export class EngineIO {
     }
     if (isEmpty(value)) {
       if (!(options.cacheNull ?? this.options.defaults.cacheNull)) {
-        if (deleteWhenEmpty) {
-          await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
-        }
+        if (deleteWhenEmpty) await this.remove(target, ref.namespace, [ref.key], [key.full]);
         return;
       }
       const nullTtl = toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl);
-      await this.write(target, ref, value, EMPTY_STRATEGY, nullTtl);
+      await this.write(target, ref, key, value, EMPTY_STRATEGY, nullTtl);
       return;
     }
     const ttl = this.ttlFor(strategy, options.ttl ?? this.options.defaults.ttl);
-    await this.write(target, ref, value, strategy, ttl);
+    await this.write(target, ref, key, value, strategy, ttl);
   }
 
   /** `ttl` is an integer >= 1, already jittered when the strategy asks for it. */
   async write(
     { name, store }: Target,
     ref: KeyRef,
+    { full: key }: ResolvedKey,
     value: unknown,
     strategy: ExpiryStrategy,
     ttl: number,
   ): Promise<void> {
-    const key = this.keyOf(ref);
     let storeTtl: number;
     try {
       const wrapped = strategy.wrap(value, Date.now(), ttl);
@@ -242,25 +274,52 @@ export class EngineIO {
     scope: { store?: string | undefined; namespace?: string | undefined },
     keys: readonly string[],
   ): Promise<void> {
-    const { name, store } = this.resolve(scope.store);
+    const target = this.resolve(scope.store);
     if (keys.length === 0) return;
-    const fullKeys = keys.map((key) => this.keyOf({ namespace: scope.namespace, key }));
+    let namespace = scope.namespace;
+    if (namespace !== undefined && this.versions.isVersioned(namespace)) {
+      // One version read for the whole call: the keys share their namespace.
+      namespace = await this.versionedNamespace(target, namespace);
+      if (namespace === undefined) return;
+    }
+    const fullKeys = keys.map((key) => fullKey(this.options.prefix, namespace, key));
+    await this.remove(target, scope.namespace, keys, fullKeys);
+  }
+
+  /** `namespace` and `keys` are the plain ones the event carries; `fullKeys` are deleted. */
+  private async remove(
+    { name, store }: Target,
+    namespace: string | undefined,
+    keys: readonly string[],
+    fullKeys: readonly string[],
+  ): Promise<void> {
     try {
       await store.delete(fullKeys);
     } catch (error) {
       this.reportError(name, 'delete', error);
       return;
     }
-    this.events.emit('delete', { store: name, namespace: scope.namespace, keys });
+    this.events.emit('delete', { store: name, namespace, keys });
   }
 
+  /** A versioned namespace gets a new token instead of a scan; its old keys expire by TTL. */
   async clear(storeName: string | undefined, namespace: string): Promise<void> {
-    const { name, store } = this.resolve(storeName);
-    try {
-      await store.clear(namespacePrefix(this.options.prefix, namespace));
-    } catch (error) {
-      this.reportError(name, 'clear', error);
-      return;
+    const target = this.resolve(storeName);
+    const { name, store } = target;
+    if (this.versions.isVersioned(namespace)) {
+      try {
+        await this.versions.bump(target, namespace);
+      } catch (error) {
+        this.reportError(name, 'version', error);
+        return;
+      }
+    } else {
+      try {
+        await store.clear(namespacePrefix(this.options.prefix, namespace));
+      } catch (error) {
+        this.reportError(name, 'clear', error);
+        return;
+      }
     }
     this.events.emit('clear', { store: name, namespace });
   }

@@ -13,6 +13,7 @@ import {
 import { EngineLoad } from './engine-load.js';
 import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
+import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 export type { KeyRef, PutOptions } from './engine-io.js';
@@ -80,7 +81,12 @@ export class CacheEngine {
   ) {
     this.logLevel = options.logging.level;
     this.escapeKeyArgs = options.escapeKeyArgs;
-    this.io = new EngineIO(options, events);
+    const versions = new NamespaceVersions(
+      options.prefix,
+      options.versionedNamespaces,
+      options.versionCacheTtl,
+    );
+    this.io = new EngineIO(options, events, versions);
     this.load = new EngineLoad(this.io, options.defaults.lock);
   }
 
@@ -103,7 +109,11 @@ export class CacheEngine {
     this.checkNamespace(ref.namespace);
     const strategy = strategyOf(options, undefined);
     if (this.emptyKey(target, ref.key)) return undefined;
-    const result = await this.io.read(target, ref, strategy, this.options.defaults.ttl);
+    const pending = this.io.resolveKey(target, ref);
+    const key = pending instanceof Promise ? await pending : pending;
+    // A version failure is already reported; like a key error, it is no miss.
+    if (key === undefined) return undefined;
+    const result = await this.io.read(target, key, strategy, this.options.defaults.ttl);
     if (!result.found) {
       this.io.miss(target.name, ref);
       return undefined;
@@ -130,10 +140,15 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
     if (this.emptyKey(target, ref.key)) return loader();
-    const cached = await this.io.read(target, ref, strategy, ttl);
+    // Awaited only for a versioned namespace: the swr refresh below must register its flight
+    // without an added tick, as in 0.3.
+    const pending = this.io.resolveKey(target, ref);
+    const key = pending instanceof Promise ? await pending : pending;
+    if (key === undefined) return loader();
+    const cached = await this.io.read(target, key, strategy, ttl);
     const locking = options.lock ?? this.options.defaults.lock.enabled;
     const lock = locking ? target.store.lock : undefined;
-    const plan = { target, ref, loader, options, strategy, ttl, lock };
+    const plan = { target, ref, key, loader, options, strategy, ttl, lock };
     if (servable(cached, strategy)) {
       this.io.hit(target.name, ref, cached.stale);
       if (cached.stale) this.load.refresh(plan);
@@ -150,9 +165,12 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl);
     if (this.emptyKey(target, ref.key)) return;
+    const pending = this.io.resolveKey(target, ref);
+    const key = pending instanceof Promise ? await pending : pending;
+    if (key === undefined) return;
     // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
     const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
-    await this.io.write(target, ref, value, strategy, this.io.ttlFor(strategy, ttl));
+    await this.io.write(target, ref, key, value, strategy, this.io.ttlFor(strategy, ttl));
   }
 
   /** @param preset Internal: as for `getOrSet`. */
@@ -169,7 +187,10 @@ export class CacheEngine {
     checkBoolean('cacheNull', options.cacheNull);
     const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
     if (this.emptyKey(target, ref.key)) return;
-    await this.io.store(target, ref, value, options, strategy, true);
+    const pending = this.io.resolveKey(target, ref);
+    const key = pending instanceof Promise ? await pending : pending;
+    if (key === undefined) return;
+    await this.io.store(target, ref, key, value, options, strategy, true);
   }
 
   /** Empty keys are dropped and reported once as a key error; every other key is deleted. */

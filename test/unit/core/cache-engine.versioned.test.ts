@@ -1,0 +1,207 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
+import { makeEngine } from '../helpers/engine.js';
+import { FakeLock } from '../helpers/fake-lock.js';
+import { FakeStore } from '../helpers/fake-store.js';
+
+const OPTIONS = { prefix: 'app', namespaces: { users: { versioned: true } } } as const;
+const REF = { namespace: 'users', key: '1' } as const;
+const DATA_KEY = /^app:users@[0-9a-z]{8}:1$/;
+
+function setup(options: CacheModuleOptions = OPTIONS) {
+  return makeEngine(options);
+}
+
+function dataKeys(store: FakeStore): string[] {
+  return [...store.data.keys()].filter((key) => !key.startsWith('app:__version__:'));
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+describe('CacheEngine versioned namespaces', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes and reads under the versioned key', async () => {
+    /* A set on a versioned namespace stores `app:users@<v>:1`; get reads it back, and the
+       events carry the plain namespace and key. */
+    const { engine, store, emitted } = setup();
+    await engine.set(REF, { n: 1 });
+    const keys = dataKeys(store);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(DATA_KEY);
+    expect(store.data.has('app:__version__:users')).toBe(true);
+    expect(await engine.get(REF)).toEqual({ n: 1 });
+    expect(emitted.map((e) => e.event)).toEqual(['set', 'hit']);
+    expect(emitted[0]?.payload).toEqual({
+      store: 'default',
+      namespace: 'users',
+      key: '1',
+      ttl: 60_000,
+    });
+    expect(emitted[1]?.payload).toEqual({
+      store: 'default',
+      namespace: 'users',
+      key: '1',
+      stale: false,
+    });
+  });
+
+  it('clear bumps the version and never calls store.clear', async () => {
+    /* clear('users') writes a new token: the old entry stays in the store but is no longer
+       read, and the clear event is emitted as before. */
+    const { engine, store, emitted } = setup();
+    await engine.set(REF, 'x');
+    const [oldKey] = dataKeys(store);
+    await engine.clear('users');
+    expect(await engine.get(REF)).toBeUndefined();
+    expect(store.calls.some((c) => c.op === 'clear')).toBe(false);
+    expect(store.data.has(oldKey ?? '')).toBe(true);
+    expect(emitted.map((e) => e.event)).toEqual(['set', 'clear', 'miss']);
+    expect(emitted[1]?.payload).toEqual({ store: 'default', namespace: 'users' });
+  });
+
+  it('a load that started before clear writes under the old version', async () => {
+    /* Review Focus 2: a getOrSet whose loader is running when clear happens finishes after
+       it. Its write goes under the old version, so the next get misses and the next
+       getOrSet loads again. */
+    const { engine, store } = setup();
+    const slow = deferred<string>();
+    const loader = vi.fn(() => slow.promise);
+    const pending = engine.getOrSet(REF, loader);
+    await vi.waitFor(() => {
+      expect(loader).toHaveBeenCalledTimes(1);
+    });
+    await engine.clear('users');
+    slow.resolve('old');
+    expect(await pending).toBe('old');
+    expect(dataKeys(store)).toHaveLength(1);
+    expect(await engine.get(REF)).toBeUndefined();
+    const again = vi.fn(async () => 'new');
+    expect(await engine.getOrSet(REF, again)).toBe('new');
+    expect(again).toHaveBeenCalledTimes(1);
+    expect(await engine.get(REF)).toBe('new');
+  });
+
+  it('a getOrSet after clear does not join a load that started before it', async () => {
+    /* The flight key carries the version: a miss after clear starts its own load instead of
+       waiting for the pre-clear one. */
+    const { engine } = setup();
+    const slow = deferred<string>();
+    const first = vi.fn(() => slow.promise);
+    const before = engine.getOrSet(REF, first);
+    await vi.waitFor(() => {
+      expect(first).toHaveBeenCalledTimes(1);
+    });
+    await engine.clear('users');
+    const after = vi.fn(async () => 'new');
+    expect(await engine.getOrSet(REF, after)).toBe('new');
+    expect(after).toHaveBeenCalledTimes(1);
+    slow.resolve('old');
+    expect(await before).toBe('old');
+    expect(await engine.get(REF)).toBe('new');
+  });
+
+  it('another instance sees the bump within cacheTtl', async () => {
+    /* Engine B caches the version for cacheTtl (1 s by default): it keeps reading the old
+       entry after A clears, and misses once cacheTtl has passed. */
+    const a = setup();
+    const b = setup({ ...OPTIONS, stores: { default: a.store } });
+    await a.engine.set(REF, 'x');
+    expect(await b.engine.get(REF)).toBe('x');
+    await a.engine.clear('users');
+    expect(await a.engine.get(REF)).toBeUndefined();
+    vi.setSystemTime(999);
+    expect(await b.engine.get(REF)).toBe('x');
+    vi.setSystemTime(1_000);
+    expect(await b.engine.get(REF)).toBeUndefined();
+  });
+
+  it('lock and flight keys carry the version', async () => {
+    /* The lock key is `app:__lock__:users@<v>:1` with the same token as the data key, and
+       concurrent misses of a versioned key still share one load. */
+    const lock = new FakeLock();
+    const store = Object.assign(new FakeStore(), { lock });
+    const { engine } = setup({ ...OPTIONS, stores: { default: store } });
+    const loader = vi.fn(async () => 'v');
+    const results = await Promise.all([
+      engine.getOrSet(REF, loader, { lock: true }),
+      engine.getOrSet(REF, loader, { lock: true }),
+    ]);
+    expect(results).toEqual(['v', 'v']);
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(lock.acquireCalls).toHaveLength(1);
+    const lockKey = lock.acquireCalls[0] ?? '';
+    expect(lockKey).toMatch(/^app:__lock__:users@[0-9a-z]{8}:1$/);
+    const token = /@([0-9a-z]{8}):/.exec(lockKey)?.[1];
+    expect(dataKeys(store)).toEqual([`app:users@${String(token)}:1`]);
+  });
+
+  it('a failing version read skips the cache', async () => {
+    /* Each operation whose version read rejects reports one version error and touches no
+       data key: get misses without a miss event, getOrSet runs the loader only, and
+       set/put/delete do nothing. */
+    const { engine, store, emitted } = setup();
+    store.failNext('get');
+    expect(await engine.get(REF)).toBeUndefined();
+    store.failNext('get');
+    const loader = vi.fn(async () => 'v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(loader).toHaveBeenCalledTimes(1);
+    store.failNext('get');
+    await engine.set(REF, 'x');
+    store.failNext('get');
+    await engine.put(REF, 'x');
+    store.failNext('get');
+    await engine.delete({ namespace: 'users' }, ['1']);
+    expect(store.calls.filter((c) => c.op !== 'get')).toEqual([]);
+    expect(store.calls.map((c) => c.args[0])).toEqual(
+      Array.from({ length: 5 }, () => 'app:__version__:users'),
+    );
+    expect(emitted.map((e) => e.event)).toEqual(['error', 'error', 'error', 'error', 'error']);
+    for (const { payload } of emitted) {
+      expect(payload).toMatchObject({ store: 'default', operation: 'version' });
+    }
+  });
+
+  it('a failing bump reports a version error and no clear event', async () => {
+    /* The new token cannot be written: one version error, no clear event, no store.clear,
+       and the old entry is still served. */
+    const { engine, store, emitted } = setup();
+    await engine.set(REF, 'x');
+    store.failNext('set');
+    await engine.clear('users');
+    expect(store.calls.some((c) => c.op === 'clear')).toBe(false);
+    expect(emitted.map((e) => e.event)).toEqual(['set', 'error']);
+    expect(emitted[1]?.payload).toMatchObject({ store: 'default', operation: 'version' });
+    expect(await engine.get(REF)).toBe('x');
+  });
+
+  it('a non-versioned namespace is unchanged', async () => {
+    /* posts keeps the 0.3 keys and scan-based clear; users:admin is not versioned and is
+       not affected by clear('users'). */
+    const { engine, store } = setup();
+    await engine.set({ namespace: 'posts', key: '1' }, 'p');
+    await engine.set({ namespace: 'users:admin', key: '1' }, 'a');
+    expect(store.data.has('app:posts:1')).toBe(true);
+    expect(store.data.has('app:users:admin:1')).toBe(true);
+    await engine.clear('users');
+    expect(await engine.get({ namespace: 'users:admin', key: '1' })).toBe('a');
+    await engine.clear('posts');
+    expect(store.calls.filter((c) => c.op === 'clear')).toEqual([
+      { op: 'clear', args: ['app:posts:'] },
+    ]);
+    expect(await engine.get({ namespace: 'posts', key: '1' })).toBeUndefined();
+  });
+});
