@@ -229,21 +229,29 @@ uses `options.invalidation` if given, otherwise `l2.invalidation`.
 
 The bus only affects L1 freshness. Data in L2 is always correct, and a single-instance app is not affected by a missing bus.
 Without a bus, `tieredStore` still works and logs a warning at startup. When the Pub/Sub connection is
-re-established, L1 is cleared because messages may have been missed.
+re-established, L1 is cleared because messages may have been missed. If Redis is unreachable when the app starts,
+the subscription is retried once the connection is ready. A bus may implement the optional `onError(handler)`;
+`tieredStore` reports those errors as `error` events with `operation: 'subscribe'` (the Redis bus reports
+errors of its subscriber connection this way).
 
 ## Events
 
 ```ts
+import { Inject, Injectable } from '@nestjs/common';
 import { CacheEvents } from '@loipv/nestjs-cache';
 
-constructor(events: CacheEvents) {
-  const off = events.on('error', ({ store, operation, error }) => {
-    // report to your monitoring
-  });
+@Injectable()
+export class CacheMonitor {
+  constructor(@Inject(CacheEvents) events: CacheEvents) {
+    const off = events.on('error', ({ store, operation, error }) => {
+      // report to your monitoring
+    });
+  }
 }
 ```
 
-`on` returns an unsubscribe function. A listener that throws is swallowed and logged.
+`on` returns an unsubscribe function. A listener that throws is swallowed and logged. `@Inject(CacheEvents)`
+works without `emitDecoratorMetadata`; plain constructor injection (`constructor(events: CacheEvents)`) needs it.
 
 | Event    | Payload                                                      |
 | -------- | ------------------------------------------------------------ |

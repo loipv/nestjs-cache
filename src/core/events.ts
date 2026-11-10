@@ -51,6 +51,7 @@ export class CacheEvents {
     };
   }
 
+  /** @internal Used by the library to publish events; not part of the public API. */
   emit<E extends keyof CacheEventMap>(event: E, payload: CacheEventMap[E]): void {
     const set = this.listeners.get(event);
     if (!set) return;
@@ -67,6 +68,7 @@ export class CacheEvents {
     }
   }
 
+  /** @internal Builds the sink passed to `CacheStore.bind`; not part of the public API. */
   sinkFor(store: string): CacheEventSink {
     return {
       emit: (_event, payload) => {
