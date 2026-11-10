@@ -18,3 +18,5 @@ export type {
 export type { CacheEnvelope } from './core/envelope.js';
 export type { Serializer } from './serializers/json.serializer.js';
 export { jsonSerializer } from './serializers/json.serializer.js';
+export { CacheEvents } from './core/events.js';
+export type { CacheEventMap, CacheEventSink, CacheOperation } from './core/events.js';
