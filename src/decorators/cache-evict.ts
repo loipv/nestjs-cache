@@ -34,9 +34,11 @@ export function CacheEvict<K extends unknown[] = never[]>(
     const specs: readonly (KeySpec<never[]> | undefined)[] = Array.isArray(loose.key)
       ? (loose.key as readonly KeySpec<never[]>[])
       : [loose.key as KeySpec<never[]> | undefined];
+    // A key that renders empty is allowed here: engine.delete drops and reports it, and still
+    // deletes the other keys. A builder that throws skips the whole eviction.
     const keyBuilders = allEntries
       ? []
-      : specs.map((spec) => compileKeyAt(target, propertyKey, spec));
+      : specs.map((spec) => compileKeyAt(target, propertyKey, spec, true));
 
     wrapMethod(
       target,

@@ -70,8 +70,28 @@ class UserRemover {
     return `removed ${id}`;
   }
 
-  @CacheEvict({ namespace: 'users', key: ['user:{0}', '{0}'] })
-  async removeRawMany(id: string): Promise<string> {
+  @CacheEvict({ namespace: 'users', key: ['{0}', 'user:{1}'] })
+  async removeRawMany(id: string, userId: string): Promise<string> {
+    this.calls++;
+    return `removed ${id}${userId}`;
+  }
+
+  @CacheEvict({ namespace: 'users', key: ['{0}', '{1}'] })
+  async removeAllRaw(id: string, other: string): Promise<string> {
+    this.calls++;
+    return `removed ${id}${other}`;
+  }
+
+  @CacheEvict({
+    namespace: 'users',
+    key: [
+      (id: string): string => {
+        throw new Error(`bad key ${id}`);
+      },
+      'user:{0}',
+    ],
+  })
+  async removeThrowingMany(id: string): Promise<string> {
     this.calls++;
     return `removed ${id}`;
   }
@@ -181,19 +201,48 @@ describe('@CacheEvict', () => {
     ]);
   });
 
-  it.each(['removeRaw', 'removeRawMany'] as const)(
-    '%s skips the eviction but runs the method when a key renders empty',
-    async (method) => {
-      /* deleting 'users' would hit the bare namespace key, never an entry of the namespace */
-      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      expect(await svc[method]('')).toBe('removed ');
-      expect(svc.calls).toBe(1);
-      expect(fake.calls).toEqual([]);
-      expect(emitted).toEqual([
-        { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
-      ]);
-    },
-  );
+  it('skips the eviction but runs the method when its only key renders empty', async () => {
+    /* deleting 'users' would hit the bare namespace key, never an entry of the namespace */
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.removeRaw('')).toBe('removed ');
+    expect(svc.calls).toBe(1);
+    expect(fake.calls).toEqual([]);
+    expect(emitted).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+    ]);
+  });
+
+  it('drops only the key that renders empty and evicts the rest of the list', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.removeRawMany('', '7')).toBe('removed 7');
+    expect(svc.calls).toBe(1);
+    expect(fake.calls).toEqual([{ op: 'delete', args: [['users:user:7']] }]);
+    expect(emitted).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+      { event: 'delete', payload: { store: 'default', namespace: 'users', keys: ['user:7'] } },
+    ]);
+  });
+
+  it('skips the whole eviction when every key in the list renders empty', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.removeAllRaw('', '')).toBe('removed ');
+    expect(svc.calls).toBe(1);
+    expect(fake.calls).toEqual([]);
+    expect(emitted).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+    ]);
+  });
+
+  it('skips the whole eviction when a key builder in the list throws', async () => {
+    /* no key list exists then, so nothing is deleted */
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.removeThrowingMany('1')).toBe('removed 1');
+    expect(svc.calls).toBe(1);
+    expect(fake.calls).toEqual([]);
+    expect(emitted).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'key' }) as unknown },
+    ]);
+  });
 
   it('stacks two @CacheEvict, and @CachePut with @CacheEvict', async () => {
     await svc.removeTwice('1');

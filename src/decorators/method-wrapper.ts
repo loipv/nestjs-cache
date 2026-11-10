@@ -138,15 +138,29 @@ export function wrapMethod(
 
 /**
  * Compiles a key spec at declaration time; a malformed template throws here. The built
- * function throws for a key that cannot be built, including one that renders empty.
+ * function throws for a key that cannot be built and, unless `allowEmpty` is set, for one
+ * that renders empty. `@CacheEvict` allows it: the engine drops empty keys from a delete.
  */
-export function compileKey(spec: KeySpec<never[]> | undefined): (call: MethodCall) => string {
+export function compileKey(
+  spec: KeySpec<never[]> | undefined,
+  allowEmpty = false,
+): (call: MethodCall) => string {
+  const build = compileRawKey(spec);
+  if (allowEmpty) return build;
+  return (call) => {
+    const key = build(call);
+    if (isEmptyKey(key)) throw emptyKeyError();
+    return key;
+  };
+}
+
+function compileRawKey(spec: KeySpec<never[]> | undefined): (call: MethodCall) => string {
   if (spec === undefined) {
     return (call) => defaultKey(call.className, call.methodName, call.args);
   }
   if (typeof spec === 'string') {
     const render = compileTemplate(spec);
-    return (call) => nonEmpty(render(call.args));
+    return (call) => render(call.args);
   }
   const build = spec as (...args: unknown[]) => unknown;
   return (call) => {
@@ -154,13 +168,8 @@ export function compileKey(spec: KeySpec<never[]> | undefined): (call: MethodCal
     if (typeof key !== 'string') {
       throw new TypeError(`Key callback returned ${typeof key}, expected a string`);
     }
-    return nonEmpty(key);
+    return key;
   };
-}
-
-function nonEmpty(key: string): string {
-  if (isEmptyKey(key)) throw emptyKeyError();
-  return key;
 }
 
 /** `compileKey` with the declaring class and method named in a template error. */
@@ -168,9 +177,10 @@ export function compileKeyAt(
   target: object,
   propertyKey: string | symbol,
   spec: KeySpec<never[]> | undefined,
+  allowEmpty = false,
 ): (call: MethodCall) => string {
   try {
-    return compileKey(spec);
+    return compileKey(spec, allowEmpty);
   } catch (error) {
     if (error instanceof CacheConfigError) {
       throw new CacheConfigError(`${describeMethod(target, propertyKey)}: ${error.message}`);

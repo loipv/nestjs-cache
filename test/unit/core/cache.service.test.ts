@@ -103,17 +103,33 @@ describe('CacheService', () => {
       );
     });
 
-    it('set and delete are no-ops', async () => {
+    it('set, put and a lone delete are no-ops', async () => {
       const { engine, store, emitted } = makeEngine();
       const service = new CacheService(engine);
       await service.set('', 1, { namespace: 'n' });
       await service.delete('', { namespace: 'n' });
-      /* one empty key in a list skips the whole delete, as a failing key in @CacheEvict does */
-      await service.delete(['a', ''], { namespace: 'n' });
+      await service.delete(['', ''], { namespace: 'n' });
       await engine.put({ namespace: 'n', key: '' }, 1);
       expect(store.calls).toEqual([]);
       expect(keyErrors(emitted)).toEqual([keyError, keyError, keyError, keyError]);
       expect(emitted.filter((e) => e.event !== 'error')).toEqual([]);
+    });
+
+    it('delete of a list drops only the empty keys and reports them once', async () => {
+      /* the valid keys must still be evicted, or they would stay stale until their TTL */
+      const { engine, store, emitted } = makeEngine();
+      const service = new CacheService(engine);
+      await service.set('a', 1, { namespace: 'n' });
+      await service.set('b', 2, { namespace: 'n' });
+      store.calls.length = 0;
+      emitted.length = 0;
+      await service.delete(['a', '', 'b', ''], { namespace: 'n' });
+      expect(store.calls).toEqual([{ op: 'delete', args: [['n:a', 'n:b']] }]);
+      expect(store.data.size).toBe(0);
+      expect(emitted).toEqual([
+        { event: 'error', payload: keyError },
+        { event: 'delete', payload: { store: 'default', namespace: 'n', keys: ['a', 'b'] } },
+      ]);
     });
 
     it('invalid options and unknown stores are still rejected first', async () => {

@@ -8,8 +8,10 @@ Security hardening:
   the key is now deleted only when it holds an object with a `v` field (a broken envelope of this library). Lock
   tokens and other apps' keys on a shared Redis are no longer deleted by a read.
 - A decorator key template or callback that renders an empty string is a key error (`error` with
-  `operation: 'key'`, the method runs uncached), and so is an empty key passed to `CacheService` (`get` is a miss,
-  `getOrSet` runs the loader uncached, `set`/`delete` do nothing). Before, `''` collapsed to the bare namespace key.
+  `operation: 'key'`, the method runs uncached), and so is an empty key passed to `CacheService` (`get` returns
+  `undefined`, `getOrSet` runs the loader uncached, `set` does nothing). `CacheService.delete` and `@CacheEvict` key
+  lists drop the empty keys, report one key error and still delete the other keys. Before, `''` collapsed to the
+  bare namespace key.
 - An invalidation message longer than 1 MiB is no longer parsed; it clears the whole L1 instead.
 - `stableStringify` detects cycles with a `Set` (same output, faster on deep arguments).
 - `memoryStore` at capacity sweeps expired entries at most once a second instead of on every insert, and otherwise

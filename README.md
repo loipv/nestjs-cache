@@ -172,7 +172,7 @@ The full key is `<prefix>:<namespace>:<key>`; missing parts are dropped together
 - **Template:** `{N}` is the Nth argument (from 0); `{N.a.b}` reads a nested property. Primitives use `String()`, objects use JSON with sorted keys. Templates are positional because parameter names do not exist at runtime. A malformed template throws at class definition.
 - **Callback:** receives the method arguments and returns a string.
 - **Default:** `<ClassName>.<methodName>`, followed by `:<hash>` when there are arguments. The hash is the first 16 hex characters of the SHA-1 of the arguments' JSON (sorted keys).
-- If a key cannot be built (unserializable argument, a callback that throws, a template or callback that renders an empty string), the cache is skipped, the original method runs and an `error` event with `operation: 'key'` is emitted.
+- If a key cannot be built (unserializable argument, a callback that throws, a template or callback that renders an empty string), the cache is skipped, the original method runs and an `error` event with `operation: 'key'` is emitted. In a `@CacheEvict` key list, a key that renders empty is dropped (one `error` event) and the other keys are still evicted; a key builder that throws skips the whole eviction.
 
 ## CacheService
 
@@ -200,7 +200,8 @@ adds `cacheNull`, `nullTtl`, `unless` and `lock`. `get` returns `undefined` on a
 validate stored data at runtime.
 
 An empty key is a key error (`error` with `operation: 'key'`): `get` returns `undefined`, `getOrSet` runs the loader
-without caching, and `set`/`delete` do nothing (one empty key in a `delete` list skips the whole call).
+without caching, and `set` does nothing. `delete` drops the empty keys, emits one `error` event and still deletes
+the others; `delete('')` alone does nothing.
 
 ## Null caching and TTL jitter
 
@@ -626,7 +627,7 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 | Store write fails                                            | The result is still returned, `error` is emitted                                                       |
 | Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                |
 | Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field |
-| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`                                                         |
+| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped         |
 | Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`            |
 | The original method throws                                   | The error reaches the caller, nothing is stored                                                        |
 | `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                       |
