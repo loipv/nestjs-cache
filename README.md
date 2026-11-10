@@ -162,7 +162,7 @@ Callbacks may declare fewer parameters than the method.
 
 Unknown store names fail at startup. A bad key template, `allEntries` without `namespace`, an empty `key: []` for
 `@CacheEvict`, a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl` that is not a finite number greater than 0
-are rejected with `CacheConfigError`. See Error behaviour for the full list.
+are rejected with `CacheConfigError`, as is a `cacheNull` that is not a boolean. See Error behaviour for the full list.
 
 ## Dynamic keys
 
@@ -632,12 +632,12 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
 `CacheConfigError` is thrown only in these cases:
 
-| When                                | Cases                                                                                                                                                                                                 |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })` |
-| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                      |
-| App startup                         | Invalid module options (including `defaults.lock`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store); a decorator naming an unknown store                                        |
-| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); unknown `strategy` name; `swr` without `staleTtl`; `clear('')`                                       |
+| When                                | Cases                                                                                                                                                                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })` |
+| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                 |
+| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store); a decorator naming an unknown store                               |
+| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`                                       |
 
 Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.

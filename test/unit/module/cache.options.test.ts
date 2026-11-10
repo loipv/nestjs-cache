@@ -151,6 +151,22 @@ describe('CacheModuleAsyncOptions', () => {
     );
   });
 
+  it.each([
+    ['false', 'false'],
+    [1, '1'],
+  ])('rejects a non-boolean defaults.cacheNull %j', (cacheNull, shown) => {
+    /* 'false' is truthy: it would turn null caching on */
+    const bad = { defaults: { cacheNull: cacheNull as unknown as boolean } };
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      `Invalid cache option defaults.cacheNull: ${shown} (must be a boolean)`,
+    );
+  });
+
+  it.each([true, false, undefined])('accepts defaults.cacheNull %s', (cacheNull) => {
+    expect(resolveOptions({ defaults: { cacheNull } }).defaults.cacheNull).toBe(cacheNull ?? false);
+  });
+
   it('defaults logging.level to error', () => {
     expect(resolveOptions().logging).toEqual({ level: 'error' });
     expect(resolveOptions({ logging: {} }).logging).toEqual({ level: 'error' });

@@ -67,6 +67,12 @@ function positiveDuration(path: string, value: number | undefined, fallback: num
   return value;
 }
 
+function cacheNullOf(value: boolean | undefined): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw invalid('defaults.cacheNull', value, 'must be a boolean');
+  return value;
+}
+
 function lockEnabled(value: boolean | undefined): boolean {
   if (value === undefined) return false;
   if (typeof value !== 'boolean')
@@ -141,7 +147,7 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
     defaults: {
       ttl: positiveDuration('defaults.ttl', defaults.ttl, DEFAULT_TTL),
       jitter: jitterOf(defaults.jitter),
-      cacheNull: defaults.cacheNull ?? false,
+      cacheNull: cacheNullOf(defaults.cacheNull),
       nullTtl: positiveDuration('defaults.nullTtl', defaults.nullTtl, DEFAULT_NULL_TTL),
       lock: {
         enabled: lockEnabled(lock.enabled),

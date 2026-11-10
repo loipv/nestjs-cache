@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheService } from '../../../src/core/cache.service.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -205,6 +206,27 @@ describe('CacheEngine.getOrSet', () => {
     if (option === 'ttl') {
       await expect(engine.set(ref, 1, { ttl: value })).rejects.toBeInstanceOf(CacheConfigError);
     }
+    expect(loader).not.toHaveBeenCalled();
+    expect(store.calls).toEqual([]);
+  });
+
+  it.each([
+    ['false', 'false'],
+    [1, '1'],
+  ])('rejects a non-boolean cacheNull %j before any store or loader call', async (value, shown) => {
+    /* 'false' is truthy and would store null results */
+    const { engine, store } = makeEngine();
+    const service = new CacheService(engine);
+    const loader = vi.fn(async () => null);
+    const cacheNull = value as unknown as boolean;
+    const message = `Invalid cacheNull: ${shown}. It must be a boolean.`;
+    await expect(service.getOrSet('a', loader, { cacheNull })).rejects.toThrow(
+      new CacheConfigError(message),
+    );
+    await expect(engine.getOrSet({ key: 'a' }, loader, { cacheNull })).rejects.toThrow(message);
+    await expect(engine.put({ key: 'a' }, null, { cacheNull })).rejects.toThrow(
+      new CacheConfigError(message),
+    );
     expect(loader).not.toHaveBeenCalled();
     expect(store.calls).toEqual([]);
   });

@@ -104,6 +104,43 @@ describe('decorator metadata', () => {
     }).toThrow(/S\.a/);
   });
 
+  it.each([
+    ['false', 'false'],
+    [1, '1'],
+  ])('rejects a non-boolean cacheNull %j on @Cacheable and @CachePut', (value, shown) => {
+    const cacheNull = value as unknown as boolean;
+    expect(() => {
+      class S {
+        @Cacheable({ cacheNull }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow(new CacheConfigError(`S.a: cacheNull must be a boolean, got ${shown}`));
+    expect(() => {
+      class S {
+        @CachePut({ cacheNull }) b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow(new CacheConfigError(`S.b: cacheNull must be a boolean, got ${shown}`));
+  });
+
+  it('accepts a boolean cacheNull', () => {
+    expect(() => {
+      class S {
+        @Cacheable({ cacheNull: false }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+        @CachePut({ cacheNull: true }) b(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).not.toThrow();
+  });
+
   it('rejects allEntries without namespace or with key at runtime too', () => {
     const noNamespace = Object.assign({ allEntries: true }) as unknown as CacheEvictOptions<
       never[]

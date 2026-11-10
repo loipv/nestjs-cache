@@ -31,6 +31,11 @@ function checkDuration(option: string, value: number | undefined): void {
   }
 }
 
+function checkBoolean(option: string, value: boolean | undefined): void {
+  if (value === undefined || typeof value === 'boolean') return;
+  throw new CacheConfigError(`Invalid ${option}: ${String(value)}. It must be a boolean.`);
+}
+
 /**
  * Validates the strategy options and builds the strategy. `ttl` is the effective ttl the
  * entry is written with; it is omitted by `get`, which writes nothing. `preset` is a strategy
@@ -115,6 +120,7 @@ export class CacheEngine {
     const target = this.io.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
+    checkBoolean('cacheNull', options.cacheNull);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
     if (this.emptyKey(target, [ref.key])) return loader();
@@ -152,6 +158,7 @@ export class CacheEngine {
     const target = this.io.resolve(ref.store);
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
+    checkBoolean('cacheNull', options.cacheNull);
     const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
     if (this.emptyKey(target, [ref.key])) return;
     await this.io.store(target, ref, value, options, strategy, true);

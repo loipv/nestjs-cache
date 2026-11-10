@@ -1,5 +1,5 @@
 import type { LoadOptions } from '../core/cache-engine.js';
-import { assertPositiveFinite, assertStrategyTtls } from './metadata.js';
+import { assertBoolean, assertPositiveFinite, assertStrategyTtls } from './metadata.js';
 import {
   assertInstanceMethod,
   compileKeyAt,
@@ -18,6 +18,7 @@ export function Cacheable<
     assertInstanceMethod(target, propertyKey);
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
+    assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
     assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;

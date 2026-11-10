@@ -52,6 +52,18 @@ export function assertPositiveFinite(
   }
 }
 
+export function assertBoolean(
+  target: object,
+  method: string | symbol,
+  field: string,
+  value: boolean | undefined,
+): void {
+  if (value === undefined || typeof value === 'boolean') return;
+  throw new CacheConfigError(
+    `${describeMethod(target, method)}: ${field} must be a boolean, got ${String(value)}`,
+  );
+}
+
 /** Validates `staleTtl`/`maxTtl` and the `maxTtl >= ttl` relation at definition time. */
 export function assertStrategyTtls(
   target: object,
