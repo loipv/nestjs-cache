@@ -300,11 +300,11 @@ await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock:
 | `defaults.lock.waitTimeout` | `3_000`  | How long a waiter polls for the value before loading it itself (ms) |
 | `defaults.lock.retryDelay`  | `50`     | Pause between polls (ms)                                            |
 
-`defaults.lock` is typed `CacheLockDefaults`.
+`defaults.lock` is typed `CacheLockDefaults`. Any value other than an object or `undefined` throws `CacheConfigError`.
 
 - It needs a `redisStore`, or a `tieredStore` whose L2 is Redis (the lock is the L2's). The memory store has no lock.
   With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup. For `lock: true` on a method whose store has no lock, `CacheExplorer` logs the
-  warning once per class and method.
+  warning once per class, method and store.
 - A request answered from the cache after waiting for the lock emits `miss` and then `hit` for the same request; do not double-count it in metrics.
 - Lock keys are `lock:<fullKey>`. Without a `prefix`, do not use a namespace literally named `lock`: `clear('lock')` would delete live locks. Setting a `prefix` avoids this.
 - The lock is **not auto-extended.** If a load runs longer than `lock.ttl`, the lock expires and another instance

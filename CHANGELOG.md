@@ -21,12 +21,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `IoredisLike` gained a required `eval` and a `set ... 'NX'` overload. Real ioredis clients are unaffected, but hand-written fakes must add them.
 - Repeated `error` log lines are throttled to one per 30 seconds for each (store, operation) pair, with a `(+N similar errors suppressed)` suffix. Events are still emitted for every occurrence.
 - `package.json` now has `repository`, `homepage`, `bugs` and more keywords.
+- `defaults.lock` must be an object: `null`, a string, a number, a boolean or an array throws `CacheConfigError` (`undefined` still means the defaults).
 
 ### Fixed
 
 - Decorators on `static` methods are rejected with `CacheConfigError`.
 - `@CacheEvict({ key: [] })` is rejected with `CacheConfigError`.
-- Lock-unavailable warnings are de-duplicated (once per class and method).
+- Lock-unavailable warnings are de-duplicated once per class, method and store, so a method that names two stores without a lock warns for each.
 
 ## [0.1.0] - 2026-11-10
 
