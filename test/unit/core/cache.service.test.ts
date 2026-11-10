@@ -42,4 +42,15 @@ describe('CacheService', () => {
     await expect(service.get('k', { store: 'nope' })).rejects.toThrow(CacheConfigError);
     await expect(service.clear('n', { store: 'nope' })).rejects.toThrow(CacheConfigError);
   });
+
+  it('rejects an empty namespace for clear, with or without a prefix (F5)', async () => {
+    for (const options of [{}, { prefix: 'app' }]) {
+      const { engine, store, emitted } = makeEngine(options);
+      const service = new CacheService(engine);
+      await expect(service.clear('')).rejects.toThrow(CacheConfigError);
+      await expect(engine.clear('')).rejects.toThrow(CacheConfigError);
+      expect(store.calls.filter((c) => c.op === 'clear')).toEqual([]);
+      expect(emitted).toEqual([]);
+    }
+  });
 });

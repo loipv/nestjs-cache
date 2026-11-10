@@ -116,6 +116,10 @@ export class CacheEngine {
   }
 
   async clear(namespace: string, storeName?: string): Promise<void> {
+    // With a prefix, '' would wipe every namespace; without one it would clear nothing.
+    if (typeof namespace !== 'string' || namespace === '') {
+      throw new CacheConfigError('clear requires a non-empty namespace');
+    }
     const { name, store } = this.resolve(storeName);
     try {
       await store.clear(namespacePrefix(this.options.prefix, namespace));

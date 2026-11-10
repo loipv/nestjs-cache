@@ -189,7 +189,8 @@ const user = await cache.getOrSet('user:1', () => repo.find('1'), {
 ```
 
 `KeyOptions` is `{ namespace?, store? }`, `WriteOptions` adds `ttl`, and `GetOrSetOptions` adds `cacheNull`,
-`nullTtl` and `unless`. `get` returns `undefined` on a miss. `T` is your assertion; the library does not
+`nullTtl` and `unless`. `get` returns `undefined` on a miss. `clear` needs a non-empty namespace and rejects
+`''` with `CacheConfigError`. `T` is your assertion; the library does not
 validate stored data at runtime.
 
 ## Null caching and TTL jitter
@@ -269,6 +270,7 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 | Key cannot be built                                                                   | Cache skipped, `error` with `operation: 'key'`                                        |
 | The original method throws                                                            | The error reaches the caller, nothing is stored                                       |
 | Unknown store name, missing `default` store, duration <= 0, `jitter` outside `[0, 1)` | The app fails at startup (or the `CacheService` call rejects with `CacheConfigError`) |
+| `CacheService.clear('')` (empty namespace)                                            | The call rejects with `CacheConfigError` and nothing is cleared                       |
 | Bad key template, `@Cacheable` with `@CachePut`, `allEntries` without `namespace`     | Throws at class definition                                                            |
 
 ## Caveats
