@@ -20,6 +20,11 @@ export interface RedisClientAdapter {
   deleteIfEquals?(key: string, value: string): Promise<boolean>;
   /** Optional. Sends a PING; resolves when Redis answers, rejects otherwise. */
   ping?(): Promise<void>;
+  /**
+   * Optional. MGET; resolves the values in key order, `undefined` for a missing key. An empty
+   * list sends no command and resolves `[]`.
+   */
+  mget?(keys: readonly string[]): Promise<(string | undefined)[]>;
   publish(channel: string, message: string): Promise<void>;
   createSubscriber(): RedisSubscriberAdapter;
 }

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CacheHealthIndicator } from '../../../src/health/cache-health.indicator.js';
+import type { ResolvedCacheOptions } from '../../../src/module/cache.options.js';
 import { circuitBreaker, CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
 import { ioredisAdapter } from '../../../src/stores/ioredis.adapter.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
@@ -41,6 +43,18 @@ describe('store ping', () => {
     const adapter = ioredisAdapter(connection.asIoredis());
     await adapter.ping?.();
     expect(connection.ping).toHaveBeenCalledTimes(1);
+  });
+
+  /* A client without ping gives a redisStore without ping; the health check reports unsupported. */
+  it('a redisStore over an ioredis client without ping has no ping and reports unsupported', async () => {
+    const connection = new FakeConnection();
+    Reflect.deleteProperty(connection, 'ping');
+    const store = redisStore({ client: connection.asIoredis() });
+    expect('ping' in store).toBe(false);
+    const options = { stores: new Map([['default', store]]) } as unknown as ResolvedCacheOptions;
+    expect(await new CacheHealthIndicator(options).check('cache')).toEqual({
+      cache: { status: 'up', ping: 'unsupported' },
+    });
   });
 
   it('breaker guards ping', async () => {

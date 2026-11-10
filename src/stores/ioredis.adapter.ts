@@ -19,7 +19,10 @@ export interface IoredisLike {
     count: number,
   ): Promise<[cursor: string, keys: string[]]>;
   publish(channel: string, message: string): Promise<unknown>;
-  ping(): Promise<unknown>;
+  /** Optional. Used by health checks; the adapter exposes `ping` only when it exists. */
+  ping?(): Promise<unknown>;
+  /** Optional. Used by batch reads; the adapter exposes `mget` only when it exists. */
+  mget?(...keys: string[]): Promise<(string | null)[]>;
   duplicate(): IoredisLike;
   subscribe(...channels: string[]): Promise<unknown>;
   on(event: string, listener: (...args: never[]) => void): unknown;
@@ -36,7 +39,7 @@ export const RELEASE_SCRIPT =
 const CLOSE_TIMEOUT_MS = 1_000;
 
 export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
-  return {
+  const adapter: RedisClientAdapter = {
     async get(key) {
       return (await client.get(key)) ?? undefined;
     },
@@ -60,9 +63,6 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
     async deleteIfEquals(key, value) {
       return (await client.eval(RELEASE_SCRIPT, 1, key, value)) === 1;
     },
-    async ping() {
-      await client.ping();
-    },
     async publish(channel, message) {
       await client.publish(channel, message);
     },
@@ -70,6 +70,20 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
       return createSubscriber(client.duplicate());
     },
   };
+  // Optional members exist only when the client has them, so `'ping' in adapter` is truthful.
+  if (typeof client.ping === 'function') {
+    adapter.ping = async () => {
+      await client.ping?.();
+    };
+  }
+  if (typeof client.mget === 'function') {
+    adapter.mget = async (keys) => {
+      if (keys.length === 0) return [];
+      const values = (await client.mget?.(...keys)) ?? [];
+      return keys.map((_, index) => values[index] ?? undefined);
+    };
+  }
+  return adapter;
 }
 
 interface Subscription {

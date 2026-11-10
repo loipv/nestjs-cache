@@ -14,6 +14,7 @@ export class FakeConnection extends EventEmitter {
   getex = vi.fn();
   eval = vi.fn();
   unlink = vi.fn();
+  mget = vi.fn();
   scan = vi.fn();
   ping = vi.fn(() => Promise.resolve('PONG'));
   publish = vi.fn((channel: string, message: string) => {

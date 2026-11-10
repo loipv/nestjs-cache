@@ -236,3 +236,32 @@ describe('ioredisAdapter lock primitives', () => {
     expect(await adapter.deleteIfEquals?.('k', 'v')).toBe(false);
   });
 });
+
+describe('ioredisAdapter optional members', () => {
+  /* The client's MGET answers ['a', null, 'c']: null becomes undefined, the order is kept. */
+  it('mget maps null to undefined and keeps order', async () => {
+    const fake = new FakeConnection();
+    fake.mget.mockResolvedValue(['a', null, 'c']);
+    const adapter = ioredisAdapter(fake.asIoredis());
+    await expect(adapter.mget?.(['k1', 'k2', 'k3'])).resolves.toEqual(['a', undefined, 'c']);
+    expect(fake.mget).toHaveBeenCalledWith('k1', 'k2', 'k3');
+  });
+
+  /* An empty key list resolves [] and never reaches the client. */
+  it('mget with no keys sends no command', async () => {
+    const fake = new FakeConnection();
+    const adapter = ioredisAdapter(fake.asIoredis());
+    await expect(adapter.mget?.([])).resolves.toEqual([]);
+    expect(fake.mget).not.toHaveBeenCalled();
+  });
+
+  /* A client without mget and ping gives an adapter that has neither member. */
+  it('an adapter over a client without mget or ping has neither', () => {
+    const fake = new FakeConnection();
+    Reflect.deleteProperty(fake, 'mget');
+    Reflect.deleteProperty(fake, 'ping');
+    const adapter = ioredisAdapter(fake.asIoredis());
+    expect('mget' in adapter).toBe(false);
+    expect('ping' in adapter).toBe(false);
+  });
+});
