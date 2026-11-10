@@ -47,6 +47,45 @@ describe('redisInvalidationBus', () => {
     ]);
   });
 
+  describe('an oversized message', () => {
+    const MAX = 1_048_576;
+
+    /* a valid message padded with spaces to exactly `length` characters */
+    function padded(length: number): string {
+      const message = '{"origin":"a","keys":["k"]}';
+      return message.slice(0, -1) + ' '.repeat(length - message.length) + '}';
+    }
+
+    it('over 1 MiB is not parsed and is delivered as a full clear', async () => {
+      /* a forged message would otherwise cost a JSON.parse on every instance */
+      const fake = new FakeRedis();
+      const bus = redisInvalidationBus({ client: fake });
+      const got: InvalidationMessage[] = [];
+      await bus.subscribe((m) => got.push(m));
+      const parse = vi.spyOn(JSON, 'parse');
+      fake.subscribers[0]!.deliver(padded(MAX + 1));
+      fake.subscribers[0]!.deliver('x'.repeat(MAX + 1));
+      expect(parse).not.toHaveBeenCalled();
+      expect(got).toEqual([
+        { origin: '', prefix: '' },
+        { origin: '', prefix: '' },
+      ]);
+      parse.mockRestore();
+    });
+
+    it('of exactly 1 MiB is still parsed normally', async () => {
+      const fake = new FakeRedis();
+      const bus = redisInvalidationBus({ client: fake });
+      const got: InvalidationMessage[] = [];
+      await bus.subscribe((m) => got.push(m));
+      const raw = padded(MAX);
+      expect(raw).toHaveLength(MAX);
+      fake.subscribers[0]!.deliver(raw);
+      fake.subscribers[0]!.deliver('x'.repeat(MAX));
+      expect(got).toEqual([{ origin: 'a', keys: ['k'] }]);
+    });
+  });
+
   it('gives every handler every message with one subscriber connection', async () => {
     const fake = new FakeRedis();
     const bus = redisInvalidationBus({ client: fake });

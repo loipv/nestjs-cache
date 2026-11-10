@@ -241,6 +241,22 @@ describe('TieredStore', () => {
     expect(await local.get('k')).toBeUndefined();
   });
 
+  it('clears the whole L1 on an oversized invalidation message', async () => {
+    /* the bus turns a message over 1 MiB into a full clear with an origin no instance has */
+    const client = new FakeConnection();
+    const connection = client.prepareDuplicate();
+    const local = memoryStore();
+    const s = tieredStore({ l1: local, l2: redisStore({ client: client.asIoredis() }) });
+    s.bind({ emit: vi.fn() });
+    await flush();
+    await local.set('users:1', 'a', 60_000);
+    await local.set('other', 'b', 60_000);
+    connection.publishRemote('nestjs-cache:invalidate', 'x'.repeat(1_048_577));
+    await flush();
+    expect(await local.get('users:1')).toBeUndefined();
+    expect(await local.get('other')).toBeUndefined();
+  });
+
   it('swallows failures before bind', async () => {
     const unbound = tieredStore({ l1: memoryStore(), l2, invalidation: bus });
     l2.failNext('get');

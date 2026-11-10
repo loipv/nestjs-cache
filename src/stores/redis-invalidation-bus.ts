@@ -16,7 +16,14 @@ export function toRedisAdapter(client: IoredisLike | RedisClientAdapter): RedisC
   return isRedisClientAdapter(client) ? client : ioredisAdapter(client);
 }
 
+/** Longest message, in characters, that is parsed; a longer one is never `JSON.parse`d. */
+const MAX_MESSAGE_LENGTH = 1_048_576;
+
 function parseMessage(raw: string): InvalidationMessage | undefined {
+  // A forged multi-megabyte message would cost a parse on every instance. It becomes a clear of
+  // every key instead; the empty origin never equals an instance's randomUUID() origin, so no
+  // store ignores it as its own.
+  if (raw.length > MAX_MESSAGE_LENGTH) return { origin: '', prefix: '' };
   let value: unknown;
   try {
     value = JSON.parse(raw);
