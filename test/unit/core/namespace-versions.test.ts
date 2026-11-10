@@ -54,6 +54,16 @@ describe('NamespaceVersions', () => {
     expect(store.calls.filter((c) => c.op === 'get')).toHaveLength(2);
   });
 
+  it('treats an empty version key like a missing one', async () => {
+    /* The store holds '' under the version key: current writes a new token and returns it. */
+    const { store, versions } = setup();
+    const target = { name: 'default', store };
+    store.data.set('app:__version__:users', { value: '', ttlMs: 1 });
+    const token = await versions.current(target, 'users');
+    expect(token).toMatch(TOKEN);
+    expect(store.data.get('app:__version__:users')?.value).toBe(token);
+  });
+
   it('concurrent cold reads share one store read', async () => {
     /* 100 parallel current calls with an empty cache cause exactly one get. */
     const { store, versions } = setup();

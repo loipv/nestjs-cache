@@ -95,9 +95,10 @@ export class NamespaceVersions {
   private async read(target: Target, namespace: string): Promise<string> {
     const key = versionKey(this.prefix, namespace);
     const existing = await target.store.get(key);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined && existing !== '') return existing;
     const created = newVersionToken();
     await target.store.set(key, created, VERSION_KEY_TTL);
-    return (await target.store.get(key)) ?? created;
+    const stored = await target.store.get(key);
+    return stored === undefined || stored === '' ? created : stored;
   }
 }
