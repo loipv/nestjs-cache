@@ -616,16 +616,16 @@ p95, lock wait p95 and breaker state.
 
 Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
-| Situation                                                    | Behaviour                                                                                   |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                             |
-| Store write fails                                            | The result is still returned, `error` is emitted                                            |
-| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                     |
-| Envelope unreadable or unknown `v`                           | Treated as a miss, key deleted, `error` with `operation: 'deserialize'`                     |
-| Key cannot be built                                          | Cache skipped, `error` with `operation: 'key'`                                              |
-| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'` |
-| The original method throws                                   | The error reaches the caller, nothing is stored                                             |
-| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped            |
+| Situation                                                    | Behaviour                                                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                        |
+| Store write fails                                            | The result is still returned, `error` is emitted                                                       |
+| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                |
+| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field |
+| Key cannot be built                                          | Cache skipped, `error` with `operation: 'key'`                                                         |
+| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`            |
+| The original method throws                                   | The error reaches the caller, nothing is stored                                                        |
+| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                       |
 
 `CacheConfigError` is thrown only in these cases:
 

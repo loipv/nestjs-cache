@@ -60,7 +60,7 @@ describe('CacheEngine with an open circuit', () => {
 
   it('an open circuit on the deserialize cleanup delete emits no error of its own', async () => {
     const { engine, store, emitted } = makeEngine();
-    store.data.set('k', { value: 'not json', ttlMs: 1_000 });
+    store.data.set('k', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1_000 });
     store.failNext('delete', new CircuitOpenError());
     expect(await engine.get({ key: 'k' })).toBeUndefined();
     expect(store.calls.map((c) => c.op)).toEqual(['get', 'delete']);

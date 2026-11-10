@@ -2,6 +2,7 @@ import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
+import { jsonSerializer } from '../serializers/json.serializer.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
@@ -45,6 +46,15 @@ export function servable(
   strategy: ExpiryStrategy,
 ): lookup is Extract<Lookup, { found: true }> {
   return lookup.found && (!lookup.stale || strategy.kind === 'swr');
+}
+
+function hasOwnVersion(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, 'v')
+  );
 }
 
 export function isEmpty(value: unknown): value is null | undefined {
@@ -109,16 +119,22 @@ export class EngineIO {
     }
     if (raw === undefined) return { found: false };
     let envelope: CacheEnvelope;
+    let decoded: { value: unknown } | undefined;
     try {
-      const candidate = this.options.serializer.deserialize(raw);
+      const candidate: unknown = this.options.serializer.deserialize(raw);
+      decoded = { value: candidate };
       if (!isEnvelope(candidate)) throw new TypeError('Deserialized value is not a cache envelope');
       envelope = candidate;
     } catch (error) {
       this.reportError(name, 'deserialize', error);
-      try {
-        await store.delete([key]);
-      } catch {
-        // cleanup is best effort; the failure is already reported
+      // Keys can name entries this library did not write (a lock token, another app's key on
+      // a shared Redis): only an entry that looks like one of our envelopes is deleted.
+      if (this.ownEnvelope(raw, decoded)) {
+        try {
+          await store.delete([key]);
+        } catch {
+          // cleanup is best effort; the failure is already reported
+        }
       }
       return { found: false };
     }
@@ -148,6 +164,22 @@ export class EngineIO {
       }
     }
     return { found: true, value: unwrap(envelope), stale: state === 'stale' };
+  }
+
+  /**
+   * Whether an unreadable entry was written by this library: a corrupted envelope or one of
+   * another version, i.e. an object with an own `v`. `decoded` is what the serializer returned,
+   * or `undefined` when it threw. The built-in JSON serializer validates the envelope itself, so
+   * for it the raw JSON is inspected; a throwing custom serializer never leads to a delete.
+   */
+  private ownEnvelope(raw: string, decoded: { value: unknown } | undefined): boolean {
+    if (decoded !== undefined) return hasOwnVersion(decoded.value);
+    if (this.options.serializer !== jsonSerializer) return false;
+    try {
+      return hasOwnVersion(JSON.parse(raw));
+    } catch {
+      return false;
+    }
   }
 
   /** Applies the `unless`/`cacheNull` policy, then writes with the matching strategy. */

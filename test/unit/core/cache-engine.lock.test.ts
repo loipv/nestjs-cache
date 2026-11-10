@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheService } from '../../../src/core/cache.service.js';
-import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
+import { CacheEvents } from '../../../src/core/events.js';
+import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
 import type { LockHandle, LockProvider } from '../../../src/stores/cache-store.interface.js';
+import { RedisStore } from '../../../src/stores/redis.store.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
+import { FakeRedis } from '../helpers/fake-redis.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 const SWR = { ttl: 100, strategy: 'swr', staleTtl: 1_000 } as const;
@@ -322,5 +326,33 @@ describe('CacheEngine distributed lock', () => {
     expect(engine.hasLock('plain')).toBe(false);
     expect(engine.hasLock('default')).toBe(false);
     expect(engine.hasLock('missing')).toBe(false);
+  });
+});
+
+describe('a read of a lock key over a shared Redis', () => {
+  it('reports the unreadable value but never deletes the lock of another instance', async () => {
+    /* the auditor's scenario: lock keys are `lock:<fullKey>` holding a bare UUID, in the same
+       Redis as the cache entries; a user-controlled key can name one */
+    const redis = new FakeRedis();
+    const store = new RedisStore({ client: redis });
+    const events = new CacheEvents();
+    const errors: string[] = [];
+    events.on('error', ({ operation }) => errors.push(operation));
+    const engine = new CacheEngine(resolveOptions({ stores: { default: store } }), events);
+    const service = new CacheService(engine);
+    const lock = store.lock;
+    if (lock === undefined) throw new Error('RedisStore over FakeRedis must have a lock');
+
+    const held = await lock.acquire('users:1', 10_000);
+    expect(held).toBeDefined();
+    const token = redis.data.get('lock:users:1');
+
+    expect(await engine.get({ key: 'lock:users:1' })).toBeUndefined();
+    expect(await service.get('lock:users:1')).toBeUndefined();
+
+    expect(errors).toEqual(['deserialize', 'deserialize']);
+    expect(redis.commands.filter((c) => c.name === 'unlink')).toEqual([]);
+    expect(redis.data.get('lock:users:1')).toBe(token);
+    expect(await lock.acquire('users:1', 10_000)).toBeUndefined();
   });
 });

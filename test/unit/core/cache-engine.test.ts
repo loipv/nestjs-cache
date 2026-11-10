@@ -97,26 +97,62 @@ describe('CacheEngine', () => {
     ]);
   });
 
-  it.each(['not json', '{"v":2,"value":1,"storedAt":0}'])(
-    'unreadable entry %s is a miss, is deleted and reported',
+  const isDeserializeError = (e: { event: string; payload: unknown }): boolean =>
+    e.event === 'error' && (e.payload as { operation: string }).operation === 'deserialize';
+
+  it.each(['{"v":2,"value":1,"storedAt":0}', '{"v":1,"value":1}', '{"v":"x"}'])(
+    'an unreadable envelope %s is a miss, is deleted and reported',
     async (raw) => {
+      /* the entry is an object with an own `v`: something this library wrote, now unreadable */
       const { engine, store, emitted } = makeEngine();
       store.data.set('a', { value: raw, ttlMs: 1 });
       expect(await engine.get({ key: 'a' })).toBeUndefined();
       expect(store.data.has('a')).toBe(false);
-      expect(
-        emitted.some(
-          (e) =>
-            e.event === 'error' && (e.payload as { operation: string }).operation === 'deserialize',
-        ),
-      ).toBe(true);
+      expect(store.calls.filter((c) => c.op === 'delete')).toEqual([
+        { op: 'delete', args: [['a']] },
+      ]);
+      expect(emitted.some(isDeserializeError)).toBe(true);
       expect(emitted.at(-1)?.event).toBe('miss');
     },
   );
 
+  it.each([
+    'not json',
+    '3b241101-e2bb-4255-8caf-4136c566a962',
+    '{"foo":1}',
+    '42',
+    'null',
+    '"v"',
+    '[{"v":1}]',
+    '{"value":1,"storedAt":0}',
+  ])('a foreign value %s is a miss and reported, but left in the store', async (raw) => {
+    /* keys can be user-controlled: a value this library did not write must never be deleted */
+    const { engine, store, emitted } = makeEngine();
+    store.data.set('a', { value: raw, ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(store.data.get('a')?.value).toBe(raw);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    expect(emitted.some(isDeserializeError)).toBe(true);
+    expect(emitted.at(-1)?.event).toBe('miss');
+  });
+
+  it('an object with an inherited v is not treated as an envelope', async () => {
+    /* a custom serializer hands back an object whose `v` comes from its prototype */
+    const { engine, store, emitted } = makeEngine({
+      serializer: {
+        serialize: (e) => JSON.stringify(e),
+        deserialize: () => Object.create({ v: 1 }) as never,
+      },
+    });
+    store.data.set('a', { value: '{}', ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(store.data.has('a')).toBe(true);
+    expect(emitted.some(isDeserializeError)).toBe(true);
+  });
+
   it('swallows a failing cleanup delete after a deserialize failure', async () => {
     const { engine, store, emitted } = makeEngine();
-    store.data.set('a', { value: 'not json', ttlMs: 1 });
+    store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });
     store.failNext('delete');
     await expect(engine.get({ key: 'a' })).resolves.toBeUndefined();
     expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
@@ -129,14 +165,42 @@ describe('CacheEngine', () => {
     });
     store.data.set('a', { value: '{}', ttlMs: 1 });
     expect(await engine.get({ key: 'a' })).toBeUndefined();
-    expect(store.data.has('a')).toBe(false);
-    expect(
-      emitted.some(
-        (e) =>
-          e.event === 'error' && (e.payload as { operation: string }).operation === 'deserialize',
-      ),
-    ).toBe(true);
+    /* null is not something this library wrote, so the entry stays */
+    expect(store.data.has('a')).toBe(true);
+    expect(emitted.some(isDeserializeError)).toBe(true);
     expect(emitted.at(-1)?.event).toBe('miss');
+  });
+
+  it('a custom deserializer returning an object with v of another version deletes it', async () => {
+    const { engine, store, emitted } = makeEngine({
+      serializer: {
+        serialize: (e) => JSON.stringify(e),
+        deserialize: (raw) => JSON.parse(raw) as never,
+      },
+    });
+    store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });
+    store.data.set('b', { value: '{"foo":1}', ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(await engine.get({ key: 'b' })).toBeUndefined();
+    expect(store.data.has('a')).toBe(false);
+    expect(store.data.has('b')).toBe(true);
+    expect(emitted.filter(isDeserializeError)).toHaveLength(2);
+  });
+
+  it('a custom deserializer that throws never deletes, whatever the raw value', async () => {
+    /* only the built-in JSON serializer's own validation is looked behind */
+    const { engine, store, emitted } = makeEngine({
+      serializer: {
+        serialize: (e) => JSON.stringify(e),
+        deserialize: () => {
+          throw new Error('cannot decode');
+        },
+      },
+    });
+    store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(store.data.has('a')).toBe(true);
+    expect(emitted.some(isDeserializeError)).toBe(true);
   });
 
   it('a serializer that throws on write resolves and reports a set error', async () => {
