@@ -4,11 +4,19 @@ import { jsonSerializer, type Serializer } from '../serializers/json.serializer.
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { memoryStore } from '../stores/memory.store.js';
 
+export interface CacheLockDefaults {
+  enabled?: boolean;
+  ttl?: number;
+  waitTimeout?: number;
+  retryDelay?: number;
+}
+
 export interface CacheDefaults {
   ttl?: number;
   jitter?: number;
   cacheNull?: boolean;
   nullTtl?: number;
+  lock?: CacheLockDefaults;
 }
 
 export interface CacheModuleOptions {
@@ -25,10 +33,18 @@ export interface CacheModuleAsyncOptions {
   useFactory: (...args: never[]) => CacheModuleOptions | Promise<CacheModuleOptions>;
 }
 
+export interface ResolvedDefaults {
+  ttl: number;
+  jitter: number;
+  cacheNull: boolean;
+  nullTtl: number;
+  lock: { enabled: boolean; ttl: number; waitTimeout: number; retryDelay: number };
+}
+
 export interface ResolvedCacheOptions {
   prefix: string | undefined;
   stores: ReadonlyMap<string, CacheStore>;
-  defaults: Required<CacheDefaults>;
+  defaults: ResolvedDefaults;
   serializer: Serializer;
 }
 
@@ -44,6 +60,13 @@ function positiveDuration(path: string, value: number | undefined, fallback: num
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw invalid(path, value, 'must be a finite number > 0');
   }
+  return value;
+}
+
+function lockEnabled(value: boolean | undefined): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean')
+    throw invalid('defaults.lock.enabled', value, 'must be a boolean');
   return value;
 }
 
@@ -78,6 +101,7 @@ function resolveStores(stores: CacheModuleOptions['stores']): ReadonlyMap<string
 
 export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheOptions {
   const defaults = options.defaults ?? {};
+  const lock = defaults.lock ?? {};
   return {
     prefix: options.prefix === undefined || options.prefix === '' ? undefined : options.prefix,
     stores: resolveStores(options.stores),
@@ -86,6 +110,12 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
       jitter: jitterOf(defaults.jitter),
       cacheNull: defaults.cacheNull ?? false,
       nullTtl: positiveDuration('defaults.nullTtl', defaults.nullTtl, DEFAULT_NULL_TTL),
+      lock: {
+        enabled: lockEnabled(lock.enabled),
+        ttl: positiveDuration('defaults.lock.ttl', lock.ttl, 10_000),
+        waitTimeout: positiveDuration('defaults.lock.waitTimeout', lock.waitTimeout, 3_000),
+        retryDelay: positiveDuration('defaults.lock.retryDelay', lock.retryDelay, 50),
+      },
     },
     serializer: options.serializer ?? jsonSerializer,
   };

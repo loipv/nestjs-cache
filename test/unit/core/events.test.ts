@@ -85,4 +85,21 @@ describe('CacheEvents', () => {
     events.sinkFor('sessions').emit('error', { operation: 'get', error });
     expect(seen).toEqual([{ store: 'sessions', operation: 'get', error }]);
   });
+
+  it('sinkFor stamps the store on breaker events', () => {
+    const ev = new CacheEvents();
+    const seen: unknown[] = [];
+    ev.on('breaker', (p) => seen.push(p));
+    ev.sinkFor('sessions').emit('breaker', { state: 'open' });
+    expect(seen).toEqual([{ store: 'sessions', state: 'open' }]);
+  });
+
+  it('delivers lock events', () => {
+    const ev = new CacheEvents();
+    const seen: unknown[] = [];
+    ev.on('lock', (p) => seen.push(p));
+    const payload = { store: 's', namespace: undefined, key: 'k', waitedMs: 3, acquired: true };
+    ev.emit('lock', payload);
+    expect(seen).toEqual([payload]);
+  });
 });

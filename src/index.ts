@@ -19,7 +19,7 @@ export type { CacheEnvelope } from './core/envelope.js';
 export type { Serializer } from './serializers/json.serializer.js';
 export { jsonSerializer } from './serializers/json.serializer.js';
 export { CacheEvents } from './core/events.js';
-export type { CacheEventMap, CacheEventSink, CacheOperation } from './core/events.js';
+export type { BreakerState, CacheEventMap, CacheEventSink, CacheOperation } from './core/events.js';
 export type {
   CacheStore,
   InvalidationBus,
@@ -31,6 +31,7 @@ export { MemoryStore, memoryStore } from './stores/memory.store.js';
 export type { MemoryStoreOptions } from './stores/memory.store.js';
 export type {
   CacheDefaults,
+  CacheLockDefaults,
   CacheModuleAsyncOptions,
   CacheModuleOptions,
 } from './module/cache.options.js';

@@ -1,3 +1,5 @@
+export type BreakerState = 'closed' | 'open' | 'half-open';
+
 export type CacheOperation =
   | 'get'
   | 'set'
@@ -24,10 +26,25 @@ export interface CacheEventMap {
     success: boolean;
   };
   error: { store: string; operation: CacheOperation; error: unknown };
+  lock: {
+    store: string;
+    namespace: string | undefined;
+    key: string;
+    waitedMs: number;
+    acquired: boolean;
+  };
+  breaker: { store: string; state: BreakerState };
 }
 
 export interface CacheEventSink {
   emit(event: 'error', payload: { operation: CacheOperation; error: unknown }): void;
+  emit(event: 'breaker', payload: { state: BreakerState }): void;
+}
+
+type SinkPayload = { operation: CacheOperation; error: unknown } | { state: BreakerState };
+
+function isBreakerPayload(payload: SinkPayload): payload is { state: BreakerState } {
+  return 'state' in payload;
 }
 
 type Listener<E extends keyof CacheEventMap> = (payload: CacheEventMap[E]) => void;
@@ -71,8 +88,12 @@ export class CacheEvents {
   /** @internal Builds the sink passed to `CacheStore.bind`; not part of the public API. */
   sinkFor(store: string): CacheEventSink {
     return {
-      emit: (_event, payload) => {
-        this.emit('error', { store, operation: payload.operation, error: payload.error });
+      emit: (event: 'error' | 'breaker', payload: SinkPayload): void => {
+        if (event === 'breaker' && isBreakerPayload(payload)) {
+          this.emit('breaker', { store, state: payload.state });
+        } else if (!isBreakerPayload(payload)) {
+          this.emit('error', { store, operation: payload.operation, error: payload.error });
+        }
       },
     };
   }

@@ -11,6 +11,8 @@ const EVENT_FLAGS: Record<keyof CacheEventMap, true> = {
   clear: true,
   load: true,
   error: true,
+  lock: true,
+  breaker: true,
 };
 export const EVENT_NAMES = Object.keys(EVENT_FLAGS) as (keyof CacheEventMap)[];
 

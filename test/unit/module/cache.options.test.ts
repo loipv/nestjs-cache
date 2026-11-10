@@ -11,7 +11,13 @@ import {
 describe('resolveOptions', () => {
   it('fills every default', () => {
     const r = resolveOptions();
-    expect(r.defaults).toEqual({ ttl: 60_000, jitter: 0, cacheNull: false, nullTtl: 30_000 });
+    expect(r.defaults).toEqual({
+      ttl: 60_000,
+      jitter: 0,
+      cacheNull: false,
+      nullTtl: 30_000,
+      lock: { enabled: false, ttl: 10_000, waitTimeout: 3_000, retryDelay: 50 },
+    });
     expect(r.prefix).toBeUndefined();
     expect(r.serializer).toBe(jsonSerializer);
     expect([...r.stores.keys()]).toEqual(['default']);
@@ -31,7 +37,13 @@ describe('resolveOptions', () => {
       stores: { default: a, sessions: b },
     });
     expect(r.prefix).toBe('app');
-    expect(r.defaults).toEqual({ ttl: 5_000, jitter: 0.1, cacheNull: true, nullTtl: 1_000 });
+    expect(r.defaults).toEqual({
+      ttl: 5_000,
+      jitter: 0.1,
+      cacheNull: true,
+      nullTtl: 1_000,
+      lock: { enabled: false, ttl: 10_000, waitTimeout: 3_000, retryDelay: 50 },
+    });
     expect(r.stores.get('default')).toBe(a);
     expect(r.stores.get('sessions')).toBe(b);
   });
@@ -84,5 +96,35 @@ describe('CacheModuleAsyncOptions', () => {
       useFactory: (config: { prefix: string }) => ({ prefix: config.prefix }),
     };
     expect(typeof options.useFactory).toBe('function');
+  });
+
+  it('resolves lock defaults', () => {
+    expect(resolveOptions().defaults.lock).toEqual({
+      enabled: false,
+      ttl: 10_000,
+      waitTimeout: 3_000,
+      retryDelay: 50,
+    });
+    expect(
+      resolveOptions({ defaults: { lock: { enabled: true, ttl: 500 } } }).defaults.lock,
+    ).toEqual({ enabled: true, ttl: 500, waitTimeout: 3_000, retryDelay: 50 });
+  });
+
+  it.each([
+    ['ttl', 0],
+    ['waitTimeout', -1],
+    ['retryDelay', Number.NaN],
+  ] as const)('rejects defaults.lock.%s = %s', (f, v) => {
+    expect(() => resolveOptions({ defaults: { lock: { [f]: v } } })).toThrow(
+      `Invalid cache option defaults.lock.${f}`,
+    );
+  });
+
+  it('rejects a non-boolean enabled', () => {
+    const bad = { defaults: { lock: { enabled: 'true' as unknown as boolean } } };
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      'Invalid cache option defaults.lock.enabled: true (must be a boolean)',
+    );
   });
 });
