@@ -72,6 +72,8 @@ export class FakeRedis implements RedisClientAdapter {
   readonly commands: { name: string; args: unknown[] }[] = [];
   readonly subscribers: FakeSubscriber[] = [];
   readonly data = new Map<string, string>();
+  /** Optional, like the adapter member: tests assign it to make this fake ping-capable. */
+  declare ping?: () => Promise<void>;
   /** Stable scan order, so deleting mid-scan does not shift the cursor. */
   private readonly order: string[] = [];
 

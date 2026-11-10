@@ -18,6 +18,8 @@ export interface RedisClientAdapter {
    * deleted the key.
    */
   deleteIfEquals?(key: string, value: string): Promise<boolean>;
+  /** Optional. Sends a PING; resolves when Redis answers, rejects otherwise. */
+  ping?(): Promise<void>;
   publish(channel: string, message: string): Promise<void>;
   createSubscriber(): RedisSubscriberAdapter;
 }

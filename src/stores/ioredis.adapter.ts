@@ -19,6 +19,7 @@ export interface IoredisLike {
     count: number,
   ): Promise<[cursor: string, keys: string[]]>;
   publish(channel: string, message: string): Promise<unknown>;
+  ping(): Promise<unknown>;
   duplicate(): IoredisLike;
   subscribe(...channels: string[]): Promise<unknown>;
   on(event: string, listener: (...args: never[]) => void): unknown;
@@ -58,6 +59,9 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
     },
     async deleteIfEquals(key, value) {
       return (await client.eval(RELEASE_SCRIPT, 1, key, value)) === 1;
+    },
+    async ping() {
+      await client.ping();
     },
     async publish(channel, message) {
       await client.publish(channel, message);

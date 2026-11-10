@@ -23,12 +23,18 @@ export class RedisStore implements CacheStore {
   readonly invalidation: InvalidationBus;
   /** Present only when the adapter implements `setIfAbsent` and `deleteIfEquals`. */
   declare readonly lock?: LockProvider;
+  /** Present only when the adapter implements `ping`. */
+  declare readonly ping?: () => Promise<void>;
   private readonly adapter: RedisClientAdapter;
 
   constructor(options: RedisStoreOptions) {
     this.adapter = toRedisAdapter(options.client);
     this.invalidation = createRedisBus(this.adapter, options.channel ?? DEFAULT_CHANNEL);
     if (supportsLock(this.adapter)) this.lock = new RedisLock(this.adapter);
+    if (this.adapter.ping !== undefined) {
+      const adapter = this.adapter;
+      this.ping = () => adapter.ping?.() ?? Promise.resolve();
+    }
   }
 
   get(key: string): Promise<string | undefined> {

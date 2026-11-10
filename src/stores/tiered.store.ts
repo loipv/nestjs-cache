@@ -29,6 +29,8 @@ const DEFAULT_L1_TTL = 10_000;
 export class TieredStore implements CacheStore {
   /** The L2's lock, when it has one. */
   declare readonly lock?: LockProvider;
+  /** Present only when the L2 has `ping`; probes the L2. */
+  declare readonly ping?: () => Promise<void>;
   private readonly l1: CacheStore;
   private readonly l2: CacheStore;
   private readonly l1Ttl: number;
@@ -56,6 +58,10 @@ export class TieredStore implements CacheStore {
     this.l1 = options.l1;
     this.l2 = options.l2;
     if (options.l2.lock !== undefined) this.lock = options.l2.lock;
+    if (options.l2.ping !== undefined) {
+      const l2 = options.l2;
+      this.ping = () => l2.ping?.() ?? Promise.resolve();
+    }
     this.l1Ttl = l1Ttl;
     this.ownedBus = options.invalidation;
     this.bus = options.invalidation ?? options.l2.invalidation;

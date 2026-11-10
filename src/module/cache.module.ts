@@ -3,6 +3,7 @@ import { Logger, Module, type DynamicModule, type Provider } from '@nestjs/commo
 import { CacheEngine } from '../core/cache-engine.js';
 import { CacheService } from '../core/cache.service.js';
 import { CacheEvents } from '../core/events.js';
+import { CacheHealthIndicator } from '../health/cache-health.indicator.js';
 import { CacheExplorer } from './cache.explorer.js';
 import { CacheLifecycle } from './cache.lifecycle.js';
 import {
@@ -38,6 +39,11 @@ function sharedProviders(): Provider[] {
       inject: [CACHE_ENGINE],
     },
     {
+      provide: CacheHealthIndicator,
+      useFactory: (options: ResolvedCacheOptions) => new CacheHealthIndicator(options),
+      inject: [CACHE_OPTIONS],
+    },
+    {
       provide: CacheLifecycle,
       useFactory: (options: ResolvedCacheOptions, events: CacheEvents) =>
         new CacheLifecycle(options, events),
@@ -52,7 +58,7 @@ function sharedProviders(): Provider[] {
   ];
 }
 
-const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE];
+const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE, CacheHealthIndicator];
 
 @Module({})
 export class CacheModule {

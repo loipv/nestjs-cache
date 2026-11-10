@@ -15,6 +15,7 @@ export class FakeConnection extends EventEmitter {
   eval = vi.fn();
   unlink = vi.fn();
   scan = vi.fn();
+  ping = vi.fn(() => Promise.resolve('PONG'));
   publish = vi.fn((channel: string, message: string) => {
     for (const connection of this.duplicates) connection.publishRemote(channel, message);
     return Promise.resolve(1);

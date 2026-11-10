@@ -102,6 +102,11 @@ export interface CacheStore {
    * name, so the store can report errors it handles internally.
    */
   bind?(events: CacheEventSink): void;
+  /**
+   * Optional. Health probe used by `CacheHealthIndicator`: resolves when the store is
+   * reachable and rejects otherwise. Absent when the store cannot be probed.
+   */
+  ping?(): Promise<void>;
   /** Optional. Called at shutdown to release resources; must be idempotent. */
   close?(): Promise<void>;
 }

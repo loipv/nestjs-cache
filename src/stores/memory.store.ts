@@ -25,6 +25,10 @@ export class MemoryStore implements CacheStore {
     this.maxEntries = max;
   }
 
+  ping(): Promise<void> {
+    return Promise.resolve();
+  }
+
   get(key: string): Promise<string | undefined> {
     return Promise.resolve(this.read(key, undefined));
   }

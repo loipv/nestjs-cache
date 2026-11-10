@@ -76,6 +76,8 @@ export class CircuitBreakerStore implements CacheStore {
   declare readonly getAndTouch?: (key: string, ttlMs: number) => Promise<string | undefined>;
   /** Present only when the inner store has a lock; `acquire` and `release` are guarded. */
   declare readonly lock?: LockProvider;
+  /** Present only when the inner store has `ping`; guarded like every other operation. */
+  declare readonly ping?: () => Promise<void>;
   /** The inner store's bus, when it has one. */
   declare readonly invalidation?: InvalidationBus;
 
@@ -128,6 +130,10 @@ export class CircuitBreakerStore implements CacheStore {
           return handle === undefined ? undefined : this.guardHandle(handle);
         },
       };
+    }
+    if (inner.ping !== undefined) {
+      const ping = inner.ping.bind(inner);
+      this.ping = () => this.guard(() => ping());
     }
     if (inner.invalidation !== undefined) this.invalidation = inner.invalidation;
   }
