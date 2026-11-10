@@ -6,7 +6,11 @@ import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import { SingleFlight } from './single-flight.js';
-import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
+import {
+  classifyEnvelope,
+  createStrategy,
+  type ExpiryStrategy,
+} from './strategies/expiry-strategy.js';
 
 export interface KeyRef {
   store?: string;
@@ -115,26 +119,18 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl);
     const cached = await this.read(target, ref, strategy, ttl);
+    // A miss and a background refresh of the same key share one flight.
+    const flightKey = `${target.name}\u0000${fullKey(this.options.prefix, ref.namespace, ref.key)}`;
     // A stale entry is served only under swr; any other reader has a loader and reloads now.
     if (cached.found && (!cached.stale || strategy.kind === 'swr')) {
       this.hit(target.name, ref, cached.stale);
+      if (cached.stale) this.refresh(target, ref, flightKey, loader, options, strategy);
       return cached.value as T;
     }
     this.miss(target.name, ref);
-    const flightKey = `${target.name}\u0000${fullKey(this.options.prefix, ref.namespace, ref.key)}`;
-    return this.singleFlight.run(flightKey, async () => {
-      const started = Date.now();
-      let value: T;
-      try {
-        value = await loader();
-      } catch (error) {
-        this.emitLoad(target.name, ref, started, false);
-        throw error;
-      }
-      this.emitLoad(target.name, ref, started, true);
-      await this.store(target, ref, value, options, strategy, false);
-      return value;
-    });
+    return this.singleFlight.run(flightKey, () =>
+      this.loadAndStore(target, ref, loader, options, strategy, false),
+    );
   }
 
   async set(ref: KeyRef, value: unknown, options: SetOptions = {}): Promise<void> {
@@ -230,8 +226,20 @@ export class CacheEngine {
       }
       return { found: false };
     }
-    const state = strategy.classify(envelope, Date.now());
-    if (state === 'expired') return { found: false };
+    const now = Date.now();
+    const state = strategy.classify(envelope, now);
+    if (state === 'expired') {
+      // Expired by the strategy alone (sliding maxTtl): the store TTL would keep it alive.
+      // An entry past its own expiresAt is left for the store to drop, as in 0.1.
+      if (classifyEnvelope(envelope, now) !== 'expired') {
+        try {
+          await store.delete([key]);
+        } catch {
+          // cleanup is best effort; the read is a miss either way
+        }
+      }
+      return { found: false };
+    }
     if (reSet) {
       // Never reached for an expired entry, so maxTtl still bounds a sliding entry. Not atomic.
       try {
@@ -241,6 +249,47 @@ export class CacheEngine {
       }
     }
     return { found: true, value: unwrap(envelope), stale: state === 'stale' };
+  }
+
+  /**
+   * Fire and forget, one flight per key; shutdown does not wait for it. A failed load keeps
+   * the stale value; the flight still rejects, so a miss that joined it gets the loader error.
+   */
+  private refresh<T>(
+    target: Target,
+    ref: KeyRef,
+    flightKey: string,
+    loader: () => Promise<T>,
+    options: LoadOptions<T>,
+    strategy: ExpiryStrategy,
+  ): void {
+    if (this.singleFlight.has(flightKey)) return;
+    void this.singleFlight
+      .run(flightKey, () => this.loadAndStore(target, ref, loader, options, strategy, true))
+      .catch(() => undefined);
+  }
+
+  /** A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. */
+  private async loadAndStore<T>(
+    target: Target,
+    ref: KeyRef,
+    loader: () => Promise<T>,
+    options: LoadOptions<T>,
+    strategy: ExpiryStrategy,
+    refreshing: boolean,
+  ): Promise<T> {
+    const started = Date.now();
+    let value: T;
+    try {
+      value = await loader();
+    } catch (error) {
+      this.emitLoad(target.name, ref, started, false);
+      if (refreshing) this.reportError(target.name, 'refresh', error);
+      throw error;
+    }
+    this.emitLoad(target.name, ref, started, true);
+    await this.store(target, ref, value, options, strategy, false);
+    return value;
   }
 
   private async store<T>(

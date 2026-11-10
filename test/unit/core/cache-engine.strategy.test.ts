@@ -61,21 +61,30 @@ describe('CacheEngine with expiry strategies', () => {
     expect(emitted.at(-1)?.event).toBe('miss');
   });
 
-  it('getOrSet with swr serves stale without loading', async () => {
+  it('getOrSet with swr serves stale without waiting for the load', async () => {
     const { engine, emitted } = makeEngine();
     const options = { ttl: 100, strategy: 'swr', staleTtl: 300 } as const;
     await engine.set({ key: 'k' }, 'v', options);
     vi.setSystemTime(150);
     emitted.length = 0;
-    const loader = vi.fn(async () => 'new');
+    const loader = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => {
+            resolve('new');
+          }, 10);
+        }),
+    );
     expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('v');
-    expect(loader).not.toHaveBeenCalled();
+    // The load runs in the background (see cache-engine.swr.test.ts).
+    expect(loader).toHaveBeenCalledOnce();
     expect(emitted).toEqual([
       {
         event: 'hit',
         payload: { store: 'default', namespace: undefined, key: 'k', stale: true },
       },
     ]);
+    await vi.runAllTimersAsync();
   });
 
   it('getOrSet without swr reloads a stale-window entry', async () => {
@@ -192,7 +201,10 @@ describe('CacheEngine with expiry strategies', () => {
     vi.setSystemTime(2_000);
     store.calls.length = 0;
     expect(await engine.get({ key: 'k' }, options)).toBeUndefined();
-    expect(store.calls).toEqual([{ op: 'get', args: ['k'] }]);
+    expect(store.calls).toEqual([
+      { op: 'get', args: ['k'] },
+      { op: 'delete', args: [['k']] },
+    ]);
     expect(emitted.at(-1)).toEqual({
       event: 'miss',
       payload: { store: 'default', namespace: undefined, key: 'k' },
@@ -202,8 +214,53 @@ describe('CacheEngine with expiry strategies', () => {
     const loader = vi.fn(async () => 'new');
     expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('new');
     expect(loader).toHaveBeenCalledTimes(1);
+    // The entry was already deleted by the previous read, so this is a plain miss.
     expect(store.calls.map((c) => c.op)).toEqual(['get', 'set']);
     expect(envelopeOf(store, 'k')).toEqual({ v: 1, value: 'new', storedAt: 2_000 });
+  });
+
+  it('deletes a sliding entry past maxTtl, best effort', async () => {
+    const { engine, store, emitted } = makeEngine({ prefix: 'app' });
+    const ref = { namespace: 'ns', key: 'k' };
+    const options = { strategy: 'sliding', ttl: 1_000, maxTtl: 2_000 } as const;
+    await engine.set(ref, 'v', options);
+    vi.setSystemTime(2_000);
+    store.calls.length = 0;
+    emitted.length = 0;
+    expect(await engine.get(ref, options)).toBeUndefined();
+    expect(store.calls).toContainEqual({ op: 'delete', args: [['app:ns:k']] });
+    expect(store.data.has('app:ns:k')).toBe(false);
+    // The best-effort delete emits no delete event either.
+    expect(emitted.map((e) => e.event)).toEqual(['miss']);
+
+    // A failing delete is swallowed: no error event, still a miss.
+    await engine.set(ref, 'v', options);
+    vi.setSystemTime(4_000);
+    store.failNext('delete');
+    emitted.length = 0;
+    expect(await engine.get(ref, options)).toBeUndefined();
+    expect(emitted.map((e) => e.event)).toEqual(['miss']);
+
+    // getOrSet deletes before the miss load, and a failing delete still loads.
+    vi.setSystemTime(6_000);
+    store.failNext('delete');
+    store.calls.length = 0;
+    emitted.length = 0;
+    const loader = vi.fn(async () => 'new');
+    expect(await engine.getOrSet(ref, loader, options)).toBe('new');
+    expect(store.calls.map((c) => c.op)).toEqual(['get', 'delete', 'set']);
+    expect(emitted.map((e) => e.event)).toEqual(['miss', 'load', 'set']);
+  });
+
+  it('leaves an entry expired by expiresAt for the store to drop', async () => {
+    const { engine, store } = makeEngine();
+    await engine.set({ key: 'k' }, 'v', { ttl: 1_000 });
+    vi.setSystemTime(1_000);
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'k' }, { strategy: 'sliding' })).toBeUndefined();
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'new', { ttl: 1_000 })).toBe('new');
+    expect(store.calls.map((c) => c.op)).not.toContain('delete');
   });
 
   it('sliding expires after maxTtl', async () => {

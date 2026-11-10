@@ -91,6 +91,14 @@ class UserService {
     return this.calls;
   }
 
+  readonly swrCalls: { self: unknown; args: unknown[] }[] = [];
+
+  @Cacheable({ key: 'swr:{0}:{1}', ttl: 100, strategy: 'swr', staleTtl: 300 })
+  async swrArgs(id: string, page: number): Promise<string> {
+    this.swrCalls.push({ self: this, args: [id, page] });
+    return `${id}:${String(page)}:${String(this.swrCalls.length)}`;
+  }
+
   @Cacheable({ key: 'locked', lock: true })
   async locked(): Promise<number> {
     return 1;
@@ -260,7 +268,7 @@ describe('@Cacheable', () => {
     }).toThrow(/^Repo\.load: Invalid cache key template "x}"/);
   });
 
-  it('@Cacheable with swr serves stale data', async () => {
+  it('@Cacheable with swr serves stale data and refreshes it in the background', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(0);
@@ -269,15 +277,39 @@ describe('@Cacheable', () => {
       vi.setSystemTime(150);
       emitted.length = 0;
       expect(await svc.swr()).toBe(1);
-      expect(svc.calls).toBe(1);
-      expect(emitted).toEqual([
-        {
-          event: 'hit',
-          payload: { store: 'default', namespace: undefined, key: 'swr', stale: true },
-        },
-      ]);
-      vi.setSystemTime(400);
+      await new Promise((r) => setImmediate(r));
+      expect(svc.calls).toBe(2);
+      expect(emitted.map((e) => e.event)).toEqual(['hit', 'load', 'set']);
+      expect(emitted[0]?.payload).toEqual({
+        store: 'default',
+        namespace: undefined,
+        key: 'swr',
+        stale: true,
+      });
+      // The refreshed entry is fresh until 250.
+      vi.setSystemTime(200);
       expect(await svc.swr()).toBe(2);
+      expect(svc.calls).toBe(2);
+      // Past its expiresAt (550) the entry is a miss and loads in the foreground.
+      vi.setSystemTime(550);
+      expect(await svc.swr()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('@Cacheable swr re-invokes the method with the same this and args', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      expect(await svc.swrArgs('a', 2)).toBe('a:2:1');
+      vi.setSystemTime(150);
+      expect(await svc.swrArgs('a', 2)).toBe('a:2:1');
+      await new Promise((r) => setImmediate(r));
+      expect(svc.swrCalls).toHaveLength(2);
+      expect(svc.swrCalls[1]?.self).toBe(svc);
+      expect(svc.swrCalls[1]?.args).toEqual(['a', 2]);
+      expect(await svc.swrArgs('a', 2)).toBe('a:2:2');
     } finally {
       vi.useRealTimers();
     }

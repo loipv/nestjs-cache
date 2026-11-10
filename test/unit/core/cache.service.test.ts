@@ -80,7 +80,9 @@ describe('CacheService', () => {
       const loader = vi.fn(async () => 'new');
       const swr = { ttl: 100, strategy: 'swr', staleTtl: 300 } as const;
       expect(await service.getOrSet('k', loader, swr)).toBe('v');
-      expect(loader).not.toHaveBeenCalled();
+      // The stale entry is refreshed in the background, so the next read is fresh.
+      await vi.runAllTimersAsync();
+      expect(loader).toHaveBeenCalledTimes(1);
       expect(await service.getOrSet('k', loader)).toBe('new');
       expect(loader).toHaveBeenCalledTimes(1);
 

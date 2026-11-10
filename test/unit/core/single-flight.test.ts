@@ -60,4 +60,23 @@ describe('SingleFlight', () => {
     expect(await chained).toBe('second');
     expect(second).toHaveBeenCalledOnce();
   });
+  it('has() is true only while a flight runs', async () => {
+    const sf = new SingleFlight();
+    expect(sf.has('k')).toBe(false);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const running = sf.run('k', () => gate);
+    expect(sf.has('k')).toBe(true);
+    expect(sf.has('other')).toBe(false);
+    release();
+    await running;
+    expect(sf.has('k')).toBe(false);
+
+    const failing = sf.run('k', () => Promise.reject(new Error('boom')));
+    expect(sf.has('k')).toBe(true);
+    await expect(failing).rejects.toThrow('boom');
+    expect(sf.has('k')).toBe(false);
+  });
 });
