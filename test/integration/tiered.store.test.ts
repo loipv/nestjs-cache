@@ -39,6 +39,30 @@ async function waitForSync(from: CacheService, to: CacheService): Promise<void> 
   throw new Error('instances did not sync within 5 s');
 }
 
+/**
+ * Makes sure `instance` serves `fullKey` from its L1: reads it to fill L1, deletes the L2 copy with a
+ * raw DEL (which publishes nothing), and expects the value to still come back. A read that overlaps
+ * an invalidation does not backfill L1, so the fill is retried with the L2 copy restored.
+ */
+async function expectServedFromL1(
+  instance: Instance,
+  fullKey: string,
+  read: () => Promise<unknown>,
+  expected: unknown,
+): Promise<void> {
+  const raw = await instance.client.get(fullKey);
+  expect(raw).not.toBeNull();
+  await vi.waitFor(
+    async () => {
+      await instance.client.set(fullKey, raw!, 'PX', 60_000);
+      expect(await read()).toEqual(expected);
+      await instance.client.del(fullKey);
+      expect(await read()).toEqual(expected);
+    },
+    { timeout: 2_000 },
+  );
+}
+
 describe('TieredStore (integration)', () => {
   let redis: { url: string; stop(): Promise<void> };
   let a: Instance;
@@ -98,7 +122,7 @@ describe('TieredStore (integration)', () => {
 
   it('a delete on one instance invalidates L1 on the other within 2 s', async () => {
     await a.cache.set('t2:k', { n: 1 });
-    expect(await b.cache.get('t2:k')).toEqual({ n: 1 }); // B đã có L1
+    await expectServedFromL1(b, 't2:k', () => b.cache.get('t2:k'), { n: 1 });
     await a.cache.delete('t2:k');
     await vi.waitFor(
       async () => {
@@ -110,7 +134,7 @@ describe('TieredStore (integration)', () => {
 
   it('an overwrite on one instance is seen on the other within 2 s', async () => {
     await a.cache.set('t3:k', { n: 1 });
-    expect(await b.cache.get('t3:k')).toEqual({ n: 1 });
+    await expectServedFromL1(b, 't3:k', () => b.cache.get('t3:k'), { n: 1 });
     await a.cache.set('t3:k', { n: 2 });
     await vi.waitFor(
       async () => {
@@ -123,8 +147,8 @@ describe('TieredStore (integration)', () => {
   it('clear on one instance empties the namespace on the other', async () => {
     await a.cache.set('t4:k', { n: 1 }, { namespace: 'u' });
     await a.cache.set('t4:k', { n: 2 }, { namespace: 'p' });
-    expect(await b.cache.get('t4:k', { namespace: 'u' })).toEqual({ n: 1 });
-    expect(await b.cache.get('t4:k', { namespace: 'p' })).toEqual({ n: 2 });
+    await expectServedFromL1(b, 'u:t4:k', () => b.cache.get('t4:k', { namespace: 'u' }), { n: 1 });
+    await expectServedFromL1(b, 'p:t4:k', () => b.cache.get('t4:k', { namespace: 'p' }), { n: 2 });
     await a.cache.clear('u');
     await vi.waitFor(
       async () => {
