@@ -66,3 +66,4 @@ export type {
   PrometheusMetricConfig,
   RegistryLike,
 } from './observability/prometheus.types.js';
+export { CachePrometheusModule } from './observability/prometheus.module.js';

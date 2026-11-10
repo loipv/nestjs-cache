@@ -6,3 +6,6 @@ export const CACHE_ENGINE_PROPERTY: unique symbol = Symbol.for(
 export const CACHE_METADATA: unique symbol = Symbol.for('@loipv/nestjs-cache:metadata');
 /** @internal The module's `CacheLogger`; exported by `CacheModule` for the metrics module. */
 export const CACHE_LOGGER: unique symbol = Symbol.for('@loipv/nestjs-cache:logger');
+export const CACHE_PROMETHEUS_OPTIONS: unique symbol = Symbol.for(
+  '@loipv/nestjs-cache:prometheus-options',
+);

@@ -2,6 +2,8 @@
 export interface RegistryLike {
   getSingleMetric(name: string): unknown;
   removeSingleMetric(name: string): void;
+  /** Real clients call this on every entry of `registers` while constructing a metric. */
+  registerMetric(metric: unknown): void;
 }
 
 export interface PrometheusMetricConfig {
@@ -34,7 +36,30 @@ export function construct<TInstance>(
   )(config);
 }
 
-/** Structural subset of a Prometheus client module; pass `import * as client from '...'`. */
+/**
+ * Structural subset of a Prometheus client module; pass `import * as client from '...'`.
+ *
+ * A minimal hand-written fake, for tests:
+ *
+ * ```ts
+ * const registry: RegistryLike = {
+ *   getSingleMetric: () => undefined,
+ *   removeSingleMetric: () => undefined,
+ *   registerMetric: () => undefined,
+ * };
+ * class FakeMetric {
+ *   inc(): void {}
+ *   observe(): void {}
+ *   set(): void {}
+ * }
+ * const client: PrometheusClientLike = {
+ *   Counter: FakeMetric,
+ *   Histogram: FakeMetric,
+ *   Gauge: FakeMetric,
+ *   register: registry,
+ * };
+ * ```
+ */
 export interface PrometheusClientLike {
   Counter: PrometheusConstructor<{ inc(labels: Record<string, string>): void }>;
   Histogram: PrometheusConstructor<{
