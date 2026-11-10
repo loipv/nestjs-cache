@@ -2,3 +2,5 @@ node_modules/
 dist/
 coverage/
 *.tgz
+test/consumers/*/node_modules/
+test/consumers/*/package-lock.json
