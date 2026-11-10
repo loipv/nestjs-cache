@@ -72,7 +72,9 @@ export class TieredStore implements CacheStore {
     this.l1.bind?.(sink);
     this.l2.bind?.(sink);
     if (this.bus === undefined) {
-      if (!this.warned) {
+      // A hand-written sink may predate `logLevel`; treat a missing one as the default level.
+      const level = (sink as Partial<CacheEventSink>).logLevel ?? 'error';
+      if (level !== 'off' && !this.warned) {
         this.warned = true;
         this.logger.warn(
           'TieredStore has no invalidation bus: other instances keep stale L1 entries for up to l1Ttl after a write or delete',

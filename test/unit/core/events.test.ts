@@ -86,6 +86,18 @@ describe('CacheEvents', () => {
     expect(seen).toEqual([{ store: 'sessions', operation: 'get', error }]);
   });
 
+  it('sinkFor carries the log level; a custom sink without logLevel counts as error', () => {
+    /* … */
+    const events = new CacheEvents();
+    expect(events.sinkFor('s').logLevel).toBe('error');
+    expect(events.sinkFor('s', 'off').logLevel).toBe('off');
+    expect(events.sinkFor('s', 'debug').logLevel).toBe('debug');
+    const seen: unknown[] = [];
+    events.on('breaker', (p) => seen.push(p));
+    events.sinkFor('s', 'off').emit('breaker', { state: 'open' });
+    expect(seen).toEqual([{ store: 's', state: 'open' }]);
+  });
+
   it('sinkFor stamps the store on breaker events', () => {
     const ev = new CacheEvents();
     const seen: unknown[] = [];

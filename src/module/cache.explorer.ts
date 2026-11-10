@@ -38,6 +38,8 @@ export class CacheExplorer implements OnModuleInit {
       if (typeof metatype !== 'function' || wrapper.isFactory) continue;
       for (const entry of getCacheMetadata(metatype)) {
         if (this.engine.hasStore(entry.store)) {
+          // At 'off' nothing is logged, and nothing is marked as warned for another module.
+          if (this.engine.logLevel === 'off') continue;
           const warned = warnedLocks.get(metatype) ?? new Set<string>();
           warnedLocks.set(metatype, warned);
           const warnKey = `${String(entry.method)}\u0000${entry.store}`;

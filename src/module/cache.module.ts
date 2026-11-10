@@ -1,31 +1,36 @@
 import { DiscoveryService, DiscoveryModule } from '@nestjs/core';
-import { Logger, Module, type DynamicModule, type Provider } from '@nestjs/common';
+import { Module, type DynamicModule, type Provider } from '@nestjs/common';
 import { CacheEngine } from '../core/cache-engine.js';
 import { CacheService } from '../core/cache.service.js';
 import { CacheEvents } from '../core/events.js';
 import { CacheHealthIndicator } from '../health/cache-health.indicator.js';
 import { CacheExplorer } from './cache.explorer.js';
 import { CacheLifecycle } from './cache.lifecycle.js';
+import { CacheLogger } from './cache.logger.js';
 import {
   resolveOptions,
   type CacheModuleAsyncOptions,
   type CacheModuleOptions,
   type ResolvedCacheOptions,
 } from './cache.options.js';
-import { CACHE_ENGINE, CACHE_OPTIONS } from './tokens.js';
+import { CACHE_ENGINE, CACHE_LOGGER, CACHE_OPTIONS } from './tokens.js';
 
 function sharedProviders(): Provider[] {
   return [
     {
+      provide: CACHE_LOGGER,
+      useFactory: (options: ResolvedCacheOptions) => new CacheLogger(options.logging.level),
+      inject: [CACHE_OPTIONS],
+    },
+    {
       provide: CacheEvents,
-      useFactory: () => {
-        const logger = new Logger('CacheModule');
-        return new CacheEvents((error) => {
+      useFactory: (logger: CacheLogger) =>
+        new CacheEvents((error) => {
           logger.error(
             `A cache event listener threw: ${error instanceof Error ? error.message : String(error)}`,
           );
-        });
-      },
+        }),
+      inject: [CACHE_LOGGER],
     },
     {
       provide: CACHE_ENGINE,
@@ -45,9 +50,9 @@ function sharedProviders(): Provider[] {
     },
     {
       provide: CacheLifecycle,
-      useFactory: (options: ResolvedCacheOptions, events: CacheEvents) =>
-        new CacheLifecycle(options, events),
-      inject: [CACHE_OPTIONS, CacheEvents],
+      useFactory: (options: ResolvedCacheOptions, events: CacheEvents, logger: CacheLogger) =>
+        new CacheLifecycle(options, events, logger),
+      inject: [CACHE_OPTIONS, CacheEvents, CACHE_LOGGER],
     },
     {
       provide: CacheExplorer,
@@ -58,7 +63,7 @@ function sharedProviders(): Provider[] {
   ];
 }
 
-const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE, CacheHealthIndicator];
+const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE, CacheHealthIndicator, CACHE_LOGGER];
 
 @Module({})
 export class CacheModule {

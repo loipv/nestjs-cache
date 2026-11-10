@@ -1,4 +1,5 @@
 import type { FactoryProvider, ModuleMetadata } from '@nestjs/common';
+import type { CacheLogLevel } from '../core/events.js';
 import { CacheConfigError } from '../errors.js';
 import { jsonSerializer, type Serializer } from '../serializers/json.serializer.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
@@ -24,6 +25,8 @@ export interface CacheModuleOptions {
   stores?: { default: CacheStore; [name: string]: CacheStore };
   defaults?: CacheDefaults;
   serializer?: Serializer;
+  /** `level` defaults to `'error'`. */
+  logging?: { level?: CacheLogLevel };
 }
 
 export interface CacheModuleAsyncOptions {
@@ -46,6 +49,7 @@ export interface ResolvedCacheOptions {
   stores: ReadonlyMap<string, CacheStore>;
   defaults: ResolvedDefaults;
   serializer: Serializer;
+  logging: { level: CacheLogLevel };
 }
 
 const DEFAULT_TTL = 60_000;
@@ -77,6 +81,26 @@ function lockDefaults(value: unknown): CacheLockDefaults {
     throw invalid('defaults.lock', value, 'must be an object');
   }
   return value;
+}
+
+const LOG_LEVELS: readonly unknown[] = ['off', 'error', 'debug'] satisfies CacheLogLevel[];
+
+function isLogLevel(value: unknown): value is CacheLogLevel {
+  return LOG_LEVELS.includes(value);
+}
+
+/** `undefined` means the default level; anything else that is not a plain object is rejected. */
+function loggingOf(value: unknown): { level: CacheLogLevel } {
+  if (value === undefined) return { level: 'error' };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw invalid('logging', value, 'must be an object');
+  }
+  const { level } = value as { level?: unknown };
+  if (level === undefined) return { level: 'error' };
+  if (!isLogLevel(level)) {
+    throw invalid('logging.level', level, "must be 'off', 'error' or 'debug'");
+  }
+  return { level };
 }
 
 function jitterOf(value: number | undefined): number {
@@ -127,5 +151,6 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
       },
     },
     serializer: options.serializer ?? jsonSerializer,
+    logging: loggingOf(options.logging),
   };
 }

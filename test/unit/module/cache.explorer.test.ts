@@ -136,6 +136,32 @@ describe('CacheExplorer', () => {
     warnSpy.mockRestore();
   });
 
+  it("does not warn at level 'off', and an 'off' module does not use up the warning", async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class QuietLocky {
+      @Cacheable({ lock: true })
+      find(): Promise<number> {
+        return Promise.resolve(1);
+      }
+    }
+    const off = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ logging: { level: 'off' } })],
+      providers: [QuietLocky],
+    }).compile();
+    await off.init();
+    expect(warnSpy).not.toHaveBeenCalled();
+    await off.close();
+    const on = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      providers: [QuietLocky],
+    }).compile();
+    await on.init();
+    expect(warnSpy).toHaveBeenCalledExactlyOnceWith(
+      'QuietLocky.find sets lock: true but cache store "default" has no distributed lock; falling back to in-process coalescing',
+    );
+    await on.close();
+  });
+
   it('does not warn when lock is not requested', async () => {
     const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     class Plain2 {

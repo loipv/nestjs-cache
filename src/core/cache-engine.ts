@@ -10,7 +10,7 @@ import {
   type PutOptions,
 } from './engine-io.js';
 import { EngineLoad } from './engine-load.js';
-import type { CacheEvents, CacheOperation } from './events.js';
+import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 export type { KeyRef, PutOptions } from './engine-io.js';
@@ -61,10 +61,14 @@ export class CacheEngine {
   private readonly io: EngineIO;
   private readonly load: EngineLoad;
 
+  /** The module's `logging.level`. */
+  readonly logLevel: CacheLogLevel;
+
   constructor(
     private readonly options: ResolvedCacheOptions,
     events: CacheEvents,
   ) {
+    this.logLevel = options.logging.level;
     this.io = new EngineIO(options, events);
     this.load = new EngineLoad(this.io, options.defaults.lock);
   }

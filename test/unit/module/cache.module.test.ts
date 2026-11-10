@@ -1,13 +1,18 @@
 import 'reflect-metadata';
-import { Logger, Module, type DynamicModule } from '@nestjs/common';
+import { Injectable, Logger, Module, type DynamicModule } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheService } from '../../../src/core/cache.service.js';
 import { CacheEvents, type CacheEventSink } from '../../../src/core/events.js';
+import { Cacheable } from '../../../src/decorators/cacheable.js';
 import { CacheConfigError } from '../../../src/errors.js';
+import { CacheLogger } from '../../../src/module/cache.logger.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
-import { CACHE_ENGINE } from '../../../src/module/tokens.js';
+import { resolveOptions } from '../../../src/module/cache.options.js';
+import { CACHE_ENGINE, CACHE_LOGGER } from '../../../src/module/tokens.js';
+import { memoryStore } from '../../../src/stores/memory.store.js';
+import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 describe('CacheModule', () => {
@@ -220,6 +225,233 @@ describe('CacheModule', () => {
       const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       await boot(CacheModule.forRoot());
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('log levels', () => {
+    type Level = 'error' | 'warn' | 'log' | 'debug';
+
+    /** Records the messages of the library's 'CacheModule' loggers only, not Nest's own. */
+    function spyAll(): Record<Level, string[]> {
+      const seen: Record<Level, string[]> = { error: [], warn: [], log: [], debug: [] };
+      for (const level of ['error', 'warn', 'log', 'debug'] as const) {
+        vi.spyOn(Logger.prototype, level).mockImplementation(function (
+          this: Logger,
+          message: unknown,
+        ) {
+          if ((this as unknown as { context?: string }).context === 'CacheModule') {
+            seen[level].push(String(message));
+          }
+        });
+      }
+      return seen;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('off writes no log and still emits every event (Review Focus 4)', async () => {
+      /* forRoot({ logging:{level:'off'}, defaults:{lock:{enabled:true}} }) + explorer lock warning + TieredStore không bus + breaker open
+         → warn/error/log/debug spy đều 0; một listener events.on('error') nhận đủ 3 lần */
+      vi.useFakeTimers();
+      const s = spyAll();
+      @Injectable()
+      class OffLocky {
+        @Cacheable({ lock: true })
+        find(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      const closing = new FakeStore();
+      closing.close.mockRejectedValueOnce(new Error('x'));
+      const ref = await Test.createTestingModule({
+        imports: [
+          CacheModule.forRoot({
+            logging: { level: 'off' },
+            defaults: { lock: { enabled: true } },
+            stores: {
+              default: tieredStore({ l1: memoryStore(), l2: new FakeStore() }),
+              closing,
+            },
+          }),
+        ],
+        providers: [OffLocky],
+      }).compile();
+      refs.push(ref);
+      await ref.init();
+      const events = ref.get(CacheEvents);
+      const errors = vi.fn();
+      const breakers = vi.fn();
+      const hits = vi.fn();
+      events.on('error', errors);
+      events.on('breaker', breakers);
+      events.on('hit', hits);
+      events.on('miss', () => {
+        throw new Error('listener');
+      });
+      for (let i = 0; i < 3; i++) {
+        events.emit('error', { store: 'default', operation: 'get', error: new Error('down') });
+      }
+      events.emit('breaker', { store: 'default', state: 'open' });
+      events.emit('breaker', { store: 'default', state: 'closed' });
+      events.emit('hit', { store: 'default', namespace: undefined, key: 'k', stale: false });
+      events.emit('miss', { store: 'default', namespace: undefined, key: 'k' });
+      await ref.get(CacheService).get('k');
+      await ref.close();
+      refs.splice(refs.indexOf(ref), 1);
+      expect(errors).toHaveBeenCalledTimes(3);
+      expect(breakers).toHaveBeenCalledTimes(2);
+      expect(hits).toHaveBeenCalledOnce();
+      expect(closing.close).toHaveBeenCalledOnce();
+      expect(s).toEqual({ error: [], warn: [], log: [], debug: [] });
+    });
+
+    it('error keeps the 0.2 throttling and adds breaker open/closed logs', async () => {
+      /* emit breaker open → warn 'Circuit breaker for cache store "default" opened'; half-open → không; closed → log '… closed' */
+      const s = spyAll();
+      const events = (await boot(CacheModule.forRoot())).get(CacheEvents);
+      events.emit('breaker', { store: 'default', state: 'open' });
+      expect(s.warn).toEqual(['Circuit breaker for cache store "default" opened']);
+      events.emit('breaker', { store: 'default', state: 'half-open' });
+      expect(s.warn).toHaveLength(1);
+      expect(s.log).toEqual([]);
+      events.emit('breaker', { store: 'default', state: 'closed' });
+      expect(s.log).toEqual(['Circuit breaker for cache store "default" closed']);
+      // Breaker logs are not throttled.
+      events.emit('breaker', { store: 'default', state: 'open' });
+      events.emit('breaker', { store: 'default', state: 'closed' });
+      expect(s.warn).toHaveLength(2);
+      expect(s.log).toHaveLength(2);
+      // Error throttling is unchanged and independent of breaker logs.
+      events.emit('error', { store: 'default', operation: 'get', error: new Error('down') });
+      events.emit('error', { store: 'default', operation: 'get', error: new Error('down') });
+      expect(s.warn).toHaveLength(3);
+      expect(s.warn[2]).toBe('Cache get failed on store "default": down');
+      events.emit('hit', { store: 'default', namespace: undefined, key: 'k', stale: false });
+      expect(s.debug).toEqual([]);
+    });
+
+    it('error reports a throwing listener with the 0.2 text and level', async () => {
+      const s = spyAll();
+      const events = (await boot(CacheModule.forRoot())).get(CacheEvents);
+      events.on('miss', () => {
+        throw new Error('listener');
+      });
+      events.emit('miss', { store: 'default', namespace: undefined, key: 'k' });
+      expect(s.error).toEqual(['A cache event listener threw: listener']);
+    });
+
+    it('debug logs one line per event with exact formats (Review Focus 5)', async () => {
+      /* hit không namespace → 'Cache hit default k'; hit stale ns → 'Cache hit default users:k stale';
+         delete keys ['a','b'] ns 'n' → 'Cache delete default n:a,n:b'; load → 'Cache load default k 12ms ok'; lock → '… waited 50ms not acquired' */
+      const s = spyAll();
+      const events = (await boot(CacheModule.forRoot({ logging: { level: 'debug' } }))).get(
+        CacheEvents,
+      );
+      const ns = undefined;
+      events.emit('hit', { store: 'default', namespace: ns, key: 'k', stale: false });
+      events.emit('hit', { store: 'default', namespace: 'users', key: 'k', stale: true });
+      events.emit('miss', { store: 'default', namespace: ns, key: 'k' });
+      events.emit('miss', { store: 'default', namespace: 'users', key: 'user:1' });
+      events.emit('set', { store: 'default', namespace: ns, key: 'k', ttl: 1_000 });
+      events.emit('set', { store: 'default', namespace: 'users', key: 'k', ttl: 60_000 });
+      events.emit('delete', { store: 'default', namespace: 'n', keys: ['a', 'b'] });
+      events.emit('delete', { store: 'default', namespace: ns, keys: ['a', 'b'] });
+      events.emit('delete', { store: 'default', namespace: ns, keys: ['a'] });
+      events.emit('clear', { store: 'default', namespace: 'users' });
+      const load = { store: 'default', namespace: ns, key: 'k', durationMs: 12 };
+      events.emit('load', { ...load, success: true });
+      events.emit('load', { ...load, namespace: 'users', success: false });
+      const lock = { store: 'default', namespace: ns, key: 'k', waitedMs: 50 };
+      events.emit('lock', { ...lock, acquired: false });
+      events.emit('lock', { ...lock, namespace: 'users', key: 'user:1', acquired: true });
+      expect(s.debug).toEqual([
+        'Cache hit default k',
+        'Cache hit default users:k stale',
+        'Cache miss default k',
+        'Cache miss default users:user:1',
+        'Cache set default k ttl=1000ms',
+        'Cache set default users:k ttl=60000ms',
+        'Cache delete default n:a,n:b',
+        'Cache delete default a,b',
+        'Cache delete default a',
+        'Cache clear default users',
+        'Cache load default k 12ms ok',
+        'Cache load default users:k 12ms failed',
+        'Cache lock default k waited 50ms not acquired',
+        'Cache lock default users:user:1 waited 50ms acquired',
+      ]);
+      // error and breaker events are not debug lines; debug keeps the 'error' logs.
+      events.emit('error', { store: 'default', operation: 'get', error: new Error('down') });
+      events.emit('breaker', { store: 'default', state: 'open' });
+      expect(s.debug).toHaveLength(14);
+      expect(s.warn).toEqual([
+        'Cache get failed on store "default": down',
+        'Circuit breaker for cache store "default" opened',
+      ]);
+    });
+
+    it('debug logs real engine traffic without undefined', async () => {
+      const s = spyAll();
+      const cache = (await boot(CacheModule.forRoot({ logging: { level: 'debug' } }))).get(
+        CacheService,
+      );
+      await cache.get('k');
+      await cache.set('k', 1, { ttl: 500 });
+      await cache.delete(['k', 'j']);
+      expect(s.debug).toEqual([
+        'Cache miss default k',
+        'Cache set default k ttl=500ms',
+        'Cache delete default k,j',
+      ]);
+    });
+
+    it('rejects an invalid logging level and a non-object logging', () => {
+      /* thông báo đúng chữ */
+      const badLevel = { logging: { level: 'warn' } } as unknown as Parameters<
+        typeof CacheModule.forRoot
+      >[0];
+      expect(() => CacheModule.forRoot(badLevel)).toThrow(CacheConfigError);
+      expect(() => CacheModule.forRoot(badLevel)).toThrow(
+        "Invalid cache option logging.level: warn (must be 'off', 'error' or 'debug')",
+      );
+      const badLogging = { logging: 'debug' } as unknown as Parameters<
+        typeof CacheModule.forRoot
+      >[0];
+      expect(() => CacheModule.forRoot(badLogging)).toThrow(
+        'Invalid cache option logging: debug (must be an object)',
+      );
+    });
+
+    it('provides and exports CACHE_LOGGER at the configured level', async () => {
+      const ref = await boot(CacheModule.forRoot({ logging: { level: 'debug' } }));
+      const logger = ref.get<CacheLogger>(CACHE_LOGGER);
+      expect(logger).toBeInstanceOf(CacheLogger);
+      expect(logger.level).toBe('debug');
+      expect(CacheModule.forRoot().exports).toContain(CACHE_LOGGER);
+      expect(CacheModule.forRootAsync({ useFactory: () => ({}) }).exports).toContain(CACHE_LOGGER);
+      expect((await boot(CacheModule.forRoot())).get<CacheLogger>(CACHE_LOGGER).level).toBe(
+        'error',
+      );
+    });
+
+    it('binds every store with a sink carrying the log level', async () => {
+      const a = new FakeStore();
+      await boot(CacheModule.forRoot({ logging: { level: 'off' }, stores: { default: a } }));
+      expect((a.bind.mock.calls[0]?.[0] as CacheEventSink).logLevel).toBe('off');
+      const b = new FakeStore();
+      await boot(CacheModule.forRoot({ stores: { default: b } }));
+      expect((b.bind.mock.calls[0]?.[0] as CacheEventSink).logLevel).toBe('error');
+    });
+
+    it('CacheEngine.logLevel reflects options', async () => {
+      /* … */
+      const ref = await boot(CacheModule.forRoot({ logging: { level: 'off' } }));
+      expect(ref.get<CacheEngine>(CACHE_ENGINE).logLevel).toBe('off');
+      expect(new CacheEngine(resolveOptions(), new CacheEvents()).logLevel).toBe('error');
+      const debug = resolveOptions({ logging: { level: 'debug' } });
+      expect(new CacheEngine(debug, new CacheEvents()).logLevel).toBe('debug');
     });
   });
 });

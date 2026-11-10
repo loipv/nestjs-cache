@@ -1,5 +1,8 @@
 export type BreakerState = 'closed' | 'open' | 'half-open';
 
+/** How much the library logs: nothing, errors and warnings (the default), or also one debug line per event. */
+export type CacheLogLevel = 'off' | 'error' | 'debug';
+
 export type CacheOperation =
   | 'get'
   | 'set'
@@ -10,7 +13,9 @@ export type CacheOperation =
   | 'publish'
   | 'subscribe'
   | 'refresh'
-  | 'lock';
+  | 'lock'
+  /** Only used in logs, for a failing metrics update; an `error` event never carries it. */
+  | 'metrics';
 
 export interface CacheEventMap {
   hit: { store: string; namespace: string | undefined; key: string; stale: boolean };
@@ -39,6 +44,8 @@ export interface CacheEventMap {
 export interface CacheEventSink {
   emit(event: 'error', payload: { operation: CacheOperation; error: unknown }): void;
   emit(event: 'breaker', payload: { state: BreakerState }): void;
+  /** The module's log level, so a store can skip its own warnings at `'off'`. */
+  readonly logLevel: CacheLogLevel;
 }
 
 /** One tuple per sink overload, so the event name narrows its payload. */
@@ -88,8 +95,9 @@ export class CacheEvents {
    * @internal Builds the sink passed to `CacheStore.bind`; not part of the public API.
    * The event name alone picks the event; the overloads tie each name to its payload.
    */
-  sinkFor(store: string): CacheEventSink {
+  sinkFor(store: string, logLevel: CacheLogLevel = 'error'): CacheEventSink {
     return {
+      logLevel,
       emit: (...[event, payload]: SinkArgs): void => {
         switch (event) {
           case 'error':

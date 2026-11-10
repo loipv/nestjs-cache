@@ -150,4 +150,42 @@ describe('CacheModuleAsyncOptions', () => {
       'Invalid cache option defaults.lock.enabled: true (must be a boolean)',
     );
   });
+
+  it('defaults logging.level to error', () => {
+    expect(resolveOptions().logging).toEqual({ level: 'error' });
+    expect(resolveOptions({ logging: {} }).logging).toEqual({ level: 'error' });
+    expect(resolveOptions({ logging: undefined }).logging).toEqual({ level: 'error' });
+  });
+
+  it.each(['off', 'error', 'debug'] as const)('accepts logging.level %s', (level) => {
+    expect(resolveOptions({ logging: { level } }).logging).toEqual({ level });
+  });
+
+  it.each([
+    ['warn', 'warn'],
+    ['', ''],
+    [1, '1'],
+    [null, 'null'],
+    ['OFF', 'OFF'],
+  ])('rejects logging.level %j', (value, shown) => {
+    const bad = { logging: { level: value } } as unknown as CacheModuleOptions;
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      `Invalid cache option logging.level: ${shown} (must be 'off', 'error' or 'debug')`,
+    );
+  });
+
+  it.each([
+    [null, 'null'],
+    ['debug', 'debug'],
+    [1, '1'],
+    [true, 'true'],
+    [[], ''],
+  ])('rejects a non-object logging: %j', (value, shown) => {
+    const bad = { logging: value } as unknown as CacheModuleOptions;
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      `Invalid cache option logging: ${shown} (must be an object)`,
+    );
+  });
 });
