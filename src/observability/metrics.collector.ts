@@ -127,7 +127,7 @@ export class CacheMetricsCollector implements OnModuleInit, OnModuleDestroy {
       const lock = this.create(client.Histogram, {
         name: name('lock_wait_seconds'),
         help: 'Time spent acquiring or waiting for the distributed lock',
-        labelNames: ['store', 'namespace', 'acquired'],
+        labelNames: ['store', 'acquired'],
         registers,
         ...histogramBuckets,
       });
@@ -175,10 +175,7 @@ export class CacheMetricsCollector implements OnModuleInit, OnModuleDestroy {
         }),
         this.events.on('lock', (p) => {
           guard(p.store, () => {
-            lock.observe(
-              { store: p.store, namespace: ns(p.namespace), acquired: String(p.acquired) },
-              p.waitedMs / 1000,
-            );
+            lock.observe({ store: p.store, acquired: String(p.acquired) }, p.waitedMs / 1000);
           });
         }),
         this.events.on('breaker', (p) => {

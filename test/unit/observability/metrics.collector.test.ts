@@ -86,9 +86,9 @@ describe.each(clients)('CacheMetricsCollector with %s', (_name, client) => {
     expect(await registry.getSingleMetricAsString('cache_load_duration_seconds')).toContain(
       'cache_load_duration_seconds_sum{store="default",namespace="u",success="false"} 0.25',
     );
-    expect(await registry.getSingleMetricAsString('cache_lock_wait_seconds')).toContain(
-      'cache_lock_wait_seconds_sum{store="default",namespace="",acquired="true"} 0.05',
-    );
+    const lockText = await registry.getSingleMetricAsString('cache_lock_wait_seconds');
+    expect(lockText).toContain('cache_lock_wait_seconds_sum{store="default",acquired="true"} 0.05');
+    expect(lockText).not.toContain('namespace=');
     const gauge = (): Promise<string> =>
       registry.getSingleMetricAsString('cache_circuit_breaker_state');
     expect(await gauge()).toContain('cache_circuit_breaker_state{store="default"} 2');
