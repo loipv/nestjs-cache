@@ -71,6 +71,38 @@ describe('key-builder', () => {
     expect(stableStringify({ x: shared, y: shared })).toBe('{"x":{"a":1},"y":{"a":1}}');
   });
 
+  it('stableStringify allows one object reused across a wide, deep acyclic structure', () => {
+    /* the same object sits in sibling positions at several depths: only an ancestor is a cycle */
+    const shared = { id: 1, tags: ['a'] };
+    let deep: unknown = { leaf: shared };
+    for (let i = 0; i < 200; i += 1) deep = { next: deep, also: shared };
+    const wide = Array.from({ length: 500 }, (_, i) => (i % 2 === 0 ? shared : [shared, shared]));
+    const value = { wide, deep, pair: [shared, { inner: shared }] };
+    const out = stableStringify(value);
+    expect(out.startsWith('{"deep":{"also":{"id":1,"tags":["a"]},"next":{"also":')).toBe(true);
+    expect(out.split('{"id":1,"tags":["a"]}')).toHaveLength(201 + 750 + 2 + 1);
+    expect(stableStringify({ pair: value.pair })).toBe(
+      '{"pair":[{"id":1,"tags":["a"]},{"inner":{"id":1,"tags":["a"]}}]}',
+    );
+  });
+
+  it('stableStringify still rejects a cycle deep down and a toJSON returning itself', () => {
+    const a: Record<string, unknown> = {};
+    const b: Record<string, unknown> = { a };
+    a.list = [1, { b }];
+    expect(() => stableStringify({ root: a })).toThrow(
+      'Cannot build a cache key from a circular structure',
+    );
+    const selfish = {
+      toJSON(): unknown {
+        return selfish;
+      },
+    };
+    expect(() => stableStringify([selfish])).toThrow(
+      'Cannot build a cache key from a circular structure',
+    );
+  });
+
   it('stableStringify omits undefined properties', () => {
     expect(stableStringify({ a: undefined, b: 1 })).toBe('{"b":1}');
   });

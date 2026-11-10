@@ -6,10 +6,11 @@ type Segment = string | { readonly index: number; readonly path: readonly string
 const PLACEHOLDER = /\{(\d+)((?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\}/y;
 
 export function stableStringify(value: unknown): string {
-  return stringifyValue(value, []);
+  return stringifyValue(value, new Set());
 }
 
-function stringifyValue(value: unknown, ancestors: object[]): string {
+/** `ancestors` holds the objects on the path from the root: one seen again there is a cycle. */
+function stringifyValue(value: unknown, ancestors: Set<object>): string {
   switch (typeof value) {
     case 'undefined':
       return 'undefined';
@@ -38,10 +39,10 @@ function stringifyValue(value: unknown, ancestors: object[]): string {
   ) {
     throw new TypeError(`Cannot build a cache key from a ${obj.constructor.name}`);
   }
-  if (ancestors.includes(obj)) {
+  if (ancestors.has(obj)) {
     throw new TypeError('Cannot build a cache key from a circular structure');
   }
-  ancestors.push(obj);
+  ancestors.add(obj);
   try {
     const toJSON = (obj as { toJSON?: unknown }).toJSON;
     if (typeof toJSON === 'function') {
@@ -63,7 +64,7 @@ function stringifyValue(value: unknown, ancestors: object[]): string {
     }
     return `{${parts.join(',')}}`;
   } finally {
-    ancestors.pop();
+    ancestors.delete(obj);
   }
 }
 
