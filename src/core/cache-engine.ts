@@ -1,7 +1,14 @@
 import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
-import { EMPTY_STRATEGY, EngineIO, isEmpty, type KeyRef, type PutOptions } from './engine-io.js';
+import {
+  EMPTY_STRATEGY,
+  EngineIO,
+  isEmpty,
+  servable,
+  type KeyRef,
+  type PutOptions,
+} from './engine-io.js';
 import { EngineLoad } from './engine-load.js';
 import type { CacheEvents, CacheOperation } from './events.js';
 import { namespacePrefix } from './key-builder.js';
@@ -9,7 +16,7 @@ import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strateg
 
 export type { KeyRef, PutOptions } from './engine-io.js';
 
-/** `lock` takes effect from the locking work; it is accepted and forwarded already. */
+/** `lock` overrides `defaults.lock.enabled`; it has no effect on a store without `lock`. */
 export type LoadOptions<T> = PutOptions<T> & { lock?: boolean };
 
 export type SetOptions = { ttl?: number } & StrategyOptions;
@@ -62,6 +69,11 @@ export class CacheEngine {
     return this.options.stores.has(name);
   }
 
+  /** True when the store is configured and can lock; never throws for an unknown name. */
+  hasLock(name: string): boolean {
+    return this.options.stores.get(name)?.lock !== undefined;
+  }
+
   storeNames(): string[] {
     return [...this.options.stores.keys()];
   }
@@ -90,9 +102,10 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl);
     const cached = await this.io.read(target, ref, strategy, ttl);
-    const plan = { target, ref, loader, options, strategy };
-    // A stale entry is served only under swr; any other reader has a loader and reloads now.
-    if (cached.found && (!cached.stale || strategy.kind === 'swr')) {
+    const locking = options.lock ?? this.options.defaults.lock.enabled;
+    const lock = locking ? target.store.lock : undefined;
+    const plan = { target, ref, loader, options, strategy, ttl, lock };
+    if (servable(cached, strategy)) {
       this.io.hit(target.name, ref, cached.stale);
       if (cached.stale) this.load.refresh(plan);
       return cached.value as T;

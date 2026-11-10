@@ -38,6 +38,14 @@ export function toIntegerMs(ms: number): number {
   return Math.max(1, Math.round(ms));
 }
 
+/** A stale entry is served only under swr; any other reader has a loader and reloads now. */
+export function servable(
+  lookup: Lookup,
+  strategy: ExpiryStrategy,
+): lookup is Extract<Lookup, { found: true }> {
+  return lookup.found && (!lookup.stale || strategy.kind === 'swr');
+}
+
 export function isEmpty(value: unknown): value is null | undefined {
   return value === null || value === undefined;
 }
@@ -215,6 +223,10 @@ export class EngineIO {
       durationMs: Date.now() - started,
       success,
     });
+  }
+
+  emitLock(store: string, ref: KeyRef, waitedMs: number, acquired: boolean): void {
+    this.events.emit('lock', { store, namespace: ref.namespace, key: ref.key, waitedMs, acquired });
   }
 
   hit(store: string, ref: KeyRef, stale: boolean): void {
