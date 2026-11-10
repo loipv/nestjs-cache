@@ -18,6 +18,8 @@ export interface MethodCall {
   invoke: () => Promise<unknown>;
   className: string;
   methodName: string;
+  /** The engine's `escapeKeyArgs`: template keys percent-encode `%` and `:` in arguments. */
+  escapeKeyArgs: boolean;
 }
 
 type AnyMethod = (this: unknown, ...args: unknown[]) => unknown;
@@ -126,7 +128,15 @@ export function wrapMethod(
       warnOnce(className, methodName);
       return invoke();
     }
-    return settle(() => handler(engine, { args, invoke, className, methodName }));
+    return settle(() =>
+      handler(engine, {
+        args,
+        invoke,
+        className,
+        methodName,
+        escapeKeyArgs: engine.escapeKeyArgs,
+      }),
+    );
   };
 
   for (const key of Reflect.getMetadataKeys(next) as unknown[]) {
@@ -160,7 +170,7 @@ function compileRawKey(spec: KeySpec<never[]> | undefined): (call: MethodCall) =
   }
   if (typeof spec === 'string') {
     const render = compileTemplate(spec);
-    return (call) => render(call.args);
+    return (call) => render(call.args, call.escapeKeyArgs);
   }
   const build = spec as (...args: unknown[]) => unknown;
   return (call) => {

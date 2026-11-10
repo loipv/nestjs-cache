@@ -71,11 +71,15 @@ export class CacheEngine {
   /** The module's `logging.level`. */
   readonly logLevel: CacheLogLevel;
 
+  /** The module's `escapeKeyArgs`; decorators pass it to template key rendering at call time. */
+  readonly escapeKeyArgs: boolean;
+
   constructor(
     private readonly options: ResolvedCacheOptions,
     events: CacheEvents,
   ) {
     this.logLevel = options.logging.level;
+    this.escapeKeyArgs = options.escapeKeyArgs;
     this.io = new EngineIO(options, events);
     this.load = new EngineLoad(this.io, options.defaults.lock);
   }

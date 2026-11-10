@@ -153,3 +153,36 @@ describe('lockKey and isReservedNamespace', () => {
     expect(isReservedNamespace('x__')).toBe(false);
   });
 });
+
+describe('compileTemplate escape flag', () => {
+  /* Escaping is opt-in: % becomes %25 first, then : becomes %3A, in string arguments. */
+  it('escapes % and : in string args when asked', () => {
+    expect(compileTemplate('user:{0}:{1}')(['a:b', 'c%d'], true)).toBe('user:a%3Ab:c%25d');
+  });
+
+  /* The 0.3 output is kept when the flag is omitted. */
+  it('leaves args untouched without the flag', () => {
+    expect(compileTemplate('user:{0}:{1}')(['a:b', 'c%d'])).toBe('user:a:b:c%d');
+  });
+
+  /* The % is escaped before the colon, so a literal %3A in the input does not collapse onto a colon. */
+  it('escapes % before :', () => {
+    expect(compileTemplate('{0}')(['%3A:'], true)).toBe('%253A%3A');
+  });
+
+  /* Numbers carry no % or :, so escaping leaves them as they are. */
+  it('renders numbers unchanged when escaped', () => {
+    expect(compileTemplate('{0}')([5], true)).toBe('5');
+  });
+
+  /* Objects keep their stableStringify output; only string and number leaves are not touched. */
+  it('does not escape stringified objects', () => {
+    const render = compileTemplate('{0}');
+    expect(render([{ a: 'x:y' }], true)).toBe(render([{ a: 'x:y' }]));
+  });
+
+  /* A path segment resolved to a string is escaped like a top-level string. */
+  it('escapes strings resolved through a path', () => {
+    expect(compileTemplate('{0.id}')([{ id: 'a:b' }], true)).toBe('a%3Ab');
+  });
+});

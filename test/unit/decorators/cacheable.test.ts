@@ -428,3 +428,47 @@ describe('@Cacheable', () => {
     await ref.close();
   });
 });
+
+@Injectable()
+class EscapeService {
+  @Cacheable({ namespace: 'n', key: '{0}' })
+  async tpl(id: string): Promise<string> {
+    return id;
+  }
+
+  @Cacheable({ namespace: 'n', key: (id: string) => `cb:${id}` })
+  async cb(id: string): Promise<string> {
+    return id;
+  }
+}
+
+describe('@Cacheable with escapeKeyArgs', () => {
+  async function keysFor(escapeKeyArgs: boolean | undefined): Promise<string[]> {
+    const fake = new FakeStore();
+    const app = await Test.createTestingModule({
+      imports: [
+        CacheModule.forRoot({
+          stores: { default: fake },
+          ...(escapeKeyArgs === undefined ? {} : { escapeKeyArgs }),
+        }),
+      ],
+      providers: [EscapeService],
+    }).compile();
+    await app.init();
+    const svc = app.get(EscapeService);
+    await svc.tpl('a:b');
+    await svc.cb('a:b');
+    await app.close();
+    return [...fake.data.keys()].sort();
+  }
+
+  /* With the option on, template args are escaped in the stored key; a key callback is not. */
+  it('escapes template args but not callback keys when enabled', async () => {
+    expect(await keysFor(true)).toEqual(['n:a%3Ab', 'n:cb:a:b']);
+  });
+
+  /* Without the option the 0.3 keys are stored. */
+  it('keeps the 0.3 keys by default', async () => {
+    expect(await keysFor(undefined)).toEqual(['n:a:b', 'n:cb:a:b']);
+  });
+});

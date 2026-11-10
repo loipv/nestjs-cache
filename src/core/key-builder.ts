@@ -105,12 +105,18 @@ function parseTemplate(template: string): Segment[] {
   return segments;
 }
 
-function renderValue(value: unknown): string {
+/** Percent-encodes `%` first, then `:`, so a rendered argument cannot add a key separator. */
+export function escapeKeyArg(value: string): string {
+  return value.replaceAll('%', '%25').replaceAll(':', '%3A');
+}
+
+function renderValue(value: unknown, escape: boolean): string {
   if (value === null) return 'null';
   switch (typeof value) {
     case 'string':
-      return value;
+      return escape ? escapeKeyArg(value) : value;
     case 'number':
+      return escape ? escapeKeyArg(String(value)) : String(value);
     case 'boolean':
     case 'bigint':
     case 'undefined':
@@ -129,15 +135,17 @@ function resolve(args: readonly unknown[], index: number, path: readonly string[
   return current;
 }
 
-export function compileTemplate(template: string): (args: readonly unknown[]) => string {
+export function compileTemplate(
+  template: string,
+): (args: readonly unknown[], escape?: boolean) => string {
   const segments = parseTemplate(template);
-  return (args) => {
+  return (args, escape = false) => {
     let out = '';
     for (const segment of segments) {
       out +=
         typeof segment === 'string'
           ? segment
-          : renderValue(resolve(args, segment.index, segment.path));
+          : renderValue(resolve(args, segment.index, segment.path), escape);
     }
     return out;
   };

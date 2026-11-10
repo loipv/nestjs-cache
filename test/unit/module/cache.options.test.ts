@@ -205,3 +205,21 @@ describe('CacheModuleAsyncOptions', () => {
     );
   });
 });
+
+describe('resolveOptions escapeKeyArgs', () => {
+  /* The option defaults to false and passes a boolean through. */
+  it('defaults to false and accepts booleans', () => {
+    expect(resolveOptions().escapeKeyArgs).toBe(false);
+    expect(resolveOptions({ escapeKeyArgs: true }).escapeKeyArgs).toBe(true);
+    expect(resolveOptions({ escapeKeyArgs: false }).escapeKeyArgs).toBe(false);
+  });
+
+  /* A non-boolean is a config error with the documented message. */
+  it('rejects a non-boolean', () => {
+    const bad = { escapeKeyArgs: 'yes' } as unknown as CacheModuleOptions;
+    expect(() => resolveOptions(bad)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(bad)).toThrow(
+      'Invalid cache option escapeKeyArgs: yes (must be a boolean)',
+    );
+  });
+});

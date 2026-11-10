@@ -27,6 +27,11 @@ export interface CacheModuleOptions {
   serializer?: Serializer;
   /** `level` defaults to `'error'`. */
   logging?: { level?: CacheLogLevel };
+  /**
+   * Percent-encodes `%` and `:` in string and number arguments rendered into template keys.
+   * Defaults to `false`; key callbacks are never escaped.
+   */
+  escapeKeyArgs?: boolean;
 }
 
 export interface CacheModuleAsyncOptions {
@@ -50,6 +55,7 @@ export interface ResolvedCacheOptions {
   defaults: ResolvedDefaults;
   serializer: Serializer;
   logging: { level: CacheLogLevel };
+  escapeKeyArgs: boolean;
 }
 
 const DEFAULT_TTL = 60_000;
@@ -138,6 +144,12 @@ function resolveStores(stores: CacheModuleOptions['stores']): ReadonlyMap<string
   return map;
 }
 
+function escapeKeyArgsOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw invalid('escapeKeyArgs', value, 'must be a boolean');
+  return value;
+}
+
 export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheOptions {
   const defaults = options.defaults ?? {};
   const lock = lockDefaults(defaults.lock);
@@ -158,5 +170,6 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
     },
     serializer: options.serializer ?? jsonSerializer,
     logging: loggingOf(options.logging),
+    escapeKeyArgs: escapeKeyArgsOf(options.escapeKeyArgs),
   };
 }
