@@ -15,3 +15,6 @@ export type {
   KeySpec,
   StrategyOptions,
 } from './decorators/options.js';
+export type { CacheEnvelope } from './core/envelope.js';
+export type { Serializer } from './serializers/json.serializer.js';
+export { jsonSerializer } from './serializers/json.serializer.js';
