@@ -23,4 +23,8 @@ export default tseslint.config(
       '@typescript-eslint/no-empty-function': 'off',
     },
   },
+  {
+    files: ['test/types/**/*.ts'],
+    rules: { '@typescript-eslint/no-unused-vars': 'off' },
+  },
 );

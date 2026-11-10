@@ -5,3 +5,13 @@ export {
   CACHE_METADATA,
   CACHE_OPTIONS,
 } from './module/tokens.js';
+export { Cacheable } from './decorators/cacheable.js';
+export { CachePut } from './decorators/cache-put.js';
+export { CacheEvict } from './decorators/cache-evict.js';
+export type {
+  CacheableOptions,
+  CacheEvictOptions,
+  CachePutOptions,
+  KeySpec,
+  StrategyOptions,
+} from './decorators/options.js';
