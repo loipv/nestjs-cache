@@ -96,7 +96,8 @@ Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (th
 
 `tieredStore({ l1, l2, l1Ttl?, invalidation? })` reads L1 first, then L2 (refilling L1 with `l1Ttl`).
 Writes go to L2, then L1 with `min(ttl, l1Ttl)`, then an invalidation message is published.
-`l1Ttl` defaults to `10_000`.
+`l1Ttl` defaults to `10_000`. A received invalidation message longer than 1 MiB (1_048_576 characters) is not parsed:
+it clears the whole L1.
 
 ## Decorators
 
@@ -641,6 +642,29 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
 Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.
+
+## Security
+
+- **Redis is a trust boundary.** Anyone who can write to it can forge cached values, expiry timestamps and
+  invalidation messages; the library checks their shape, not their authenticity. Use a dedicated Redis, or an ACL user
+  limited to your keys, the lock keys and the channel (for `prefix: 'myapp'`: `~myapp:*`, `~lock:myapp:*` and
+  `&<your channel>`).
+- **Set `prefix` when the Redis is shared**, and give each app its own invalidation `channel`. The default channel,
+  `nestjs-cache:invalidate`, is shared by every app on that Redis.
+- **Template keys render string arguments verbatim.** An argument containing `:` can address a key in another
+  (sub-)namespace. Do not put untrusted input with `:` into template keys; use the default hashed key or a key callback
+  that encodes it.
+- **Keys appear in debug logs and in invalidation messages.** Do not put secrets or personal data in keys; hash them.
+- **The health check result includes the store's error message**, which can contain host names. Expose the health
+  route internally only.
+- **Use static namespaces.** A per-tenant or per-user namespace makes the Prometheus `namespace` label cardinality
+  unbounded.
+- **The lock is advisory.** A load that runs longer than `lock.ttl` lets another instance load too, and a waiter that
+  does not get the lock or see the value within `waitTimeout` loads without the lock.
+- **`memoryStore` is bounded by entry count, not bytes.** Size `maxEntries` for your largest values.
+- **`strategy: 'sliding'` refreshes the key's TTL before the value is checked.** Keep untrusted input out of keys that
+  could name foreign keys on a shared Redis; a `prefix` prevents this.
+- **Cached values are replayed verbatim** to every reader until they expire. Validate data before it is cached.
 
 ## Caveats
 
