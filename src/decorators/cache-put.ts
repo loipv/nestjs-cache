@@ -1,16 +1,42 @@
-import { addCacheMetadata, assertPositiveFinite } from './metadata.js';
-import type { AsyncMethodDecorator, CachePutOptions } from './options.js';
+import type { PutOptions } from '../core/cache-engine.js';
+import { assertPositiveFinite } from './metadata.js';
+import { compileKeyAt, wrapMethod } from './method-wrapper.js';
+import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
 export function CachePut<K extends unknown[] = never[], C extends unknown[] = never[], R = unknown>(
   options?: CachePutOptions<K, C, R>,
 ): AsyncMethodDecorator<K, C, R> {
-  return (target, propertyKey) => {
+  return (target, propertyKey, descriptor) => {
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
-    addCacheMetadata(target, {
-      kind: 'put',
-      method: propertyKey,
-      store: options?.store ?? 'default',
-    });
+    const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
+    const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
+    const store = options?.store ?? 'default';
+    const namespace = options?.namespace;
+    const putOptions: PutOptions<unknown> = {
+      ttl: options?.ttl,
+      cacheNull: options?.cacheNull,
+      nullTtl: options?.nullTtl,
+      unless: options?.unless as ((result: unknown) => boolean) | undefined,
+    };
+    wrapMethod(
+      target,
+      propertyKey,
+      descriptor,
+      { kind: 'put', method: propertyKey, store },
+      async (engine, call) => {
+        // Condition and key are evaluated before the method runs, so a method
+        // that mutates its arguments still writes under the key the caller asked for.
+        let key: string | undefined;
+        try {
+          if (condition === undefined || condition(...call.args)) key = keyOf(call);
+        } catch (error) {
+          engine.reportError(store, 'key', error);
+        }
+        const result = await call.invoke();
+        if (key !== undefined) await engine.put({ store, namespace, key }, result, putOptions);
+        return result;
+      },
+    );
   };
 }
