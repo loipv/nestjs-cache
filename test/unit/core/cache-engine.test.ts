@@ -120,6 +120,50 @@ describe('CacheEngine', () => {
     store.failNext('delete');
     await expect(engine.get({ key: 'a' })).resolves.toBeUndefined();
     expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([{ op: 'delete', args: [['a']] }]);
+  });
+
+  it('a deserializer returning a non-envelope is handled like a deserialize failure', async () => {
+    const { engine, store, emitted } = makeEngine({
+      serializer: { serialize: (e) => JSON.stringify(e), deserialize: () => null as never },
+    });
+    store.data.set('a', { value: '{}', ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(store.data.has('a')).toBe(false);
+    expect(
+      emitted.some(
+        (e) =>
+          e.event === 'error' && (e.payload as { operation: string }).operation === 'deserialize',
+      ),
+    ).toBe(true);
+    expect(emitted.at(-1)?.event).toBe('miss');
+  });
+
+  it('a serializer that throws on write resolves and reports a set error', async () => {
+    const boom = new Error('cannot serialize');
+    const { engine, store, emitted } = makeEngine({
+      serializer: {
+        serialize: () => {
+          throw boom;
+        },
+        deserialize: () => null as never,
+      },
+    });
+    await expect(engine.set({ key: 'a' }, 1)).resolves.toBeUndefined();
+    expect(store.data.size).toBe(0);
+    expect(emitted).toEqual([
+      { event: 'error', payload: { store: 'default', operation: 'set', error: boom } },
+    ]);
+  });
+
+  it('with jitter, envelope expiresAt matches the TTL passed to the store', async () => {
+    const { engine, store } = makeEngine({ defaults: { jitter: 0.5 } });
+    vi.spyOn(Math, 'random').mockReturnValue(0.3);
+    await engine.set({ key: 'a' }, 1, 1_001);
+    const entry = store.data.get('a')!;
+    const envelope = JSON.parse(entry.value) as { storedAt: number; expiresAt: number };
+    expect(entry.ttlMs).not.toBe(1_001);
+    expect(envelope.expiresAt).toBe(envelope.storedAt + entry.ttlMs);
   });
 
   it('delete maps keys through prefix and namespace', async () => {

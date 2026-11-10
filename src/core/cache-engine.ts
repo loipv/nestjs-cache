@@ -1,9 +1,10 @@
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
-import { isExpired, unwrap, wrap } from './envelope.js';
+import { isEnvelope, isExpired, unwrap, wrap } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
+import { SingleFlight } from './single-flight.js';
 
 export interface KeyRef {
   store?: string;
@@ -23,7 +24,24 @@ interface Target {
   store: CacheStore;
 }
 
+type Lookup = { found: true; value: unknown } | { found: false };
+
+function checkDuration(option: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new CacheConfigError(
+      `Invalid ${option}: ${String(value)}. Durations are milliseconds, finite numbers greater than 0.`,
+    );
+  }
+}
+
+function toIntegerMs(ms: number): number {
+  return Math.max(1, Math.round(ms));
+}
+
 export class CacheEngine {
+  private readonly singleFlight = new SingleFlight();
+
   constructor(
     private readonly options: ResolvedCacheOptions,
     private readonly events: CacheEvents,
@@ -38,69 +56,47 @@ export class CacheEngine {
   }
 
   async get<T>(ref: KeyRef): Promise<T | undefined> {
-    const { name, store } = this.resolve(ref.store);
-    const key = fullKey(this.options.prefix, ref.namespace, ref.key);
-    let raw: string | undefined;
-    try {
-      raw = await store.get(key);
-    } catch (error) {
-      this.reportError(name, 'get', error);
-      this.miss(name, ref);
-      return undefined;
-    }
-    if (raw === undefined) {
-      this.miss(name, ref);
-      return undefined;
-    }
-    let envelope;
-    try {
-      envelope = this.options.serializer.deserialize(raw);
-    } catch (error) {
-      this.reportError(name, 'deserialize', error);
+    const result = await this.lookup(this.resolve(ref.store), ref);
+    return result.found ? (result.value as T | undefined) : undefined;
+  }
+
+  async getOrSet<T>(
+    ref: KeyRef,
+    loader: () => Promise<T>,
+    options: PutOptions<T> = {},
+  ): Promise<T> {
+    const target = this.resolve(ref.store);
+    checkDuration('ttl', options.ttl);
+    checkDuration('nullTtl', options.nullTtl);
+    const cached = await this.lookup(target, ref);
+    if (cached.found) return cached.value as T;
+    const flightKey = `${target.name}\u0000${fullKey(this.options.prefix, ref.namespace, ref.key)}`;
+    return this.singleFlight.run(flightKey, async () => {
+      const started = Date.now();
+      let value: T;
       try {
-        await store.delete([key]);
-      } catch {
-        // cleanup is best effort; the failure is already reported
+        value = await loader();
+      } catch (error) {
+        this.emitLoad(target.name, ref, started, false);
+        throw error;
       }
-      this.miss(name, ref);
-      return undefined;
-    }
-    if (isExpired(envelope, Date.now())) {
-      this.miss(name, ref);
-      return undefined;
-    }
-    this.events.emit('hit', {
-      store: name,
-      namespace: ref.namespace,
-      key: ref.key,
-      stale: false,
+      this.emitLoad(target.name, ref, started, true);
+      await this.store(target, ref, value, options, false);
+      return value;
     });
-    return unwrap(envelope) as T | undefined;
   }
 
   async set(ref: KeyRef, value: unknown, ttl?: number): Promise<void> {
     const target = this.resolve(ref.store);
-    const effective = this.jittered(ttl ?? this.options.defaults.ttl);
-    await this.write(target, ref, value, effective);
+    checkDuration('ttl', ttl);
+    await this.write(target, ref, value, this.jittered(ttl ?? this.options.defaults.ttl));
   }
 
   async put<T>(ref: KeyRef, value: T, options: PutOptions<T> = {}): Promise<void> {
     const target = this.resolve(ref.store);
-    try {
-      if (options.unless?.(value) === true) return;
-    } catch (error) {
-      this.reportError(target.name, 'set', error);
-      return;
-    }
-    if (value === null || value === undefined) {
-      if (!(options.cacheNull ?? this.options.defaults.cacheNull)) {
-        await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
-        return;
-      }
-      await this.write(target, ref, value, options.nullTtl ?? this.options.defaults.nullTtl);
-      return;
-    }
-    await this.write(target, ref, value, this.jittered(options.ttl ?? this.options.defaults.ttl));
+    checkDuration('ttl', options.ttl);
+    checkDuration('nullTtl', options.nullTtl);
+    await this.store(target, ref, value, options, true);
   }
 
   async delete(
@@ -134,6 +130,83 @@ export class CacheEngine {
     this.events.emit('error', { store: store ?? 'default', operation, error });
   }
 
+  private async lookup({ name, store }: Target, ref: KeyRef): Promise<Lookup> {
+    const key = fullKey(this.options.prefix, ref.namespace, ref.key);
+    let raw: string | undefined;
+    try {
+      raw = await store.get(key);
+    } catch (error) {
+      this.reportError(name, 'get', error);
+      this.miss(name, ref);
+      return { found: false };
+    }
+    if (raw === undefined) {
+      this.miss(name, ref);
+      return { found: false };
+    }
+    let envelope;
+    try {
+      envelope = this.options.serializer.deserialize(raw);
+      if (!isEnvelope(envelope)) throw new TypeError('Deserialized value is not a cache envelope');
+    } catch (error) {
+      this.reportError(name, 'deserialize', error);
+      try {
+        await store.delete([key]);
+      } catch {
+        // cleanup is best effort; the failure is already reported
+      }
+      this.miss(name, ref);
+      return { found: false };
+    }
+    if (isExpired(envelope, Date.now())) {
+      this.miss(name, ref);
+      return { found: false };
+    }
+    this.events.emit('hit', { store: name, namespace: ref.namespace, key: ref.key, stale: false });
+    return { found: true, value: unwrap(envelope) };
+  }
+
+  private async store<T>(
+    target: Target,
+    ref: KeyRef,
+    value: T,
+    options: PutOptions<T>,
+    deleteWhenEmpty: boolean,
+  ): Promise<void> {
+    try {
+      if (options.unless?.(value) === true) return;
+    } catch (error) {
+      this.reportError(target.name, 'set', error);
+      return;
+    }
+    if (value === null || value === undefined) {
+      if (!(options.cacheNull ?? this.options.defaults.cacheNull)) {
+        if (deleteWhenEmpty) {
+          await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
+        }
+        return;
+      }
+      await this.write(
+        target,
+        ref,
+        value,
+        toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl),
+      );
+      return;
+    }
+    await this.write(target, ref, value, this.jittered(options.ttl ?? this.options.defaults.ttl));
+  }
+
+  private emitLoad(store: string, ref: KeyRef, started: number, success: boolean): void {
+    this.events.emit('load', {
+      store,
+      namespace: ref.namespace,
+      key: ref.key,
+      durationMs: Date.now() - started,
+      success,
+    });
+  }
+
   private async write(
     { name, store }: Target,
     ref: KeyRef,
@@ -157,7 +230,7 @@ export class CacheEngine {
 
   private jittered(ttl: number): number {
     const { jitter } = this.options.defaults;
-    return Math.max(1, Math.round(ttl * (1 + (Math.random() * 2 - 1) * jitter)));
+    return toIntegerMs(ttl * (1 + (Math.random() * 2 - 1) * jitter));
   }
 
   private resolve(name: string | undefined): Target {

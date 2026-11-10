@@ -3,15 +3,16 @@ import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
 import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
 import { FakeStore } from './fake-store.js';
 
-const EVENT_NAMES: (keyof CacheEventMap)[] = [
-  'hit',
-  'miss',
-  'set',
-  'delete',
-  'clear',
-  'load',
-  'error',
-];
+const EVENT_FLAGS: Record<keyof CacheEventMap, true> = {
+  hit: true,
+  miss: true,
+  set: true,
+  delete: true,
+  clear: true,
+  load: true,
+  error: true,
+};
+export const EVENT_NAMES = Object.keys(EVENT_FLAGS) as (keyof CacheEventMap)[];
 
 export function makeEngine(options: CacheModuleOptions = {}): {
   engine: CacheEngine;
