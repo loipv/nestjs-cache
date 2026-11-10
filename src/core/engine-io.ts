@@ -5,7 +5,7 @@ import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEvents, CacheOperation } from './events.js';
-import { fullKey } from './key-builder.js';
+import { fullKey, namespacePrefix } from './key-builder.js';
 import {
   classifyEnvelope,
   createStrategy,
@@ -125,9 +125,10 @@ export class EngineIO {
     const now = Date.now();
     const state = strategy.classify(envelope, now);
     if (state === 'expired') {
-      // Expired by the strategy alone (sliding maxTtl): the store TTL would keep it alive.
-      // An entry past its own expiresAt is left for the store to drop, as in 0.1.
-      if (classifyEnvelope(envelope, now) !== 'expired') {
+      // The store TTL would keep the entry alive when only the strategy expired it (sliding
+      // maxTtl), or when this read just touched it. A non-touching read of an entry past its
+      // own expiresAt is left for the store to drop, as in 0.1: no delete command is added.
+      if (plan.touch || classifyEnvelope(envelope, now) !== 'expired') {
         try {
           await store.delete([key]);
         } catch {
@@ -214,8 +215,15 @@ export class EngineIO {
     this.events.emit('delete', { store: name, namespace: scope.namespace, keys });
   }
 
-  emitClear(store: string, namespace: string): void {
-    this.events.emit('clear', { store, namespace });
+  async clear(storeName: string | undefined, namespace: string): Promise<void> {
+    const { name, store } = this.resolve(storeName);
+    try {
+      await store.clear(namespacePrefix(this.options.prefix, namespace));
+    } catch (error) {
+      this.reportError(name, 'clear', error);
+      return;
+    }
+    this.events.emit('clear', { store: name, namespace });
   }
 
   emitLoad(store: string, ref: KeyRef, started: number, success: boolean): void {

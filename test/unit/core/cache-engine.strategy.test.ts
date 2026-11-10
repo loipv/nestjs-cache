@@ -131,6 +131,30 @@ describe('CacheEngine with expiry strategies', () => {
     expect(store.calls.filter((c) => c.op === 'get')).toEqual([]);
   });
 
+  it('a touching read deletes an entry past its own expiresAt, and swallows a failed delete', async () => {
+    const store = touchStore();
+    const { engine, emitted } = makeEngine({ stores: { default: store } });
+    await engine.put({ key: 'k' }, null, { cacheNull: true, nullTtl: 100 });
+    vi.setSystemTime(500);
+    store.calls.length = 0;
+    store.getAndTouch.mockClear();
+    store.failNext('delete');
+    emitted.length = 0;
+    expect(await engine.get({ key: 'k' }, { strategy: 'sliding' })).toBeUndefined();
+    expect(store.getAndTouch).toHaveBeenCalledTimes(1);
+    expect(store.calls).toEqual([{ op: 'delete', args: [['k']] }]);
+    expect(emitted.map((e) => e.event)).toEqual(['miss']);
+  });
+
+  it('a non-touching fixed read of an expiresAt-expired entry issues no delete', async () => {
+    const { engine, store } = makeEngine();
+    await engine.set({ key: 'k' }, 'v', { ttl: 100 });
+    vi.setSystemTime(500);
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(store.calls).toEqual([{ op: 'get', args: ['k'] }]);
+  });
+
   it('sliding hits through getAndTouch without re-setting the entry', async () => {
     const store = touchStore();
     const { engine, emitted } = makeEngine({ stores: { default: store } });
@@ -252,15 +276,20 @@ describe('CacheEngine with expiry strategies', () => {
     expect(emitted.map((e) => e.event)).toEqual(['miss', 'load', 'set']);
   });
 
-  it('leaves an entry expired by expiresAt for the store to drop', async () => {
+  it('leaves an entry expired by expiresAt for the store to drop on non-touching reads', async () => {
     const { engine, store } = makeEngine();
     await engine.set({ key: 'k' }, 'v', { ttl: 1_000 });
     vi.setSystemTime(1_000);
     store.calls.length = 0;
-    expect(await engine.get({ key: 'k' }, { strategy: 'sliding' })).toBeUndefined();
     expect(await engine.get({ key: 'k' })).toBeUndefined();
     expect(await engine.getOrSet({ key: 'k' }, async () => 'new', { ttl: 1_000 })).toBe('new');
     expect(store.calls.map((c) => c.op)).not.toContain('delete');
+    // A touching read has just extended the store TTL, so it must drop the dead entry.
+    await engine.set({ key: 'j' }, 'v', { ttl: 1_000 });
+    vi.setSystemTime(2_000);
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'j' }, { strategy: 'sliding' })).toBeUndefined();
+    expect(store.calls.map((c) => c.op)).toContain('delete');
   });
 
   it('sliding expires after maxTtl', async () => {
