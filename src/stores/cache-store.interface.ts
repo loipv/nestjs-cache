@@ -81,7 +81,9 @@ export interface CacheStore {
   clear(prefix: string): Promise<void>;
   /**
    * Optional. Reads the entry and resets its TTL to `ttlMs` in one step
-   * (milliseconds, integer >= 1). Returns `undefined` for a miss. Used from 0.2.
+   * (milliseconds, integer >= 1). Returns `undefined` for a miss. Used by the `sliding` strategy.
+   * Stores should implement it: when it is missing, the engine falls back to `get` followed by a
+   * `set`, which is not atomic.
    */
   getAndTouch?(key: string, ttlMs: number): Promise<string | undefined>;
   /**

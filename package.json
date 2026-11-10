@@ -1,8 +1,16 @@
 {
   "name": "@loipv/nestjs-cache",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loipv/nestjs-cache.git"
+  },
+  "homepage": "https://github.com/loipv/nestjs-cache#readme",
+  "bugs": {
+    "url": "https://github.com/loipv/nestjs-cache/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -21,7 +29,8 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "sideEffects": false,
   "engines": {
@@ -35,7 +44,10 @@
     "cache",
     "redis",
     "decorator",
-    "two-tier"
+    "two-tier",
+    "swr",
+    "circuit-breaker",
+    "distributed-lock"
   ],
   "scripts": {
     "build": "tsup",

@@ -30,8 +30,13 @@ export class CacheService {
   constructor(private readonly engine: CacheEngine) {}
 
   /**
-   * Strategy options pick the read command (`sliding` touches) and how the entry is
-   * classified; a stale entry is returned as a hit. `get` never refreshes.
+   * Reads a value; returns `undefined` on a miss.
+   *
+   * Strategy options pick the read command (`sliding` touches the entry) and how the entry is
+   * classified; a stale `swr` entry is returned as a hit with `stale: true`. `get` never refreshes.
+   *
+   * With `strategy: 'sliding'` the entry's window is reset to `defaults.ttl`, not to the `ttl` it
+   * was written with, because `getAndTouch` needs the TTL before the entry is read.
    */
   get<T>(key: string, options: KeyOptions & StrategyOptions = {}): Promise<T | undefined> {
     return this.engine.get<T>(refOf(key, options), strategyOptionsOf(options));
