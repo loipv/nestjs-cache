@@ -190,6 +190,14 @@ describe('resolvePrometheusOptions messages', () => {
       new CacheConfigError(`Invalid cachePrometheus option buckets: ${shown}`),
     );
   });
+
+  it('keeps JSON quotes on strings beside a non-finite bucket', () => {
+    /* a wrongly typed buckets value from untyped config */
+    const buckets = ['a', Number.NaN] as unknown as number[];
+    expect(() => resolvePrometheusOptions({ client: promClient, buckets })).toThrow(
+      new CacheConfigError('Invalid cachePrometheus option buckets: ["a",NaN]'),
+    );
+  });
 });
 
 describe('CacheMetricsCollector with a failing client', () => {

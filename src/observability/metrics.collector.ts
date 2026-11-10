@@ -24,7 +24,11 @@ function describeValue(value: unknown): string {
   if (Array.isArray(value) && value.some((v) => typeof v === 'number' && !Number.isFinite(v))) {
     return `[${value
       .map((v: unknown) =>
-        typeof v === 'number' && !Number.isFinite(v) ? String(v) : describeValue(v),
+        typeof v === 'number' && !Number.isFinite(v)
+          ? String(v)
+          : typeof v === 'string'
+            ? JSON.stringify(v)
+            : describeValue(v),
       )
       .join(',')}]`;
   }
