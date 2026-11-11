@@ -68,14 +68,17 @@ export class HttpCacheInterceptor implements NestInterceptor {
     }
     if (key === undefined) return next.handle();
 
-    const { store, namespace, strategy } = metadata;
+    const { store, namespace, strategy, tags } = metadata;
+    // A tags callback gets the body and the request, once the body is to be written.
+    const options =
+      tags === undefined
+        ? metadata.loadOptions
+        : {
+            ...metadata.loadOptions,
+            tags: (body: unknown) => tags(body, toHttpCacheRequest(req, method, url)),
+          };
     return from(
-      this.engine.getOrSet(
-        { store, namespace, key },
-        () => load(req, next),
-        metadata.loadOptions,
-        strategy,
-      ),
+      this.engine.getOrSet({ store, namespace, key }, () => load(req, next), options, strategy),
     );
   }
 

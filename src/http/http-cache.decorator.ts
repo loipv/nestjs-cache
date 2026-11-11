@@ -7,6 +7,7 @@ import {
   assertNamespace,
   assertPositiveFinite,
   assertStrategyTtls,
+  assertTags,
   CLASS_LEVEL,
   describeMethod,
 } from '../decorators/metadata.js';
@@ -43,7 +44,15 @@ export type HttpCacheOptions = StrategyOptions & {
   key?: string | ((req: HttpCacheRequest) => string | undefined);
   /** Returns `true` to keep the body out of the cache. */
   unless?: (body: unknown) => boolean;
+  /**
+   * Tags the cached body (spec 2.1): fixed strings (not templates), or a callback of the body
+   * and the request, called once the body is to be written.
+   */
+  tags?: readonly string[] | HttpCacheTags;
 };
+
+/** An `@HttpCache` tags callback. */
+export type HttpCacheTags = (body: unknown, req: HttpCacheRequest) => readonly string[];
 
 export const HTTP_CACHE_METADATA: unique symbol = Symbol('nestjs-cache:http-cache');
 
@@ -53,6 +62,8 @@ export interface HttpCacheMetadata {
   key: HttpCacheOptions['key'];
   loadOptions: LoadOptions<unknown>;
   strategy: ExpiryStrategy | undefined;
+  /** A tags callback, called per request; a tags array is in `loadOptions` already. */
+  tags: HttpCacheTags | undefined;
 }
 
 /** Bodies that are never cached: files, binary data and streams. */
@@ -90,6 +101,7 @@ function validate(
       `${describeMethod(target, method)}: key must be a non-empty string or a function, got ${typeof key}`,
     );
   }
+  assertTags(target, method, options?.tags);
   const unless: unknown = options?.unless;
   if (unless !== undefined && typeof unless !== 'function') {
     throw new CacheConfigError(
@@ -110,12 +122,16 @@ export function HttpCache(options?: HttpCacheOptions): MethodDecorator & ClassDe
     // The built-in check first, then the user's: a file or stream never reaches the user's `unless`.
     const unless = options?.unless;
     loadOptions.unless = (body) => isUncacheable(body) || unless?.(body) === true;
+    const tags = options?.tags;
+    // Fixed tags are the same for every request: their tokens are taken before the handler runs.
+    if (Array.isArray(tags) && tags.length > 0) loadOptions.tags = [...(tags as readonly string[])];
     const metadata: HttpCacheMetadata = {
       namespace: options?.namespace ?? 'http',
       store: options?.store,
       key: options?.key,
       loadOptions,
       strategy: presetStrategy(loadOptions),
+      tags: typeof tags === 'function' ? tags : undefined,
     };
     addCacheMetadata(holder, {
       kind: 'http',

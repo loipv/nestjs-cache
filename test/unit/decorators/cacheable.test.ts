@@ -6,7 +6,7 @@ import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
 import * as strategies from '../../../src/core/strategies/expiry-strategy.js';
 import { CacheConfigError } from '../../../src/errors.js';
-import { CacheModule, Cacheable } from '../../../src/index.js';
+import { CacheModule, CacheService, Cacheable } from '../../../src/index.js';
 import { EVENT_NAMES } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
@@ -470,5 +470,194 @@ describe('@Cacheable with escapeKeyArgs', () => {
   /* Without the option the 0.3 keys are stored. */
   it('keeps the 0.3 keys by default', async () => {
     expect(await keysFor(undefined)).toEqual(['n:a:b', 'n:cb:a:b']);
+  });
+});
+
+const tagCalls: unknown[][] = [];
+
+@Injectable()
+class TaggedReader {
+  calls = 0;
+
+  @Cacheable({ namespace: 'users', key: 'user:{0}', tags: ['user:{0}', 'users'] })
+  async find(id: string): Promise<{ id: string; n: number }> {
+    this.calls++;
+    return { id, n: this.calls };
+  }
+
+  @Cacheable({
+    key: 'm:{0}:{1}',
+    tags: (result: { team: string }, id: string, page: number) => {
+      tagCalls.push([result, id, page]);
+      return [`team:${result.team}`];
+    },
+  })
+  async member(id: string, page: number): Promise<{ team: string }> {
+    this.calls++;
+    return { team: `${id}${String(page)}` };
+  }
+
+  @Cacheable({ key: 'empty:{0}', tags: ['{0}'] })
+  async emptyTag(id: string): Promise<string> {
+    this.calls++;
+    return `v${id}`;
+  }
+
+  @Cacheable({
+    key: 'throws',
+    tags: (): string[] => {
+      throw new Error('bad tags');
+    },
+  })
+  async throwingTags(): Promise<number> {
+    this.calls++;
+    return 1;
+  }
+
+  @Cacheable({ key: 'unser', tags: ['f:{0}'] })
+  async unserializable(fn: () => void): Promise<number> {
+    this.calls++;
+    return typeof fn === 'function' ? 1 : 0;
+  }
+
+  @Cacheable({ key: 'none', tags: [] })
+  async noTags(): Promise<number> {
+    this.calls++;
+    return 1;
+  }
+}
+
+/** The `tags` field of the envelope stored at `key`, if any. */
+function stampAt(store: FakeStore, key: string): unknown {
+  const raw = store.data.get(key)?.value;
+  return raw === undefined ? undefined : (JSON.parse(raw) as { tags?: unknown }).tags;
+}
+
+describe('@Cacheable tags', () => {
+  let app: TestingModule;
+  let svc: TaggedReader;
+  let fake: FakeStore;
+  let errors: unknown[];
+
+  beforeEach(async () => {
+    tagCalls.length = 0;
+    fake = new FakeStore();
+    app = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: fake } })],
+      providers: [TaggedReader],
+    }).compile();
+    await app.init();
+    svc = app.get(TaggedReader);
+    errors = [];
+    app.get(CacheEvents).on('error', (payload) => errors.push(payload));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  it("@Cacheable({ tags: ['user:{0}'] }) stamps user:<arg>", async () => {
+    /* The template renders against the call's arguments; the stored envelope maps each tag to
+       its token, and invalidating `user:7` makes only that entry run the method again. */
+    await svc.find('7');
+    await svc.find('8');
+    const stamp = stampAt(fake, 'users:user:7') as Record<string, string>;
+    expect(Object.keys(stamp).sort()).toEqual(['user:7', 'users']);
+    expect(fake.data.get('__tag__:user:7')?.value).toBe(stamp['user:7']);
+    expect(svc.calls).toBe(2);
+    await app.get(CacheService).invalidateTags(['user:7']);
+    expect(await svc.find('7')).toEqual({ id: '7', n: 3 });
+    expect(await svc.find('8')).toEqual({ id: '8', n: 2 });
+    expect(svc.calls).toBe(3);
+  });
+
+  it('@Cacheable({ tags: (r, id) => [...] }) receives the result then the args', async () => {
+    /* The callback runs once, after the load, with the result followed by every argument; a
+       hit does not call it again. */
+    expect(await svc.member('a', 2)).toEqual({ team: 'a2' });
+    expect(await svc.member('a', 2)).toEqual({ team: 'a2' });
+    expect(tagCalls).toEqual([[{ team: 'a2' }, 'a', 2]]);
+    expect(Object.keys(stampAt(fake, 'm:a:2') as object)).toEqual(['team:a2']);
+    expect(svc.calls).toBe(1);
+  });
+
+  it.each([
+    ['a template tag that renders empty', (s: TaggedReader) => s.emptyTag(''), 'v', 'empty:'],
+    ['a tag callback that throws', (s: TaggedReader) => s.throwingTags(), 1, 'throws'],
+    [
+      'a template tag that cannot be rendered',
+      (s: TaggedReader) => s.unserializable(() => undefined),
+      1,
+      'unser',
+    ],
+  ] as const)('%s is one tag error, no write, and the value', async (_n, call, value, key) => {
+    /* Spec 2.5: an invalid tag list at run time emits one 'tag' error; the entry is not
+       written and the caller still gets the method's value. */
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await call(svc)).toBe(value);
+    expect(errors).toEqual([expect.objectContaining({ store: 'default', operation: 'tag' })]);
+    expect(fake.data.has(key)).toBe(false);
+  });
+
+  it('an empty tags array writes an untagged entry', async () => {
+    /* `tags: []` declares no tag: the entry is written as in 0.6, without a tags field. */
+    await svc.noTags();
+    expect(fake.data.has('none')).toBe(true);
+    expect(stampAt(fake, 'none')).toBeUndefined();
+  });
+
+  it.each([
+    ['an empty tag', ['']],
+    ['a non-array', 5],
+    ['a malformed template', ['{']],
+  ])('rejects %s at class definition', (_n, tags) => {
+    /* Spec 2.5: tags must be an array of non-empty strings or a function, and templates must
+       parse; the error names Class.method. */
+    expect(() => {
+      class S {
+        @Cacheable({ tags: tags as readonly string[] }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow(CacheConfigError);
+    expect(() => {
+      class S {
+        @Cacheable({ tags: tags as readonly string[] }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).toThrow(/^S\.a: /);
+  });
+});
+
+@Injectable()
+class EscapedTags {
+  @Cacheable({ key: 'k:{0}', tags: ['user:{0}'] })
+  async find(id: string): Promise<string> {
+    return id;
+  }
+}
+
+describe('@Cacheable tags with escapeKeyArgs', () => {
+  async function tagsFor(escapeKeyArgs: boolean): Promise<string[]> {
+    const fake = new FakeStore();
+    const app = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: fake }, escapeKeyArgs })],
+      providers: [EscapedTags],
+    }).compile();
+    await app.init();
+    await app.get(EscapedTags).find('a:b');
+    await app.close();
+    const key = escapeKeyArgs ? 'k:a%3Ab' : 'k:a:b';
+    return Object.keys(stampAt(fake, key) as object);
+  }
+
+  it('escapeKeyArgs applies to template tags', async () => {
+    /* With the option on, template tag arguments are escaped like template keys. */
+    expect(await tagsFor(true)).toEqual(['user:a%3Ab']);
+    expect(await tagsFor(false)).toEqual(['user:a:b']);
   });
 });

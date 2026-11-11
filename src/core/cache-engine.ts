@@ -14,7 +14,12 @@ import {
 } from './engine-io.js';
 import { EngineBatch, type BatchLoader, type BatchScope } from './engine-batch.js';
 import { EngineLoad } from './engine-load.js';
-import { normalizeTags, type BatchTagOption, type TagOption } from './engine-tags.js';
+import {
+  normalizeTags,
+  type BatchTagOption,
+  type Stamping,
+  type TagOption,
+} from './engine-tags.js';
 import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
@@ -231,12 +236,17 @@ export class CacheEngine {
     await this.io.write(target, ref, key, value, strategy, this.io.ttlFor(strategy, ttl), stamping);
   }
 
-  /** @param preset Internal: as for `getOrSet`. */
+  /**
+   * @param preset Internal: as for `getOrSet`.
+   * @param taken Internal: the stamp `takeTags` gave before the value was produced (T4-B); the
+   * write uses exactly those tokens and `options.tags` is not stamped again.
+   */
   async put<T>(
     ref: KeyRef,
     value: T,
     options: PutOptions<T> = {},
     preset?: ExpiryStrategy,
+    taken?: Stamping,
   ): Promise<void> {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
@@ -248,7 +258,17 @@ export class CacheEngine {
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
     if (key === undefined) return;
-    await this.io.store(target, ref, key, value, options, strategy, true);
+    await this.io.store(target, ref, key, value, options, strategy, true, taken);
+  }
+
+  /**
+   * Internal: takes the tokens of tags known before a value is produced (spec 3.3), for a later
+   * `put`, so an invalidation in between leaves that write stale. An invalid list is one `tag`
+   * error, a failed token write one `version` error; either gives `'skip'` and never rejects.
+   */
+  takeTags(storeName: string | undefined, tags: readonly string[]): Promise<Stamping> {
+    const target = this.io.resolve(storeName);
+    return this.io.tags.stamp(target, () => tags);
   }
 
   /**

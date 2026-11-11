@@ -82,6 +82,28 @@ class ItemsController {
     return Promise.resolve({ id });
   }
 
+  @Get('tagged/:id')
+  @HttpCache({
+    namespace: 'tagged',
+    ttl: 60_000,
+    tags: (_body: unknown, req: HttpCacheRequest) => [`user:${req.params.id ?? ''}`],
+  })
+  tagged(@Param('id') id: string): { id: string; n: number } {
+    return { id, n: this.counter.next() };
+  }
+
+  @Get('catalog')
+  @HttpCache({ ttl: 60_000, tags: ['catalog'] })
+  catalog(): { n: number } {
+    return { n: this.counter.next() };
+  }
+
+  @Put('tagged/:id')
+  @CacheEvict({ tags: ['user:{0}', 'catalog'] })
+  async updateTagged(@Param('id') id: string): Promise<{ id: string }> {
+    return Promise.resolve({ id });
+  }
+
   @Post('items')
   @HttpCache({ ttl: 60_000 })
   create(@Body() body: unknown): { n: number; body: unknown } {
@@ -287,6 +309,22 @@ describe.each(['express', 'fastify'] as const)('HttpCache end to end on %s', (ki
     expect(counter.calls).toBe(3);
     await json(`${base}/users/2`);
     expect(counter.calls).toBe(3);
+  });
+
+  it('a PUT with @CacheEvict({ tags }) makes tagged GET routes run their handler again', async () => {
+    /* Spec 5: tags from a callback (body, req) and from a fixed array; the PUT invalidates
+       user:1 and catalog, so those GETs load again while user 2 stays cached. */
+    const { base, counter } = await start();
+    for (const path of ['tagged/1', 'tagged/2', 'catalog', 'tagged/1', 'tagged/2', 'catalog']) {
+      await json(`${base}/${path}`);
+    }
+    expect(counter.calls).toBe(3);
+    expect((await fetch(`${base}/tagged/1`, { method: 'PUT' })).status).toBe(200);
+    await json(`${base}/tagged/1`);
+    await json(`${base}/catalog`);
+    expect(counter.calls).toBe(5);
+    await json(`${base}/tagged/2`);
+    expect(counter.calls).toBe(5);
   });
 
   it("@HttpCode(203) and @Header('x-a', '1') survive a cache hit", async () => {

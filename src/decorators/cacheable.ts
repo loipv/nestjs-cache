@@ -8,6 +8,7 @@ import {
 import {
   assertInstanceMethod,
   compileKeyAt,
+  compileTags,
   presetStrategy,
   putOptionsOf,
   wrapMethod,
@@ -18,7 +19,8 @@ export function Cacheable<
   K extends unknown[] = never[],
   C extends unknown[] = never[],
   R = unknown,
->(options?: CacheableOptions<K, C, R>): AsyncMethodDecorator<K, C, R> {
+  G extends unknown[] = never[],
+>(options?: CacheableOptions<K, C, R, G>): AsyncMethodDecorator<K, C, R, G> {
   return (target, propertyKey, descriptor) => {
     assertInstanceMethod(target, propertyKey);
     assertNamespace(target, propertyKey, options?.namespace);
@@ -27,6 +29,7 @@ export function Cacheable<
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
     assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
+    const tagsOf = compileTags(target, propertyKey, options?.tags);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
     const namespace = options?.namespace;
@@ -47,7 +50,9 @@ export function Cacheable<
           engine.reportError(store, 'key', error);
           return call.invoke();
         }
-        return engine.getOrSet({ store, namespace, key }, call.invoke, loadOptions, strategy);
+        // Untagged calls share the options built once; tags are per call (D2).
+        const options = tagsOf === undefined ? loadOptions : { ...loadOptions, tags: tagsOf(call) };
+        return engine.getOrSet({ store, namespace, key }, call.invoke, options, strategy);
       },
     );
   };

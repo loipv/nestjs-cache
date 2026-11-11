@@ -17,6 +17,7 @@ export type {
   CachePutOptions,
   KeySpec,
   StrategyOptions,
+  TagSpec,
 } from './decorators/options.js';
 export type { CacheEnvelope } from './core/envelope.js';
 export type { Serializer } from './serializers/json.serializer.js';

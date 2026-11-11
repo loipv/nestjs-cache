@@ -102,4 +102,34 @@ describe('@HttpCache', () => {
       { kind: 'http', method: '*', store: 's', lock: true },
     ]);
   });
+
+  it.each([
+    ['an empty tag', { tags: [''] }],
+    ['non-array tags', { tags: 5 }],
+    ['a non-string tag', { tags: [1] }],
+  ])('rejects %s at definition', (_n, options) => {
+    /* Spec 2.5: tags must be an array of non-empty strings or a function. */
+    expect(() => {
+      onMethod(options);
+    }).toThrow(/^C\.m: tags/);
+    expect(() => {
+      onClass(options);
+    }).toThrow(/^C: tags/);
+  });
+
+  it('accepts tags that look like templates: @HttpCache arrays are fixed strings', () => {
+    /* Spec 2.1: '{' is a fixed tag here, so it is no template error. The array is copied
+       into the load options; a callback is kept for the interceptor. */
+    class C {
+      @HttpCache({ tags: ['{', 'user:{0}'] })
+      m(): void {}
+      @HttpCache({ tags: () => ['x'] })
+      n(): void {}
+    }
+    const meta = Reflect.getMetadata(HTTP_CACHE_METADATA, C.prototype.m) as HttpCacheMetadata;
+    expect(meta.loadOptions.tags).toEqual(['{', 'user:{0}']);
+    const fn = Reflect.getMetadata(HTTP_CACHE_METADATA, C.prototype.n) as HttpCacheMetadata;
+    expect(fn.loadOptions.tags).toBeUndefined();
+    expect(typeof fn.tags).toBe('function');
+  });
 });

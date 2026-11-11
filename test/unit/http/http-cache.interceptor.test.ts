@@ -15,7 +15,11 @@ import {
 } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import type { CacheEngine } from '../../../src/core/cache-engine.js';
-import { HttpCache, type HttpCacheOptions } from '../../../src/http/http-cache.decorator.js';
+import {
+  HttpCache,
+  type HttpCacheOptions,
+  type HttpCacheRequest,
+} from '../../../src/http/http-cache.decorator.js';
 import { HttpCacheInterceptor } from '../../../src/http/http-cache.interceptor.js';
 import { CacheModule, HttpCacheInterceptor as Exported } from '../../../src/index.js';
 import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
@@ -466,5 +470,78 @@ describe('HttpCacheInterceptor', () => {
     expect(interceptor).toBeInstanceOf(HttpCacheInterceptor);
     expect((interceptor as unknown as { engine: CacheEngine }).engine).toBeDefined();
     await moduleRef.close();
+  });
+});
+
+describe('HttpCacheInterceptor tags', () => {
+  function stampAt(store: FakeStore, key: string): Record<string, string> | undefined {
+    const raw = store.data.get(key)?.value;
+    return raw === undefined
+      ? undefined
+      : (JSON.parse(raw) as { tags?: Record<string, string> }).tags;
+  }
+
+  it('@HttpCache({ tags }) with a fixed array stamps the strings as they are', async () => {
+    /* Spec 2.1: an @HttpCache tags array is fixed strings, not templates; invalidating one of
+       them makes the next GET run the handler again. */
+    const t = setup();
+    const target = route({ tags: ['items', 'user:{0}'] });
+    const next = t.nextOf(() => ({ a: 1 }));
+    await t.run(target, get('/items'), next);
+    expect(Object.keys(stampAt(t.store, 'http:/items') ?? {})).toEqual(['items', 'user:{0}']);
+    await t.run(target, get('/items'), next);
+    expect(next.calls).toBe(1);
+    await t.engine.invalidateTags(['user:{0}']);
+    await t.run(target, get('/items'), next);
+    expect(next.calls).toBe(2);
+  });
+
+  it('@HttpCache({ tags: (body, req) => [...] }) gets the body and the request', async () => {
+    /* The callback runs after the handler with the body and the HttpCacheRequest. */
+    const t = setup();
+    const tags = vi.fn((body: unknown, req: HttpCacheRequest) => [
+      `user:${req.params.id ?? ''}`,
+      `n:${String((body as { n: number }).n)}`,
+    ]);
+    const target = route({ tags });
+    await t.run(
+      target,
+      get('/users/7?x=1', { params: { id: '7' } }),
+      t.nextOf(() => ({ n: 3 })),
+    );
+    expect(tags).toHaveBeenCalledExactlyOnceWith(
+      { n: 3 },
+      {
+        method: 'GET',
+        url: '/users/7?x=1',
+        defaultKey: '/users/7?x=1',
+        path: '/users/7',
+        query: { x: '1' },
+        params: { id: '7' },
+        headers: {},
+      },
+    );
+    expect(Object.keys(stampAt(t.store, 'http:/users/7?x=1') ?? {})).toEqual(['user:7', 'n:3']);
+  });
+
+  it('an @HttpCache tags callback that throws is one tag error; the body is still sent', async () => {
+    /* Spec 2.5: no write, the request is answered as usual. */
+    const t = setup();
+    const target = route({
+      tags: () => {
+        throw new Error('bad tags');
+      },
+    });
+    await expect(
+      t.run(
+        target,
+        get('/items'),
+        t.nextOf(() => 'ok'),
+      ),
+    ).resolves.toBe('ok');
+    expect(t.errors()).toEqual([
+      { event: 'error', payload: expect.objectContaining({ operation: 'tag' }) as unknown },
+    ]);
+    expect(t.store.data.has('http:/items')).toBe(false);
   });
 });

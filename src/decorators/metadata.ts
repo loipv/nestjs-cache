@@ -99,3 +99,12 @@ export function assertStrategyTtls(
     );
   }
 }
+
+/** `tags` must be an array of non-empty strings or a function (spec 2.5). */
+export function assertTags(target: object, method: string | symbol, tags: unknown): void {
+  if (tags === undefined || typeof tags === 'function') return;
+  if (Array.isArray(tags) && tags.every((tag) => typeof tag === 'string' && tag !== '')) return;
+  throw new CacheConfigError(
+    `${describeMethod(target, method)}: tags must be an array of non-empty strings or a function`,
+  );
+}

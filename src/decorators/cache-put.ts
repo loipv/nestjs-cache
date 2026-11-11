@@ -7,15 +7,19 @@ import {
 import {
   assertInstanceMethod,
   compileKeyAt,
+  compileTags,
   presetStrategy,
   putOptionsOf,
   wrapMethod,
 } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
-export function CachePut<K extends unknown[] = never[], C extends unknown[] = never[], R = unknown>(
-  options?: CachePutOptions<K, C, R>,
-): AsyncMethodDecorator<K, C, R> {
+export function CachePut<
+  K extends unknown[] = never[],
+  C extends unknown[] = never[],
+  R = unknown,
+  G extends unknown[] = never[],
+>(options?: CachePutOptions<K, C, R, G>): AsyncMethodDecorator<K, C, R, G> {
   return (target, propertyKey, descriptor) => {
     assertInstanceMethod(target, propertyKey);
     assertNamespace(target, propertyKey, options?.namespace);
@@ -24,6 +28,7 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
     assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
+    const tagsOf = compileTags(target, propertyKey, options?.tags);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;
     const store = options?.store ?? 'default';
     const namespace = options?.namespace;
@@ -43,9 +48,18 @@ export function CachePut<K extends unknown[] = never[], C extends unknown[] = ne
         } catch (error) {
           engine.reportError(store, 'key', error);
         }
+        const tags = key === undefined ? undefined : tagsOf?.(call);
+        // Tags known before the method (templates) have their tokens taken now, and the write
+        // uses exactly those: an invalidation while the method runs is not lost (spec 3.3).
+        const taken =
+          tags === undefined || typeof tags === 'function'
+            ? undefined
+            : await engine.takeTags(store, tags);
         const result = await call.invoke();
-        if (key !== undefined)
-          await engine.put({ store, namespace, key }, result, putOptions, strategy);
+        if (key !== undefined) {
+          const options = tags === undefined ? putOptions : { ...putOptions, tags };
+          await engine.put({ store, namespace, key }, result, options, strategy, taken);
+        }
         return result;
       },
     );
