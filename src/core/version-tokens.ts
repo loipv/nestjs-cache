@@ -9,6 +9,13 @@ export type TokenKind = 'ns' | 'tag';
 /** 30 days; a token key outlives any data written under its token. */
 export const VERSION_KEY_TTL = 2_592_000_000;
 
+/**
+ * Internal: the most tag tokens one instance keeps cached. Tags are user-controlled and can be
+ * high-cardinality (`user:<id>`), so the least recently refreshed are evicted beyond it.
+ * Namespace tokens are not capped.
+ */
+export const MAX_TAG_TOKENS = 10_000;
+
 const KIND_NAMESPACE: Readonly<Record<TokenKind, string>> = { ns: '__version__', tag: '__tag__' };
 
 /**
@@ -32,7 +39,14 @@ interface Cached {
 
 /** The tokens of one kind, each map keyed by `<store>\0<name>`. */
 interface KindState {
+  readonly kind: TokenKind;
+  /**
+   * Cached tokens, least recently refreshed first. Expired entries stay (a strict store falls
+   * back to them when a read fails); for tags only the cap evicts them.
+   */
   readonly cache: Map<string, Cached>;
+  /** The most entries `cache` keeps. */
+  readonly limit: number;
   /** In-flight read-or-create calls (`current`, `fresh` does not register). */
   readonly inflight: Map<string, Promise<string>>;
   /**
@@ -40,12 +54,25 @@ interface KindState {
    * while it is still registered here; a bump or a fresh read unregisters it.
    */
   readonly reads: Map<string, Promise<string | undefined>>;
-  /** Completed bumps per (store, name): a read that saw one finish caches nothing. */
+  /**
+   * Bumps completed while a `fresh` read of the slot was in flight: that read then caches
+   * nothing. Only kept while `freshes` has the slot.
+   */
   readonly bumps: Map<string, number>;
+  /** `fresh` reads in flight per slot. */
+  readonly freshes: Map<string, number>;
 }
 
-function newState(): KindState {
-  return { cache: new Map(), inflight: new Map(), reads: new Map(), bumps: new Map() };
+function newState(kind: TokenKind, limit: number): KindState {
+  return {
+    kind,
+    cache: new Map(),
+    limit,
+    inflight: new Map(),
+    reads: new Map(),
+    bumps: new Map(),
+    freshes: new Map(),
+  };
 }
 
 function slot(target: Target, name: string): string {
@@ -59,17 +86,18 @@ function slot(target: Target, name: string): string {
  * or changed in L1 alone while L2 is down. An empty token key counts as missing.
  */
 export class VersionTokens {
-  private readonly kinds: Readonly<Record<TokenKind, KindState>> = {
-    ns: newState(),
-    tag: newState(),
-  };
+  private readonly kinds: Readonly<Record<TokenKind, KindState>>;
 
+  /** `maxTagTokens` is `MAX_TAG_TOKENS` outside tests. */
   constructor(
     private readonly prefix: string | undefined,
     private readonly cacheTtl: number,
-  ) {}
+    maxTagTokens = MAX_TAG_TOKENS,
+  ) {
+    this.kinds = { ns: newState('ns', Infinity), tag: newState('tag', maxTagTokens) };
+  }
 
-  /** The completed bump counts of `kind`, keyed by `<store>\0<name>`. */
+  /** The bump counts `fresh` reads in flight compare, keyed by `<store>\0<name>`. */
   bumpCounts(kind: TokenKind): ReadonlyMap<string, number> {
     return this.kinds[kind].bumps;
   }
@@ -115,15 +143,27 @@ export class VersionTokens {
   async fresh(target: Target, kind: TokenKind, name: string): Promise<string> {
     const state = this.kinds[kind];
     const k = slot(target, name);
+    state.freshes.set(k, (state.freshes.get(k) ?? 0) + 1);
     const bumps = state.bumps.get(k) ?? 0;
-    const token = await this.read(target, kind, name);
-    if ((state.bumps.get(k) ?? 0) === bumps) {
-      // In-flight reads started earlier; they must not replace this newer token.
-      state.inflight.delete(k);
-      state.reads.delete(k);
-      this.remember(state, k, token);
+    try {
+      const token = await this.read(target, kind, name);
+      if ((state.bumps.get(k) ?? 0) === bumps) {
+        // In-flight reads started earlier; they must not replace this newer token.
+        state.inflight.delete(k);
+        state.reads.delete(k);
+        this.remember(state, k, token);
+      }
+      return token;
+    } finally {
+      // The last fresh read of the slot ends: nothing compares its bump count any more.
+      const left = (state.freshes.get(k) ?? 0) - 1;
+      if (left > 0) {
+        state.freshes.set(k, left);
+      } else {
+        state.freshes.delete(k);
+        state.bumps.delete(k);
+      }
     }
-    return token;
   }
 
   /** Writes a new token and caches it; on a failed write the cached token is unchanged. */
@@ -132,7 +172,7 @@ export class VersionTokens {
     await writeToken(target.store, tokenKey(this.prefix, kind, name), token);
     const state = this.kinds[kind];
     const k = slot(target, name);
-    state.bumps.set(k, (state.bumps.get(k) ?? 0) + 1);
+    if (state.freshes.has(k)) state.bumps.set(k, (state.bumps.get(k) ?? 0) + 1);
     state.inflight.delete(k);
     state.reads.delete(k);
     this.remember(state, k, token);
@@ -145,7 +185,7 @@ export class VersionTokens {
    * with one `getStrict` each, in parallel, when the store has it, else with one `getMany` (one
    * `get` each without it). A token read is cached unless a bump or a fresh read completed
    * meanwhile, and an older read-or-create still in flight then no longer updates the cache; a
-   * missing key is not cached. Rejects when any store read rejects, for every waiter on it.
+   * missing key is not cached, and for a tag it also drops the cached token. Rejects when any store read rejects, for every waiter on it.
    */
   async currentMany(
     target: Target,
@@ -228,7 +268,11 @@ export class VersionTokens {
       (value) => {
         const registered = state.reads.get(k) === read;
         if (registered) state.reads.delete(k);
-        if (value === undefined || value === '') return undefined;
+        if (value === undefined || value === '') {
+          // The tag key is gone: its token is no fallback any more.
+          if (registered && state.kind === 'tag') state.cache.delete(k);
+          return undefined;
+        }
         if (registered) {
           // As in `fresh`: an older read-or-create in flight must not replace this token.
           state.inflight.delete(k);
@@ -245,8 +289,14 @@ export class VersionTokens {
     return read;
   }
 
+  /** Caches `token` as the most recently refreshed entry, evicting the oldest beyond the cap. */
   private remember(state: KindState, k: string, token: string): void {
+    state.cache.delete(k);
     state.cache.set(k, { token, until: Date.now() + this.cacheTtl });
+    for (const oldest of state.cache.keys()) {
+      if (state.cache.size <= state.limit) break;
+      state.cache.delete(oldest);
+    }
   }
 
   /** Reads the token key, creating it when missing; a concurrent creator's token wins. */

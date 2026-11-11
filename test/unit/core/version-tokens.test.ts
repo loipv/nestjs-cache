@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VERSION_KEY_TTL, VersionTokens, tokenKey } from '../../../src/core/version-tokens.js';
+import {
+  MAX_TAG_TOKENS,
+  VERSION_KEY_TTL,
+  VersionTokens,
+  tokenKey,
+} from '../../../src/core/version-tokens.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 const TOKEN = /^[0-9a-z]{8}$/;
@@ -429,5 +434,130 @@ describe('VersionTokens', () => {
     expect(ops(store, 'get', 'app:__tag__:a')).toBe(3);
     expect(ops(store, 'set', 'app:__tag__:a')).toBe(1);
     expect(tokens.cached(target, 'tag', 'a')).toBe(created);
+  });
+
+  it('the tag token cache never exceeds MAX_TAG_TOKENS and evicts the least recently refreshed first', async () => {
+    /* Production cap is 10 000; the constructor seam sets 3. Tags a, b, c are cached, then a is
+       refreshed by a bump, so d evicts b (the least recently refreshed), and e then evicts c.
+       Namespace tokens are never capped. */
+    expect(MAX_TAG_TOKENS).toBe(10_000);
+    const store = new FakeStore();
+    const target = { name: 'default', store };
+    const tokens = new VersionTokens('app', 1000, 3);
+    const cachedTags = (names: string[]): string[] =>
+      names.filter((name) => tokens.cached(target, 'tag', name) !== undefined);
+    await tokens.ensureMany(target, 'tag', ['a', 'b', 'c']);
+    await tokens.bump(target, 'tag', 'a');
+    await tokens.ensureMany(target, 'tag', ['d']);
+    expect(cachedTags(['a', 'b', 'c', 'd', 'e'])).toEqual(['a', 'c', 'd']);
+    store.data.set('app:__tag__:e', { value: 'eeeeeeee', ttlMs: 1 });
+    await tokens.currentMany(target, 'tag', ['e']);
+    expect(cachedTags(['a', 'b', 'c', 'd', 'e'])).toEqual(['a', 'd', 'e']);
+    await tokens.ensureMany(target, 'tag', ['f', 'g', 'h', 'i']);
+    expect(cachedTags(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'])).toEqual(['g', 'h', 'i']);
+
+    const namespaces = ['n1', 'n2', 'n3', 'n4', 'n5'];
+    for (const ns of namespaces) await tokens.current(target, 'ns', ns);
+    expect(namespaces.filter((ns) => tokens.cached(target, 'ns', ns) !== undefined)).toEqual(
+      namespaces,
+    );
+  });
+
+  it('an expired tag token is kept as a fallback until evicted by the cap', async () => {
+    /* Long past cacheTtl the token is still known to cached(); a failing currentMany read leaves
+       it in place; only the cap evicts it. */
+    const store = new FakeStore();
+    const target = { name: 'default', store };
+    const tokens = new VersionTokens('app', 1000, 2);
+    const token = await tokens.current(target, 'tag', 'a');
+    vi.advanceTimersByTime(60_000);
+    expect(tokens.cached(target, 'tag', 'a')).toBe(token);
+    store.failNext('get');
+    await expect(tokens.currentMany(target, 'tag', ['a'])).rejects.toThrow('get failed');
+    expect(tokens.cached(target, 'tag', 'a')).toBe(token);
+    await tokens.ensureMany(target, 'tag', ['b', 'c']);
+    expect(tokens.cached(target, 'tag', 'a')).toBeUndefined();
+  });
+
+  it('a tag read as missing removes its cached token', async () => {
+    /* The tag key was deleted (clear or TTL): once the cached token expires, currentMany reads
+       undefined and drops the cached token, for an empty key as well. A missing namespace read
+       through currentMany keeps its token (namespace behaviour is unchanged). */
+    const { store, tokens, target } = setup();
+    await tokens.ensureMany(target, 'tag', ['a', 'b']);
+    await tokens.current(target, 'ns', 'n');
+    store.data.delete('app:__tag__:a');
+    store.data.set('app:__tag__:b', { value: '', ttlMs: 1 });
+    store.data.delete('app:__version__:n');
+    vi.advanceTimersByTime(1000);
+    expect(await tokens.currentMany(target, 'tag', ['a', 'b'])).toEqual(
+      new Map([
+        ['a', undefined],
+        ['b', undefined],
+      ]),
+    );
+    expect(tokens.cached(target, 'tag', 'a')).toBeUndefined();
+    expect(tokens.cached(target, 'tag', 'b')).toBeUndefined();
+    expect((await tokens.currentMany(target, 'ns', ['n'])).get('n')).toBeUndefined();
+    expect(tokens.cached(target, 'ns', 'n')).toBeDefined();
+  });
+
+  it('bump counters do not accumulate per tag', async () => {
+    /* 100 distinct tags bumped with no fresh read in flight leave no counter. A bump during a
+       fresh read is counted while that read is in flight (the bump's token wins), and the
+       counter is removed when the last fresh read of the tag ends. */
+    const { store, tokens, target } = setup();
+    const names = Array.from({ length: 100 }, (_, i) => `user:${String(i)}`);
+    await tokens.bumpMany(target, 'tag', names);
+    await tokens.bump(target, 'ns', 'n');
+    expect(tokens.bumpCounts('tag').size).toBe(0);
+    expect(tokens.bumpCounts('ns').size).toBe(0);
+
+    store.data.set('app:__tag__:a', { value: 'old12345', ttlMs: 1 });
+    const realGet = store.get.bind(store);
+    const holdNext = (fail: boolean): ReturnType<typeof deferred<undefined>> => {
+      const gate = deferred<undefined>();
+      store.get = (key: string) => {
+        store.get = realGet;
+        const seen = store.data.get(key)?.value;
+        return gate.promise.then(() => {
+          if (fail) throw new Error('get failed');
+          return seen;
+        });
+      };
+      return gate;
+    };
+    const gate = holdNext(false);
+    const fresh = tokens.fresh(target, 'tag', 'a');
+    await tokens.bump(target, 'tag', 'a');
+    expect(tokens.bumpCounts('tag').get('default\u0000a')).toBe(1);
+    const bumped = store.data.get('app:__tag__:a')?.value;
+    gate.resolve(undefined);
+    expect(await fresh).toBe('old12345');
+    expect(tokens.cached(target, 'tag', 'a')).toBe(bumped);
+    expect(tokens.bumpCounts('tag').size).toBe(0);
+
+    /* A rejected fresh read removes the counter as well. */
+    const failGate = holdNext(true);
+    const failing = tokens.fresh(target, 'tag', 'a');
+    await tokens.bump(target, 'tag', 'a');
+    expect(tokens.bumpCounts('tag').size).toBe(1);
+    failGate.resolve(undefined);
+    await expect(failing).rejects.toThrow('get failed');
+    expect(tokens.bumpCounts('tag').size).toBe(0);
+
+    /* Overlapping fresh reads: the counter stays until the last one ends, so the older read
+       (which saw the token before the bump) still caches nothing. */
+    const slowGate = holdNext(false);
+    const slow = tokens.fresh(target, 'tag', 'a');
+    const before = store.data.get('app:__tag__:a')?.value;
+    await tokens.bump(target, 'tag', 'a');
+    const latest = store.data.get('app:__tag__:a')?.value;
+    expect(await tokens.fresh(target, 'tag', 'a')).toBe(latest);
+    expect(tokens.bumpCounts('tag').get('default\u0000a')).toBe(1);
+    slowGate.resolve(undefined);
+    expect(await slow).toBe(before);
+    expect(tokens.cached(target, 'tag', 'a')).toBe(latest);
+    expect(tokens.bumpCounts('tag').size).toBe(0);
   });
 });
