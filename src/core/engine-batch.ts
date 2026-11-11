@@ -132,9 +132,15 @@ export class EngineBatch {
     });
     // Both start before anything is awaited, so their flights are registered at once.
     const loading = missing.length > 0 ? this.load.onMissMany(plan, missing) : undefined;
-    if (stale.length > 0) this.load.refreshMany(plan, stale);
+    const refreshing =
+      stale.length > 0 ? this.load.refreshMany(plan, stale, options.softTimeout) : undefined;
     if (loading !== undefined) {
       for (const [key, value] of await loading) values.set(key, value);
+    }
+    // Without softTimeout the refresh runs in the background, as in 0.7. With it, the stale keys
+    // share one wait window, and those refreshed in time get their new values.
+    if (refreshing !== undefined && options.softTimeout !== undefined) {
+      for (const [key, value] of await refreshing) values.set(key, value);
     }
     return keys.map((key) => values.get(key) as T | undefined);
   }

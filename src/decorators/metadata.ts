@@ -84,14 +84,18 @@ export function assertNamespace(
   }
 }
 
-/** Validates `staleTtl`/`maxTtl` and the `maxTtl >= ttl` relation at definition time. */
+/**
+ * Validates `staleTtl`/`maxTtl`/`softTimeout` and the `maxTtl >= ttl` relation at definition
+ * time.
+ */
 export function assertStrategyTtls(
   target: object,
   method: string | symbol,
-  options: { ttl?: number; staleTtl?: number; maxTtl?: number } | undefined,
+  options: { ttl?: number; staleTtl?: number; maxTtl?: number; softTimeout?: number } | undefined,
 ): void {
   assertPositiveFinite(target, method, 'staleTtl', options?.staleTtl);
   assertPositiveFinite(target, method, 'maxTtl', options?.maxTtl);
+  assertPositiveFinite(target, method, 'softTimeout', options?.softTimeout);
   const { ttl, maxTtl } = options ?? {};
   if (ttl !== undefined && maxTtl !== undefined && maxTtl < ttl) {
     throw new CacheConfigError(

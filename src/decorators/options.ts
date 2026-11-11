@@ -7,10 +7,14 @@ export type TagSpec<A extends unknown[], R> =
   readonly string[] | ((result: R, ...args: A) => readonly string[]);
 /** The tags `@CacheEvict` invalidates: templates over the arguments, or a callback of them. */
 type EvictTagSpec<A extends unknown[]> = readonly string[] | ((...args: A) => readonly string[]);
+/**
+ * `softTimeout` (swr only): on a stale hit, wait up to this many ms for the background refresh
+ * and return its value if it lands in time, else the stale one.
+ */
 export type StrategyOptions =
-  | { strategy?: 'fixed'; staleTtl?: never; maxTtl?: never }
-  | { strategy: 'swr'; staleTtl: number; maxTtl?: never }
-  | { strategy: 'sliding'; maxTtl?: number; staleTtl?: never };
+  | { strategy?: 'fixed'; staleTtl?: never; maxTtl?: never; softTimeout?: never }
+  | { strategy: 'swr'; staleTtl: number; maxTtl?: never; softTimeout?: number }
+  | { strategy: 'sliding'; maxTtl?: number; staleTtl?: never; softTimeout?: never };
 interface TargetOptions {
   namespace?: string;
   store?: string;

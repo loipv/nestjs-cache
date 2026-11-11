@@ -661,3 +661,67 @@ describe('@Cacheable tags with escapeKeyArgs', () => {
     expect(await tagsFor(false)).toEqual(['user:a:b']);
   });
 });
+
+@Injectable()
+class SoftReader {
+  calls = 0;
+
+  @Cacheable({ key: 'soft', ttl: 100, strategy: 'swr', staleTtl: 1_000, softTimeout: 50 })
+  async find(): Promise<number> {
+    this.calls++;
+    return this.calls;
+  }
+}
+
+describe('@Cacheable softTimeout', () => {
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '1'])(
+    'rejects softTimeout = %s at class definition',
+    (value) => {
+      /* Spec 2.2: softTimeout must be a finite number > 0, checked at declaration like
+         staleTtl; the error names Class.method. */
+      const options = { strategy: 'swr', staleTtl: 300, softTimeout: value } as unknown as {
+        strategy: 'swr';
+        staleTtl: number;
+      };
+      const define = (): unknown => {
+        class S {
+          @Cacheable(options) a(): Promise<number> {
+            return Promise.resolve(1);
+          }
+        }
+        return S;
+      };
+      expect(define).toThrow(CacheConfigError);
+      expect(define).toThrow(`S.a: softTimeout must be a finite number > 0, got ${String(value)}`);
+    },
+  );
+
+  it('a stale hit within softTimeout returns the refreshed result', async () => {
+    /* The decorated method is the loader: on a stale hit it runs at once and its result is
+       returned, since it settles within softTimeout; softTimeout reaches getOrSet. */
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const getOrSet = vi.spyOn(CacheEngine.prototype, 'getOrSet');
+    const app = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: new FakeStore() } })],
+      providers: [SoftReader],
+    }).compile();
+    try {
+      await app.init();
+      const svc = app.get(SoftReader);
+      vi.setSystemTime(0);
+      expect(await svc.find()).toBe(1);
+      vi.setSystemTime(150);
+      expect(await svc.find()).toBe(2);
+      expect(getOrSet.mock.calls[0]?.[2]).toStrictEqual({
+        ttl: 100,
+        strategy: 'swr',
+        staleTtl: 1_000,
+        softTimeout: 50,
+      });
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+});

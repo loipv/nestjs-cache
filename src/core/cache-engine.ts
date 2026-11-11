@@ -13,7 +13,7 @@ import {
   type Target,
 } from './engine-io.js';
 import { EngineBatch, type BatchLoader, type BatchScope } from './engine-batch.js';
-import { EngineLoad } from './engine-load.js';
+import { EngineLoad, settleWithin } from './engine-load.js';
 import {
   normalizeTags,
   type BatchTagOption,
@@ -96,6 +96,7 @@ function strategyOf(
   const { staleTtl, maxTtl } = options;
   checkDuration('staleTtl', staleTtl);
   checkDuration('maxTtl', maxTtl);
+  checkDuration('softTimeout', options.softTimeout);
   const strategy = preset ?? createStrategy(options);
   if (strategy.kind === 'swr' && staleTtl === undefined) {
     throw new CacheConfigError(
@@ -209,8 +210,13 @@ export class CacheEngine {
     const plan = { target, ref, key, loader, options, strategy, ttl, lock, noWrite };
     if (servable(cached, strategy)) {
       this.io.hit(target.name, ref, cached.stale);
-      if (cached.stale) this.load.refresh(plan);
-      return cached.value as T;
+      if (!cached.stale) return cached.value as T;
+      const refreshing = this.load.refresh(plan);
+      // Without softTimeout nothing is awaited here, as in 0.7.
+      const { softTimeout } = options;
+      if (softTimeout === undefined) return cached.value as T;
+      const refreshed = await settleWithin(refreshing, softTimeout);
+      return refreshed === undefined ? (cached.value as T) : refreshed.value;
     }
     this.io.miss(target.name, ref);
     return this.load.onMiss(plan);

@@ -663,6 +663,78 @@ describe('CacheEngine batch API', () => {
       expect(await engine.get({ key: 'a' }, SWR)).toBe('new');
     });
 
+    it('getOrSetMany: keys refreshed in time get new values, the rest stale', async () => {
+      /* softTimeout 100: 'b' is already being refreshed by a slow single-key call (500 ms) and
+         is joined; 'a' is refreshed by the batch loader in 20 ms; 'c' is a miss. One shared
+         window: 'a' gets its new value, 'b' its stale one, and the call returns at 100 ms. */
+      const { engine } = setup();
+      await engine.set({ key: 'a' }, 'oldA', SWR);
+      await engine.set({ key: 'b' }, 'oldB', SWR);
+      vi.setSystemTime(150);
+      const slow = vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            setTimeout(() => {
+              resolve('slowB');
+            }, 500);
+          }),
+      );
+      expect(await engine.getOrSet({ key: 'b' }, slow, SWR)).toBe('oldB');
+      const loader = vi.fn(async (missing: string[]) => {
+        if (missing.includes('a')) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return new Map(missing.map((k) => [k, `new${k}`]));
+      });
+      let settled: (string | undefined)[] | undefined;
+      void engine
+        .getOrSetMany({}, ['a', 'b', 'c'], loader, { ...SWR, softTimeout: 100 })
+        .then((values) => {
+          settled = values;
+        });
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toEqual(['newa', 'oldB', 'newc']);
+      expect(loader).toHaveBeenCalledTimes(2);
+      expect(loader).toHaveBeenCalledWith(['c']);
+      expect(loader).toHaveBeenCalledWith(['a']);
+      expect(slow).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(await engine.getMany({}, ['a', 'b'], SWR)).toEqual(['newa', 'slowB']);
+    });
+
+    it('getOrSetMany with softTimeout returns as soon as every stale key is refreshed', async () => {
+      /* All stale keys refresh in 30 ms: the call returns then with the new values, and no
+         timer is left; a failed refresh gives the stale values. */
+      const { engine, emitted } = setup();
+      await engine.set({ key: 'a' }, 'oldA', SWR);
+      await engine.set({ key: 'b' }, 'oldB', SWR);
+      vi.setSystemTime(150);
+      const loader = vi.fn(async (missing: string[]) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return new Map(missing.map((k) => [k, `new${k}`]));
+      });
+      const soft = { ...SWR, softTimeout: 100 };
+      let settled: (string | undefined)[] | undefined;
+      void engine.getOrSetMany({}, ['a', 'b'], loader, soft).then((values) => {
+        settled = values;
+      });
+      await vi.advanceTimersByTimeAsync(30);
+      expect(settled).toEqual(['newa', 'newb']);
+      expect(vi.getTimerCount()).toBe(0);
+      vi.setSystemTime(400);
+      emitted.length = 0;
+      const boom = new Error('refresh failed');
+      expect(await engine.getOrSetMany({}, ['a', 'b'], () => Promise.reject(boom), soft)).toEqual([
+        'newa',
+        'newb',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
+    });
+
     it('a failed refresh only emits error{operation: refresh}', async () => {
       /* The background loader rejects: the caller already has the stale value, one refresh
          error is reported and the stale entry stays. */

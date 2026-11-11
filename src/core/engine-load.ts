@@ -53,6 +53,46 @@ type Located = Pick<LoadPlan<unknown>, 'target' | 'ref'>;
 /** A refresh that found the lock held settles its flight without a value. */
 type Outcome<T> = { loaded: true; value: T } | { loaded: false };
 
+/** The value a refresh loaded; `undefined` when it was skipped, failed or loaded nothing. */
+export type Refreshed<T> = { value: T } | undefined;
+
+/** Node runs a longer `setTimeout` delay after 1 ms; the soft wait is capped at this instead. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Settles with `pending`'s value, or with `undefined` once `ms` have passed. `pending` must
+ * never reject. The timer is unref'd and always cleared.
+ */
+export async function settleWithin<T>(pending: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<undefined>((resolve) => {
+    const started = setTimeout(
+      () => {
+        resolve(undefined);
+      },
+      Math.min(ms, MAX_TIMER_MS),
+    );
+    started.unref();
+    timer = started;
+  });
+  try {
+    return await Promise.race([pending, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A flight's outcome as a refresh result; never rejects. */
+function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
+  return flight.then(
+    (outcome) => {
+      const settled = outcome as Outcome<T>;
+      return settled.loaded ? { value: settled.value } : undefined;
+    },
+    () => undefined,
+  );
+}
+
 /**
  * Miss loads and background refreshes. A miss and a refresh of the same key share one flight,
  * keyed `<store>\u0000<fullKey>`.
@@ -85,15 +125,17 @@ export class EngineLoad {
   }
 
   /**
-   * Fire and forget, one flight per key; shutdown does not wait for it. A failed load keeps
-   * the stale value; the flight still rejects, so a miss that joined it gets the loader error.
+   * One flight per key, registered before this returns; shutdown does not wait for it. A failed
+   * load keeps the stale value; the flight still rejects, so a miss that joined it gets the
+   * loader error. The result is the value the flight loaded, or `undefined` when it was skipped
+   * or failed; it never rejects. A key already in flight (a miss, a refresh or a batch) is not
+   * loaded again: its flight is joined. Callers that do not wait ignore the result.
    */
-  refresh<T>(plan: LoadPlan<T>): void {
+  refresh<T>(plan: LoadPlan<T>): Promise<Refreshed<T>> {
     const flightKey = this.flightKey(plan.target, plan.key);
-    if (this.singleFlight.has(flightKey)) return;
-    void this.singleFlight
-      .run<Outcome<T>>(flightKey, () => this.refreshTask(plan))
-      .catch(() => undefined);
+    const current = this.singleFlight.current(flightKey);
+    if (current !== undefined) return refreshed(current);
+    return refreshed(this.singleFlight.run<Outcome<T>>(flightKey, () => this.refreshTask(plan)));
   }
 
   /**
@@ -123,14 +165,28 @@ export class EngineLoad {
   }
 
   /**
-   * Fire and forget: one loader call for the stale items not already in flight, as `refresh`.
-   * A failure is one `refresh` error; the stale values stay.
+   * One loader call for the stale items not already in flight, as `refresh`; the items in
+   * flight join theirs. A failure is one `refresh` error; the stale values stay. Never rejects:
+   * the result holds the keys refreshed with a value (an omitted key with `undefined`, as on a
+   * miss), by plain key. With `softTimeout`, it settles once every item is done or that many ms
+   * have passed, whichever is first, with the keys done by then; the refreshes run on.
    */
-  refreshMany<T>(plan: BatchPlan<T>, items: readonly BatchItem[]): void {
-    const pending = items.filter(
-      (item) => !this.singleFlight.has(this.flightKey(plan.target, item.key)),
+  refreshMany<T>(
+    plan: BatchPlan<T>,
+    items: readonly BatchItem[],
+    softTimeout?: number,
+  ): Promise<ReadonlyMap<string, T>> {
+    const done = new Map<string, T>();
+    // `flights` joins the items in flight and loads the others with one loader call.
+    const flights = this.flights(plan, items, true).map((flight, i) =>
+      refreshed<T>(flight).then((result) => {
+        const item = items[i];
+        if (result !== undefined && item !== undefined) done.set(item.ref.key, result.value);
+      }),
     );
-    for (const flight of this.flights(plan, pending, true)) void flight.catch(() => undefined);
+    const all = Promise.all(flights).then(() => done);
+    if (softTimeout === undefined) return all;
+    return settleWithin(all, softTimeout).then(() => new Map(done));
   }
 
   /**

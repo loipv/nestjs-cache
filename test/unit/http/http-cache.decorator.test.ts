@@ -27,6 +27,11 @@ const bad: [string, unknown][] = [
   ['ttl', { ttl: 0 }],
   ['nullTtl', { nullTtl: -1 }],
   ['staleTtl', { strategy: 'swr', staleTtl: 0 }],
+  ['softTimeout 0', { strategy: 'swr', staleTtl: 10, softTimeout: 0 }],
+  ['softTimeout -1', { strategy: 'swr', staleTtl: 10, softTimeout: -1 }],
+  ['softTimeout NaN', { strategy: 'swr', staleTtl: 10, softTimeout: Number.NaN }],
+  ['softTimeout Infinity', { strategy: 'swr', staleTtl: 10, softTimeout: Infinity }],
+  ["softTimeout '1'", { strategy: 'swr', staleTtl: 10, softTimeout: '1' }],
   ['maxTtl', { ttl: 10, strategy: 'sliding', maxTtl: 5 }],
   ['namespace', { namespace: '__x' }],
   ['lock', { lock: 'yes' }],
@@ -88,6 +93,17 @@ describe('@HttpCache', () => {
     expect(meta.loadOptions.ttl).toBeUndefined();
     const cls = Reflect.getMetadata(HTTP_CACHE_METADATA, C) as HttpCacheMetadata;
     expect(cls.loadOptions.ttl).toBe(1000);
+  });
+
+  it('passes softTimeout through to the load options', () => {
+    /* Spec 2.2: @HttpCache takes softTimeout with swr; the engine gets it per request. */
+    class C {
+      @HttpCache({ ttl: 100, strategy: 'swr', staleTtl: 1_000, softTimeout: 50 })
+      m(): void {}
+    }
+    const meta = Reflect.getMetadata(HTTP_CACHE_METADATA, C.prototype.m) as HttpCacheMetadata;
+    expect(meta.loadOptions).toMatchObject({ strategy: 'swr', staleTtl: 1_000, softTimeout: 50 });
+    expect(meta.strategy?.kind).toBe('swr');
   });
 
   it('registers a cache-metadata entry of kind http', () => {

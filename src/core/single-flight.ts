@@ -6,6 +6,11 @@ export class SingleFlight {
     return this.inFlight.has(key);
   }
 
+  /** The flight in progress for `key`, without joining or starting one. */
+  current(key: string): Promise<unknown> | undefined {
+    return this.inFlight.get(key);
+  }
+
   run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const existing = this.inFlight.get(key);
     if (existing) return existing as Promise<T>;
