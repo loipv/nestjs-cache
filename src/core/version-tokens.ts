@@ -118,6 +118,8 @@ export class VersionTokens {
         // A bump while this read was in flight removed the entry; keep the newer token.
         if (state.inflight.get(k) === promise) {
           state.inflight.delete(k);
+          // An older plain read may have seen the key missing; it must not drop this token.
+          state.reads.delete(k);
           this.remember(state, k, token);
         }
         return token;
@@ -325,10 +327,19 @@ function readTokens(
 ): [string, Promise<string | undefined>][] {
   if (entries.length === 0) return [];
   if (store.getStrict === undefined && store.getMany !== undefined) {
-    const all = store.getMany(entries.map(([, key]) => key));
+    const getMany = store.getMany.bind(store);
+    const all = attempt(() => getMany(entries.map(([, key]) => key)));
     return entries.map(([name], i) => [name, all.then((values) => values[i])]);
   }
-  return entries.map(([name, key]) => [name, readToken(store, key)]);
+  // A synchronous throw becomes this entry's rejection, so the reads already started stay handled.
+  return entries.map(([name, key]) => [name, attempt(() => readToken(store, key))]);
+}
+
+/** `run()`, with a synchronous throw turned into a rejection (by the Promise executor). */
+function attempt<T>(run: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve) => {
+    resolve(run());
+  });
 }
 
 function writeToken(store: CacheStore, key: string, token: string): Promise<void> {

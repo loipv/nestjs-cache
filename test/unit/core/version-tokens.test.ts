@@ -560,4 +560,54 @@ describe('VersionTokens', () => {
     expect(tokens.cached(target, 'tag', 'a')).toBe(latest);
     expect(tokens.bumpCounts('tag').size).toBe(0);
   });
+
+  it('a current create unregisters an older currentMany read that saw the key missing', async () => {
+    /* 0.7-T3: currentMany's read of a cold tag sees the key missing and is held; current then
+       creates and caches the token. The held read finishing later returns its own undefined but
+       must not drop the token current just created. */
+    const { store, tokens } = setup();
+    const gate = deferred<undefined>();
+    let held = true;
+    const getStrict = vi.fn((key: string) => {
+      const seen = store.data.get(key)?.value;
+      if (!held) return Promise.resolve(seen);
+      held = false;
+      return gate.promise.then(() => seen);
+    });
+    const strict = { name: 'default', store: Object.assign(store, { getStrict }) };
+    const older = tokens.currentMany(strict, 'tag', ['a']);
+    const created = await tokens.current(strict, 'tag', 'a');
+    expect(tokens.cached(strict, 'tag', 'a')).toBe(created);
+    gate.resolve(undefined);
+    expect((await older).get('a')).toBeUndefined();
+    expect(tokens.cached(strict, 'tag', 'a')).toBe(created);
+  });
+
+  it('a getStrict that throws synchronously mid-read leaves no unhandled rejection', async () => {
+    /* 0.7-T3: the read of `a` rejects, the read of `b` throws synchronously. currentMany
+       rejects, and the rejection of `a` is handled too (no unhandledRejection event). */
+    vi.useRealTimers();
+    const { store, tokens } = setup();
+    // A plain function: a vi.fn spy would attach its own handler to the returned promise.
+    const called: string[] = [];
+    const getStrict = (key: string): Promise<string | undefined> => {
+      called.push(key);
+      if (key === 'app:__tag__:a') return Promise.reject(new Error('a failed'));
+      throw new Error('b threw');
+    };
+    const strict = { name: 'default', store: Object.assign(store, { getStrict }) };
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', record);
+    try {
+      await expect(tokens.currentMany(strict, 'tag', ['a', 'b'])).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+      expect(called).toEqual(['app:__tag__:a', 'app:__tag__:b']);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
 });
