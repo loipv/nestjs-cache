@@ -69,10 +69,14 @@
     "@nestjs/common": "^11.0.0 || ^12.0.0",
     "@nestjs/core": "^11.0.0 || ^12.0.0",
     "ioredis": "^5.0.0 || ^6.0.0",
+    "redis": "^5.0.0",
     "reflect-metadata": "^0.2.0"
   },
   "peerDependenciesMeta": {
     "ioredis": {
+      "optional": true
+    },
+    "redis": {
       "optional": true
     }
   },
@@ -93,6 +97,7 @@
     "prettier": "^3.9.10",
     "prom-client": "^15.1.3",
     "publint": "^0.3.25",
+    "redis": "^5.12.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "testcontainers": "^12.2.1",

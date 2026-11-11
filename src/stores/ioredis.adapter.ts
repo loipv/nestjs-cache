@@ -1,6 +1,11 @@
 import { CacheConfigError } from '../errors.js';
 import { mgetBySlot, scanNodes, unlinkBySlot } from './cluster-ops.js';
+import { RELEASE_SCRIPT } from './redis-client.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
+import { closeWithTimeout, notifyAll } from './subscriber-support.js';
+
+/** Re-exported for existing imports; the script lives in `redis-client.adapter.ts`. */
+export { RELEASE_SCRIPT };
 
 /**
  * Structural subset of an ioredis client (v5 and v6). Declared by hand so the
@@ -59,13 +64,6 @@ export interface IoredisClusterLike extends IoredisCommands {
 function isClusterClient(client: IoredisLike | IoredisClusterLike): client is IoredisClusterLike {
   return (client as Partial<IoredisClusterLike>).isCluster === true;
 }
-
-/** Deletes the key only when it still holds the caller's token (the `RedisLock` release). */
-export const RELEASE_SCRIPT =
-  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
-
-/** How long `close` waits for QUIT before it drops the subscriber connection. */
-const CLOSE_TIMEOUT_MS = 1_000;
 
 export function ioredisAdapter(client: IoredisLike | IoredisClusterLike): RedisClientAdapter {
   const adapter: RedisClientAdapter = {
@@ -183,20 +181,6 @@ interface Subscription {
   done: Promise<void>;
 }
 
-/** Calls every handler; a throwing handler never reaches the others or the ioredis emitter. */
-function notifyAll<A extends unknown[]>(
-  handlers: readonly ((...args: A) => void)[],
-  ...args: A
-): void {
-  for (const handler of handlers) {
-    try {
-      handler(...args);
-    } catch {
-      // swallowed: this runs inside ioredis event listeners
-    }
-  }
-}
-
 /**
  * The subscriber over a dedicated connection. With `sharded` (a Cluster), it sends SSUBSCRIBE and
  * listens to 'smessage'; otherwise SUBSCRIBE and 'message'. Retries, reconnects and close are
@@ -285,28 +269,14 @@ function createSubscriber(
   };
 }
 
-/** QUIT, or drop the connection if QUIT has not settled after `CLOSE_TIMEOUT_MS`. Never rejects. */
-async function closeConnection(connection: IoredisLike | IoredisClusterLike): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => {
-      resolve(true);
-    }, CLOSE_TIMEOUT_MS);
-  });
-  const quit = new Promise((resolve) => {
-    resolve(connection.quit());
-  }).then(
-    () => false,
-    () => true,
+/** QUIT, or drop the connection if QUIT has not settled in time. Never rejects. */
+function closeConnection(connection: IoredisLike | IoredisClusterLike): Promise<void> {
+  return closeWithTimeout(
+    () => connection.quit(),
+    () => {
+      connection.disconnect?.();
+    },
   );
-  const force = await Promise.race([quit, timedOut]);
-  clearTimeout(timer);
-  if (!force) return;
-  try {
-    connection.disconnect?.();
-  } catch {
-    // close never rejects
-  }
 }
 
 export function isRedisClientAdapter(

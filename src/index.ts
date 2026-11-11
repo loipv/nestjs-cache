@@ -51,6 +51,8 @@ export { redisInvalidationBus } from './stores/redis-invalidation-bus.js';
 export type { RedisStoreOptions } from './stores/redis-invalidation-bus.js';
 export { ioredisAdapter } from './stores/ioredis.adapter.js';
 export type { IoredisClusterLike, IoredisLike } from './stores/ioredis.adapter.js';
+export { nodeRedisAdapter } from './stores/node-redis.adapter.js';
+export type { NodeRedisLike } from './stores/node-redis.adapter.js';
 export type { RedisClientAdapter, RedisSubscriberAdapter } from './stores/redis-client.adapter.js';
 export { TieredStore, tieredStore } from './stores/tiered.store.js';
 export type { TieredStoreOptions } from './stores/tiered.store.js';

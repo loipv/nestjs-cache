@@ -1,4 +1,14 @@
-/** Minimal Redis surface the cache needs; implemented over ioredis by `ioredisAdapter`. */
+/**
+ * Deletes the key only when it still holds the caller's token (the `RedisLock` release). Shared by
+ * the ioredis and node-redis adapters.
+ */
+export const RELEASE_SCRIPT =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+
+/**
+ * Minimal Redis surface the cache needs; implemented over ioredis by `ioredisAdapter` and over
+ * node-redis by `nodeRedisAdapter`.
+ */
 export interface RedisClientAdapter {
   get(key: string): Promise<string | undefined>;
   /** SET key value PX ttlMs */
