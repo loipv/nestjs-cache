@@ -49,6 +49,8 @@ describe('nodeRedisAdapter (integration)', () => {
 
   async function connect(): Promise<NodeRedisClient> {
     const own = createClient({ url: redis.url });
+    // Without an 'error' listener, an error node-redis emits (a dropped socket) would crash the run.
+    own.on('error', () => undefined);
     await own.connect();
     return own;
   }
@@ -195,6 +197,8 @@ describe('nodeRedisAdapter (integration)', () => {
         // node-redis's nodeAddressMap has the shape of ioredis's natMap.
         nodeAddressMap: redisCluster.natMap,
       });
+      // As for the single client.
+      own.on('error', () => undefined);
       await own.connect();
       return own;
     }

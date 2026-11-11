@@ -176,6 +176,8 @@ async function scanNodeRedis(client: NodeRedisClient, pattern: string): Promise<
 async function startNodeRedis(): Promise<StartedAdapter> {
   const redis = await startRedis();
   const client = createClient({ url: redis.url });
+  // Without an 'error' listener, an error node-redis emits (a dropped socket) would crash the run.
+  client.on('error', () => undefined);
   try {
     await client.connect();
   } catch (error) {
@@ -215,6 +217,8 @@ async function startNodeRedisCluster(): Promise<StartedAdapter> {
     // node-redis's nodeAddressMap has the shape of ioredis's natMap.
     nodeAddressMap: handle.natMap,
   });
+  // As above.
+  client.on('error', () => undefined);
   await client.connect();
   const perMaster = <T>(run: (node: NodeRedisClient) => Promise<T>): Promise<T[]> =>
     Promise.all(client.masters.map(async (master) => run(await client.nodeClient(master))));
