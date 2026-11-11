@@ -1,18 +1,19 @@
-import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
-import { jsonSerializer } from '../serializers/json.serializer.js';
-import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { CacheEventMap, CacheEvents, CacheOperation } from './events.js';
-import { EngineKeys, type ResolvedKey, type Target } from './engine-keys.js';
+import {
+  decode,
+  toIntegerMs,
+  writePlan,
+  type EnvelopeContext,
+  type Lookup,
+  type PutOptions,
+} from './engine-envelope.js';
+import { EngineKeys, type ReportError, type ResolvedKey, type Target } from './engine-keys.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
-import {
-  classifyEnvelope,
-  createStrategy,
-  type ExpiryStrategy,
-} from './strategies/expiry-strategy.js';
+import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 export interface KeyRef {
   store?: string;
@@ -20,16 +21,9 @@ export interface KeyRef {
   key: string;
 }
 
-export type PutOptions<T> = {
-  ttl?: number;
-  cacheNull?: boolean;
-  nullTtl?: number;
-  unless?: (result: T) => boolean;
-} & StrategyOptions;
-
+export type { Lookup, PutOptions } from './engine-envelope.js';
+export { EMPTY_STRATEGY, isEmpty, servable, toIntegerMs } from './engine-envelope.js';
 export type { ResolvedKey, Target } from './engine-keys.js';
-
-export type Lookup = { found: true; value: unknown; stale: boolean } | { found: false };
 
 /** One entry of a batch: its plain key (in `ref`, for events) and its resolved keys. */
 export interface BatchItem {
@@ -44,52 +38,28 @@ export interface WriteItem extends BatchItem {
   ttl: number;
 }
 
-/** How a value is written: with a strategy and ttl, or not at all (`empty`: uncached null). */
-type WritePlan = { strategy: ExpiryStrategy; ttl: number } | 'skip' | 'empty';
-
-/** Empty values always use `fixed`: it is the strategy that keeps the `nil` marker. */
-export const EMPTY_STRATEGY = createStrategy();
-
-export function toIntegerMs(ms: number): number {
-  return Math.max(1, Math.round(ms));
-}
-
-/** A stale entry is served only under swr; any other reader has a loader and reloads now. */
-export function servable(
-  lookup: Lookup,
-  strategy: ExpiryStrategy,
-): lookup is Extract<Lookup, { found: true }> {
-  return lookup.found && (!lookup.stale || strategy.kind === 'swr');
-}
-
-function hasOwnVersion(value: unknown): boolean {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.prototype.hasOwnProperty.call(value, 'v')
-  );
-}
-
-export function isEmpty(value: unknown): value is null | undefined {
-  return value === null || value === undefined;
-}
-
 /**
  * Store reads and writes plus the events they emit, shared by the engine facade and the
  * load orchestration. Nothing here validates options; the facade does that first.
  */
 export class EngineIO {
   private readonly resolver: EngineKeys;
+  private readonly envelope: EnvelopeContext;
 
   constructor(
     private readonly options: ResolvedCacheOptions,
     private readonly events: CacheEvents,
     private readonly versions: NamespaceVersions,
   ) {
-    this.resolver = new EngineKeys(options, versions, (store, operation, error) => {
+    const reportError: ReportError = (store, operation, error) => {
       this.reportError(store, operation, error);
-    });
+    };
+    this.resolver = new EngineKeys(options, versions, reportError);
+    this.envelope = {
+      options,
+      reportError,
+      ttlFor: (strategy, ttl) => this.ttlFor(strategy, ttl),
+    };
   }
 
   /** The keys of `ref` in `target`; see `EngineKeys.resolveKey`. */
@@ -151,7 +121,15 @@ export class EngineIO {
       this.reportError(name, 'get', error);
       return { found: false };
     }
-    return this.decode(target, key, raw, strategy, plan.touch, reSet ? touchTtl : undefined);
+    return decode(
+      this.envelope,
+      target,
+      key,
+      raw,
+      strategy,
+      plan.touch,
+      reSet ? touchTtl : undefined,
+    );
   }
 
   /**
@@ -174,7 +152,9 @@ export class EngineIO {
       keys.map((key) => key.full),
     );
     return Promise.all(
-      keys.map((key, i) => this.decode(target, key.full, raws[i], strategy, false, undefined)),
+      keys.map((key, i) =>
+        decode(this.envelope, target, key.full, raws[i], strategy, false, undefined),
+      ),
     );
   }
 
@@ -198,84 +178,6 @@ export class EngineIO {
     return settled.map((result) => (result.status === 'fulfilled' ? result.value : undefined));
   }
 
-  /**
-   * Classifies a raw string read from `key`. `touched` tells whether the read reset the
-   * entry's TTL; `reSetTtl` is set when a touching read had to use `get` and must re-set.
-   */
-  private async decode(
-    { name, store }: Target,
-    key: string,
-    raw: string | undefined,
-    strategy: ExpiryStrategy,
-    touched: boolean,
-    reSetTtl: number | undefined,
-  ): Promise<Lookup> {
-    if (raw === undefined) return { found: false };
-    let envelope: CacheEnvelope;
-    let decoded: { value: unknown } | undefined;
-    try {
-      const candidate: unknown = this.options.serializer.deserialize(raw);
-      decoded = { value: candidate };
-      if (!isEnvelope(candidate)) throw new TypeError('Deserialized value is not a cache envelope');
-      envelope = candidate;
-    } catch (error) {
-      this.reportError(name, 'deserialize', error);
-      // Keys can name entries this library did not write (a lock token, another app's key on
-      // a shared Redis): only an entry that looks like one of our envelopes is deleted.
-      if (this.ownEnvelope(raw, decoded)) {
-        try {
-          await store.delete([key]);
-        } catch {
-          // cleanup is best effort; the failure is already reported
-        }
-      }
-      return { found: false };
-    }
-    const now = Date.now();
-    const state = strategy.classify(envelope, now);
-    if (state === 'expired') {
-      // The store TTL would keep the entry alive when only the strategy expired it (sliding
-      // maxTtl), or when this read just touched it. A non-touching read of an entry past its
-      // own expiresAt is left for the store to drop, as in 0.1: no delete command is added.
-      if (touched || classifyEnvelope(envelope, now) !== 'expired') {
-        try {
-          await store.delete([key]);
-        } catch {
-          // cleanup is best effort; the read is a miss either way
-        }
-      }
-      return { found: false };
-    }
-    // Only a touching reader re-sets, and only a fresh entry: an expired one returned above, so
-    // maxTtl still bounds a sliding entry, and a stale one is reloaded (getOrSet) or only read
-    // (get) by a reader that is not swr. Not atomic.
-    if (reSetTtl !== undefined && state === 'fresh') {
-      try {
-        await store.set(key, raw, reSetTtl);
-      } catch (error) {
-        this.reportError(name, 'set', error);
-      }
-    }
-    return { found: true, value: unwrap(envelope), stale: state === 'stale' };
-  }
-
-  /**
-   * Whether an unreadable entry was written by this library: a corrupted envelope or one of
-   * another version, i.e. an object with an own `v`. `decoded` is what the serializer returned,
-   * or `undefined` when it threw. The built-in JSON serializer validates the envelope itself, so
-   * for it the raw JSON is inspected; a throwing custom serializer never leads to a delete.
-   * Never throws: a value that cannot even be inspected (a revoked Proxy) is not ours.
-   */
-  private ownEnvelope(raw: string, decoded: { value: unknown } | undefined): boolean {
-    try {
-      if (decoded !== undefined) return hasOwnVersion(decoded.value);
-      if (this.options.serializer !== jsonSerializer) return false;
-      return hasOwnVersion(JSON.parse(raw));
-    } catch {
-      return false;
-    }
-  }
-
   /** Applies the `unless`/`cacheNull` policy, then writes with the matching strategy. */
   async store<T>(
     target: Target,
@@ -286,7 +188,7 @@ export class EngineIO {
     strategy: ExpiryStrategy,
     deleteWhenEmpty: boolean,
   ): Promise<void> {
-    const plan = this.writePlan(target, value, options, strategy);
+    const plan = writePlan(this.envelope, target, value, options, strategy);
     if (plan === 'skip') return;
     if (plan === 'empty') {
       // Through `delete`, so a versioned namespace reads its token fresh, as any delete does.
@@ -307,31 +209,10 @@ export class EngineIO {
   ): Promise<void> {
     const writes: WriteItem[] = [];
     for (const item of items) {
-      const plan = this.writePlan(target, item.value, options, strategy);
+      const plan = writePlan(this.envelope, target, item.value, options, strategy);
       if (typeof plan === 'object') writes.push({ ...item, ...plan });
     }
     await this.writeMany(target, writes);
-  }
-
-  /** The `unless`/`cacheNull` policy of a value; a throwing `unless` is a `set` error. */
-  private writePlan<T>(
-    target: Target,
-    value: T,
-    options: PutOptions<T>,
-    strategy: ExpiryStrategy,
-  ): WritePlan {
-    try {
-      if (options.unless?.(value) === true) return 'skip';
-    } catch (error) {
-      this.reportError(target.name, 'set', error);
-      return 'skip';
-    }
-    if (isEmpty(value)) {
-      if (!(options.cacheNull ?? this.options.defaults.cacheNull)) return 'empty';
-      const nullTtl = toIntegerMs(options.nullTtl ?? this.options.defaults.nullTtl);
-      return { strategy: EMPTY_STRATEGY, ttl: nullTtl };
-    }
-    return { strategy, ttl: this.ttlFor(strategy, options.ttl ?? this.options.defaults.ttl) };
   }
 
   /** `ttl` is an integer >= 1, already jittered when the strategy asks for it. */
