@@ -86,13 +86,20 @@ export function assertNamespace(
 
 /**
  * Validates `staleTtl`/`maxTtl`/`softTimeout` and the `maxTtl >= ttl` relation at definition
- * time.
+ * time. `noSoftTimeout` names a decorator that does not load (`@CachePut`): any defined
+ * `softTimeout` is then rejected.
  */
 export function assertStrategyTtls(
   target: object,
   method: string | symbol,
   options: { ttl?: number; staleTtl?: number; maxTtl?: number; softTimeout?: number } | undefined,
+  noSoftTimeout?: string,
 ): void {
+  if (noSoftTimeout !== undefined && options?.softTimeout !== undefined) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: ${noSoftTimeout} does not support softTimeout`,
+    );
+  }
   assertPositiveFinite(target, method, 'staleTtl', options?.staleTtl);
   assertPositiveFinite(target, method, 'maxTtl', options?.maxTtl);
   assertPositiveFinite(target, method, 'softTimeout', options?.softTimeout);

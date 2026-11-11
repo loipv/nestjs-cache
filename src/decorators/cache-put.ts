@@ -26,7 +26,7 @@ export function CachePut<
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
-    assertStrategyTtls(target, propertyKey, options);
+    assertStrategyTtls(target, propertyKey, options, '@CachePut');
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const tagsOf = compileTags(target, propertyKey, options?.tags);
     const condition = options?.condition as ((...args: unknown[]) => boolean) | undefined;

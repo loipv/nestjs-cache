@@ -14,6 +14,7 @@ export type {
   CacheEvictOptions,
   CachePutOptions,
   KeySpec,
+  LoadStrategyOptions,
   StrategyOptions,
   TagSpec,
 } from './decorators/options.js';

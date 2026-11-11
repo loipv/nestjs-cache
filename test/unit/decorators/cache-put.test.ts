@@ -402,3 +402,40 @@ describe('@CachePut tags', () => {
     }).toThrow(/^S\.a: /);
   });
 });
+
+describe('@CachePut softTimeout', () => {
+  it.each([50, 0, '1'])('rejects softTimeout = %s at class definition (B-07)', (value) => {
+    /* 0.9-T6 B-07: @CachePut never loads, so a softTimeout had no effect on it. Any defined
+       value, valid or not, is now a CacheConfigError when the decorator runs, naming the method. */
+    const options = { strategy: 'swr', staleTtl: 300, softTimeout: value } as unknown as {
+      strategy: 'swr';
+      staleTtl: number;
+    };
+    const define = (): unknown => {
+      class S {
+        @CachePut(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    };
+    expect(define).toThrow(CacheConfigError);
+    expect(define).toThrow('S.a: @CachePut does not support softTimeout');
+  });
+
+  it('accepts softTimeout: undefined (B-07)', () => {
+    /* 0.9-T6 B-07: an undefined option is the same as an absent one. */
+    const options = { strategy: 'swr', staleTtl: 300, softTimeout: undefined } as unknown as {
+      strategy: 'swr';
+      staleTtl: number;
+    };
+    expect(() => {
+      class S {
+        @CachePut(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).not.toThrow();
+  });
+});

@@ -1,4 +1,4 @@
-import type { StrategyOptions } from '../decorators/options.js';
+import type { LoadStrategyOptions, StrategyOptions } from '../decorators/options.js';
 import type {
   BatchLoadOptions,
   BatchScope,
@@ -22,16 +22,22 @@ export interface KeyOptions {
  * invalid list (an empty tag, more than 32 tags, a throwing function) is an `error` event with
  * operation `'tag'`: the entry is not written and the call still resolves.
  */
-export type WriteOptions<T = unknown> = KeyOptions & {
-  ttl?: number;
-  tags?: readonly string[] | ((value: T) => readonly string[]);
-} & StrategyOptions;
+export type WriteOptions<T = unknown> = KeyOptions & Writes<T> & StrategyOptions;
 
 /** The options of the batch writes: a tag function also gets each entry's key. */
-export type WriteManyOptions<T = unknown> = KeyOptions & {
+export type WriteManyOptions<T = unknown> = KeyOptions & WritesMany<T> & StrategyOptions;
+
+/** `ttl` and `tags` of a single-key write; see `WriteOptions`. */
+interface Writes<T> {
+  ttl?: number;
+  tags?: readonly string[] | ((value: T) => readonly string[]);
+}
+
+/** `ttl` and `tags` of a batch write; see `WriteManyOptions`. */
+interface WritesMany<T> {
   ttl?: number;
   tags?: readonly string[] | ((value: T, key: string) => readonly string[]);
-} & StrategyOptions;
+}
 
 interface LoadPolicy<T> {
   cacheNull?: boolean;
@@ -40,10 +46,18 @@ interface LoadPolicy<T> {
   lock?: boolean;
 }
 
-export type GetOrSetOptions<T> = WriteOptions<T> & LoadPolicy<T>;
+/**
+ * `getOrSet` options: the `WriteOptions` fields with `LoadStrategyOptions` (so `softTimeout` is
+ * accepted), plus the load policy. It is not built on `WriteOptions`, whose
+ * `softTimeout?: never` would make the intersection reject `softTimeout`.
+ */
+export type GetOrSetOptions<T> = KeyOptions & Writes<T> & LoadStrategyOptions & LoadPolicy<T>;
 
 /** `getOrSetMany` options; `lock: true` is not supported. */
-export type GetOrSetManyOptions<T> = WriteManyOptions<T> & LoadPolicy<T>;
+export type GetOrSetManyOptions<T> = KeyOptions &
+  WritesMany<T> &
+  LoadStrategyOptions &
+  LoadPolicy<T>;
 
 function refOf(
   key: string,
@@ -63,14 +77,14 @@ function scopeOf(options: KeyOptions): BatchScope {
 }
 
 /** Only the defined options are forwarded. */
-function writeOptionsOf<T>(options: WriteOptions<T>): SetOptions<T> {
+function writeOptionsOf<T>(options: Writes<T> & LoadStrategyOptions): SetOptions<T> {
   const write: SetOptions<T> = strategyOptionsOf(options);
   if (options.ttl !== undefined) write.ttl = options.ttl;
   if (options.tags !== undefined) write.tags = options.tags;
   return write;
 }
 
-function writeManyOptionsOf<T>(options: WriteManyOptions<T>): BatchSetOptions<T> {
+function writeManyOptionsOf<T>(options: WritesMany<T> & LoadStrategyOptions): BatchSetOptions<T> {
   const write: BatchSetOptions<T> = strategyOptionsOf(options);
   if (options.ttl !== undefined) write.ttl = options.ttl;
   if (options.tags !== undefined) write.tags = options.tags;

@@ -16,7 +16,7 @@ import {
   describeMethod,
   type CacheMetadataEntry,
 } from './metadata.js';
-import type { KeySpec, StrategyOptions } from './options.js';
+import type { KeySpec, LoadStrategyOptions } from './options.js';
 
 export interface MethodCall {
   args: unknown[];
@@ -76,7 +76,7 @@ export function assertInstanceMethod(target: object, propertyKey: string | symbo
 
 /** Engine write options from decorator options, carrying only the fields that are defined. */
 export function putOptionsOf(
-  options: (StrategyOptions & WritePolicy) | undefined,
+  options: (LoadStrategyOptions & WritePolicy) | undefined,
 ): PutOptions<unknown> {
   if (options === undefined) return {};
   const put: PutOptions<unknown> = strategyOptionsOf(options);
@@ -92,7 +92,7 @@ export function putOptionsOf(
  * `createStrategy` rejects yield `undefined`, so the engine still rejects each call with its
  * usual message, as before.
  */
-export function presetStrategy(options: StrategyOptions): ExpiryStrategy | undefined {
+export function presetStrategy(options: LoadStrategyOptions): ExpiryStrategy | undefined {
   try {
     return createStrategy(options);
   } catch {

@@ -12,7 +12,7 @@ import {
   describeMethod,
 } from '../decorators/metadata.js';
 import { presetStrategy, putOptionsOf } from '../decorators/method-wrapper.js';
-import type { StrategyOptions } from '../decorators/options.js';
+import type { LoadStrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import { HttpCacheInterceptor } from './http-cache.interceptor.js';
 
@@ -32,7 +32,7 @@ export interface HttpCacheRequest {
   headers: Readonly<Record<string, string | readonly string[] | undefined>>;
 }
 
-export type HttpCacheOptions = StrategyOptions & {
+export type HttpCacheOptions = LoadStrategyOptions & {
   ttl?: number;
   /** Defaults to 'http'. */
   namespace?: string;

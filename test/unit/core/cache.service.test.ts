@@ -43,6 +43,25 @@ describe('CacheService', () => {
     expect(store.data.get('k')?.ttlMs).toBe(9);
   });
 
+  it.each([
+    ['get', (s: CacheService, o: object) => s.get('k', o as never)],
+    ['getMany', (s: CacheService, o: object) => s.getMany(['k'], o as never)],
+    ['set', (s: CacheService, o: object) => s.set('k', 1, o as never)],
+    ['setMany', (s: CacheService, o: object) => s.setMany([['k', 1]], o as never)],
+  ] as const)('%s rejects softTimeout before any store call (B-07)', async (name, call) => {
+    /* 0.9-T6 B-07: only getOrSet and getOrSetMany load, so only they support softTimeout. The
+       other calls reject it with CacheConfigError at call time, where the strategy options are
+       validated, and the store is not touched. */
+    const { service, store } = setup();
+    const options = { strategy: 'swr', staleTtl: 300, softTimeout: 50 };
+    await expect(call(service, options)).rejects.toThrow(CacheConfigError);
+    await expect(call(service, options)).rejects.toThrow(
+      `Invalid softTimeout: 50. ${name} does not support softTimeout; only getOrSet and getOrSetMany do.`,
+    );
+    expect(store.calls).toEqual([]);
+    await expect(call(service, { ...options, softTimeout: undefined })).resolves.not.toThrow();
+  });
+
   it('rejects an unknown store with CacheConfigError', async () => {
     const { service } = setup();
     await expect(service.get('k', { store: 'nope' })).rejects.toThrow(CacheConfigError);

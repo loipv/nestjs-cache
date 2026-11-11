@@ -8,10 +8,22 @@ export type TagSpec<A extends unknown[], R> =
 /** The tags `@CacheEvict` invalidates: templates over the arguments, or a callback of them. */
 type EvictTagSpec<A extends unknown[]> = readonly string[] | ((...args: A) => readonly string[]);
 /**
- * `softTimeout` (swr only): on a stale hit, wait up to this many ms for the background refresh
- * and return its value if it lands in time, else the stale one.
+ * The expiry strategy of a call that does not load (`@CachePut`, `set`, `setMany`, `get`,
+ * `getMany`): `'fixed'` (the default), `'swr'` with `staleTtl` (ms an entry is served stale
+ * after `ttl`), or `'sliding'` with an optional `maxTtl` cap (ms). `softTimeout` is not
+ * supported here; see `LoadStrategyOptions`.
  */
 export type StrategyOptions =
+  | { strategy?: 'fixed'; staleTtl?: never; maxTtl?: never; softTimeout?: never }
+  | { strategy: 'swr'; staleTtl: number; maxTtl?: never; softTimeout?: never }
+  | { strategy: 'sliding'; maxTtl?: number; staleTtl?: never; softTimeout?: never };
+/**
+ * The expiry strategy of a call that loads (`@Cacheable`, `@HttpCache`, `getOrSet`,
+ * `getOrSetMany`): `StrategyOptions` plus `softTimeout` (swr only). On a stale hit, wait up to
+ * `softTimeout` ms for the background refresh and return its value if it lands in time, else
+ * the stale one.
+ */
+export type LoadStrategyOptions =
   | { strategy?: 'fixed'; staleTtl?: never; maxTtl?: never; softTimeout?: never }
   | { strategy: 'swr'; staleTtl: number; maxTtl?: never; softTimeout?: number }
   | { strategy: 'sliding'; maxTtl?: number; staleTtl?: never; softTimeout?: never };
@@ -32,7 +44,7 @@ export type CacheableOptions<
   R,
   G extends unknown[] = never[],
 > = TargetOptions &
-  StrategyOptions &
+  LoadStrategyOptions &
   WritePolicy<C, R> & { key?: KeySpec<K>; lock?: boolean; tags?: TagSpec<G, R> };
 export type CachePutOptions<
   K extends unknown[],

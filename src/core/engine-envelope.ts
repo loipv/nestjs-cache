@@ -1,4 +1,4 @@
-import type { StrategyOptions } from '../decorators/options.js';
+import type { LoadStrategyOptions } from '../decorators/options.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { OWN_ENVELOPE } from '../serializers/compressed.serializer.js';
 import { jsonSerializer } from '../serializers/json.serializer.js';
@@ -27,10 +27,12 @@ export interface WritePolicy<T> {
 }
 
 /** `tags` per D2: an array is known before the load, a function gets the value. */
-export type PutOptions<T> = WritePolicy<T> & { tags?: TagOption<T> } & StrategyOptions;
+export type PutOptions<T> = WritePolicy<T> & { tags?: TagOption<T> } & LoadStrategyOptions;
 
 /** `PutOptions` of a batch load: a tag function also gets each entry's key (D2). */
-export type BatchPutOptions<T> = WritePolicy<T> & { tags?: BatchTagOption<T> } & StrategyOptions;
+export type BatchPutOptions<T> = WritePolicy<T> & {
+  tags?: BatchTagOption<T>;
+} & LoadStrategyOptions;
 
 /**
  * A read entry. `tags` is set only by a read that defers the tag check (`EngineIO.readMany`):

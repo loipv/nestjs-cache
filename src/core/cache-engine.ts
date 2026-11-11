@@ -1,4 +1,4 @@
-import type { StrategyOptions } from '../decorators/options.js';
+import type { LoadStrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import {
@@ -35,13 +35,13 @@ export type LoadOptions<T> = PutOptions<T> & { lock?: boolean };
 /** `getOrSetMany` options: batch tags (D2); `lock: true` is rejected. */
 export type BatchLoadOptions<T> = BatchPutOptions<T> & { lock?: boolean };
 
-export type SetOptions<T = unknown> = { ttl?: number; tags?: TagOption<T> } & StrategyOptions;
+export type SetOptions<T = unknown> = { ttl?: number; tags?: TagOption<T> } & LoadStrategyOptions;
 
 /** `setMany` options: a tag function also gets each entry's key (D2). */
 export type BatchSetOptions<T = unknown> = {
   ttl?: number;
   tags?: BatchTagOption<T>;
-} & StrategyOptions;
+} & LoadStrategyOptions;
 
 function checkDuration(option: string, value: number | undefined): void {
   if (value === undefined) return;
@@ -87,13 +87,21 @@ function checkBoolean(option: string, value: boolean | undefined): void {
  * Validates the strategy options and builds the strategy. `ttl` is the effective ttl the
  * entry is written with; it is omitted by `get`, which writes nothing. `preset` is a strategy
  * already built from these same options; every check still runs, in the same order.
+ * `noSoftTimeout` names a call that does not load (`get`, `set`, ...): any defined
+ * `softTimeout` is then rejected.
  */
 function strategyOf(
-  options: StrategyOptions,
+  options: LoadStrategyOptions,
   ttl: number | undefined,
   preset?: ExpiryStrategy,
+  noSoftTimeout?: string,
 ): ExpiryStrategy {
   const { staleTtl, maxTtl } = options;
+  if (noSoftTimeout !== undefined && options.softTimeout !== undefined) {
+    throw new CacheConfigError(
+      `Invalid softTimeout: ${String(options.softTimeout)}. ${noSoftTimeout} does not support softTimeout; only getOrSet and getOrSetMany do.`,
+    );
+  }
   checkDuration('staleTtl', staleTtl);
   checkDuration('maxTtl', maxTtl);
   checkDuration('softTimeout', options.softTimeout);
@@ -160,10 +168,10 @@ export class CacheEngine {
   }
 
   /** Never refreshes; `options` selects the read command and the classification only. */
-  async get<T>(ref: KeyRef, options: StrategyOptions = {}): Promise<T | undefined> {
+  async get<T>(ref: KeyRef, options: LoadStrategyOptions = {}): Promise<T | undefined> {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
-    const strategy = strategyOf(options, undefined);
+    const strategy = strategyOf(options, undefined, undefined, 'get');
     if (this.emptyKey(target, ref.key)) return undefined;
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
@@ -230,7 +238,7 @@ export class CacheEngine {
     this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
-    const requested = strategyOf(options, ttl);
+    const requested = strategyOf(options, ttl, undefined, 'set');
     if (this.emptyKey(target, ref.key)) return;
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
@@ -286,11 +294,11 @@ export class CacheEngine {
   async getMany<T>(
     scope: BatchScope,
     keys: readonly string[],
-    options: StrategyOptions = {},
+    options: LoadStrategyOptions = {},
   ): Promise<(T | undefined)[]> {
     const target = this.io.resolve(scope.store);
     this.checkNamespace(scope.namespace);
-    const strategy = strategyOf(options, undefined);
+    const strategy = strategyOf(options, undefined, undefined, 'getMany');
     checkKeys(keys);
     return this.batch.getMany(target, scope, keys, strategy);
   }
@@ -308,7 +316,7 @@ export class CacheEngine {
     this.checkNamespace(scope.namespace);
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
-    const requested = strategyOf(options, ttl);
+    const requested = strategyOf(options, ttl, undefined, 'setMany');
     checkEntries(entries);
     await this.batch.setMany(target, scope, entries, requested, ttl, options.tags);
   }
