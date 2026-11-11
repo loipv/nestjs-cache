@@ -154,6 +154,8 @@ export async function decode(
     // 3.3, T4-C); an `unconfirmed` miss may rest on this instance's out-of-date tokens.
     if (check === 'uncertain') return { found: false, uncertain: true };
     if (check !== 'valid') {
+      // Not compare-and-delete: an entry rewritten since this read is removed too. That costs
+      // one extra miss, never stale data.
       if (check === 'invalid' && extended) await deleteInvalid(ctx, { name, store }, [key]);
       return { found: false };
     }

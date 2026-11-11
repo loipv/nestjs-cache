@@ -1,6 +1,7 @@
 import type { ResolvedDefaults } from '../module/cache.options.js';
 import type { LockProvider } from '../stores/cache-store.interface.js';
 import {
+  isEmpty,
   servable,
   toIntegerMs,
   type BatchItem,
@@ -50,10 +51,19 @@ export interface BatchPlan<T> {
 
 type Located = Pick<LoadPlan<unknown>, 'target' | 'ref'>;
 
-/** A refresh that found the lock held settles its flight without a value. */
-type Outcome<T> = { loaded: true; value: T } | { loaded: false };
+/**
+ * A refresh that found the lock held settles its flight without a value. `unwritten` marks an
+ * empty value (`undefined`/`null`, or an omitted batch key) that was not stored, because
+ * `cacheNull` was off or the load could not write.
+ */
+type Outcome<T> = { loaded: true; value: T; unwritten?: true } | { loaded: false };
 
-/** The value a refresh loaded; `undefined` when it was skipped, failed or loaded nothing. */
+/**
+ * The value a refresh wrote; `undefined` when it was skipped or failed, or loaded an empty value
+ * it did not write (F-2): the store then still holds the stale entry, so the caller gets that,
+ * as when the refresh misses the softTimeout window. An empty value written by `cacheNull` is
+ * `{ value }`.
+ */
 export type Refreshed<T> = { value: T } | undefined;
 
 /** Node runs a longer `setTimeout` delay after 1 ms; the soft wait is capped at this instead. */
@@ -87,7 +97,7 @@ function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
   return flight.then(
     (outcome) => {
       const settled = outcome as Outcome<T>;
-      return settled.loaded ? { value: settled.value } : undefined;
+      return settled.loaded && settled.unwritten !== true ? { value: settled.value } : undefined;
     },
     () => undefined,
   );
@@ -100,13 +110,15 @@ function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
 export class EngineLoad {
   private readonly singleFlight = new SingleFlight();
   private readonly lockSettings: LockSettings;
+  private readonly cacheNull: boolean;
 
   constructor(
     private readonly io: EngineIO,
-    lockDefaults: ResolvedDefaults['lock'],
+    defaults: Pick<ResolvedDefaults, 'lock' | 'cacheNull'>,
   ) {
-    const { ttl, waitTimeout, retryDelay } = lockDefaults;
+    const { ttl, waitTimeout, retryDelay } = defaults.lock;
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
+    this.cacheNull = defaults.cacheNull;
   }
 
   /**
@@ -127,9 +139,10 @@ export class EngineLoad {
   /**
    * One flight per key, registered before this returns; shutdown does not wait for it. A failed
    * load keeps the stale value; the flight still rejects, so a miss that joined it gets the
-   * loader error. The result is the value the flight loaded, or `undefined` when it was skipped
-   * or failed; it never rejects. A key already in flight (a miss, a refresh or a batch) is not
-   * loaded again: its flight is joined. Callers that do not wait ignore the result.
+   * loader error. The result is the value the flight wrote, or `undefined` when it was skipped,
+   * failed or loaded an empty value it did not write (`Refreshed`); it never rejects. A key
+   * already in flight (a miss, a refresh or a batch) is not loaded again: its flight is joined.
+   * Callers that do not wait ignore the result.
    */
   refresh<T>(plan: LoadPlan<T>): Promise<Refreshed<T>> {
     const flightKey = this.flightKey(plan.target, plan.key);
@@ -167,9 +180,10 @@ export class EngineLoad {
   /**
    * One loader call for the stale items not already in flight, as `refresh`; the items in
    * flight join theirs. A failure is one `refresh` error; the stale values stay. Never rejects:
-   * the result holds the keys refreshed with a value (an omitted key with `undefined`, as on a
-   * miss), by plain key. With `softTimeout`, it settles once every item is done or that many ms
-   * have passed, whichever is first, with the keys done by then; the refreshes run on.
+   * the result holds the keys whose refreshed value was written, by plain key (an omitted key
+   * only with `cacheNull`, as `undefined`; otherwise it keeps its stale value, `Refreshed`).
+   * With `softTimeout`, it settles once every item is done or that many ms have passed,
+   * whichever is first, with the keys done by then; the refreshes run on.
    */
   refreshMany<T>(
     plan: BatchPlan<T>,
@@ -205,7 +219,8 @@ export class EngineLoad {
     return items.map((item) =>
       this.singleFlight.run<Outcome<unknown>>(this.flightKey(plan.target, item.key), async () => {
         loaded ??= this.loadMany(plan, own, refreshing);
-        return { loaded: true, value: (await loaded).get(item.ref.key) };
+        const value = (await loaded).get(item.ref.key);
+        return this.outcome(value, item.noWrite !== true, plan.options.cacheNull);
       }),
     );
   }
@@ -275,7 +290,29 @@ export class EngineLoad {
       plan.lock === undefined
         ? await this.loadAndStore(plan, false)
         : await this.loadLocked(plan, plan.lock);
+    return this.planOutcome(plan, value);
+  }
+
+  /**
+   * A loaded value as a flight outcome: marked `unwritten` when it is empty and was not stored
+   * (`cacheNull` off, or a load that does not write), as `writePlan` decides.
+   */
+  private outcome<T>(
+    value: T,
+    writes: boolean,
+    cacheNull: boolean | undefined,
+  ): { loaded: true; value: T; unwritten?: true } {
+    if (isEmpty(value) && !(writes && (cacheNull ?? this.cacheNull))) {
+      return { loaded: true, value, unwritten: true };
+    }
     return { loaded: true, value };
+  }
+
+  private planOutcome<T>(
+    plan: LoadPlan<T>,
+    value: T,
+  ): { loaded: true; value: T; unwritten?: true } {
+    return this.outcome(value, plan.noWrite !== true, plan.options.cacheNull);
   }
 
   /** A value found while waiting for another holder is served with a single `hit`. */
@@ -301,7 +338,7 @@ export class EngineLoad {
 
   private async refreshTask<T>(plan: LoadPlan<T>): Promise<Outcome<T>> {
     if (plan.lock === undefined) {
-      return { loaded: true, value: await this.loadAndStore(plan, true) };
+      return this.planOutcome(plan, await this.loadAndStore(plan, true));
     }
     let outcome: Outcome<T> = { loaded: false };
     await refreshWithLock(
@@ -309,7 +346,7 @@ export class EngineLoad {
       plan.key.lock,
       this.lockSettings.ttl,
       async () => {
-        outcome = { loaded: true, value: await this.loadAndStore(plan, true) };
+        outcome = this.planOutcome(plan, await this.loadAndStore(plan, true));
       },
       this.hooks(plan),
     );

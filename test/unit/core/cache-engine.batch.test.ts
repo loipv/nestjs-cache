@@ -735,6 +735,35 @@ describe('CacheEngine batch API', () => {
       expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
     });
 
+    it('getOrSetMany with softTimeout: a key the refresh did not write keeps its stale value (F-2)', async () => {
+      /* softTimeout 50: the loader returns 'b' and omits 'a' within the window. 'a' was not
+         written, so it gets its stale value (the store still holds it); 'b' gets the new one. */
+      const { engine } = setup();
+      await engine.set({ key: 'a' }, 'oldA', SWR);
+      await engine.set({ key: 'b' }, 'oldB', SWR);
+      vi.setSystemTime(150);
+      const loader = vi.fn(async () => new Map([['b', 'newb']]));
+      expect(
+        await engine.getOrSetMany({}, ['a', 'b'], loader, { ...SWR, softTimeout: 50 }),
+      ).toEqual(['oldA', 'newb']);
+      expect(loader).toHaveBeenCalledOnce();
+      expect(await engine.getMany({}, ['a', 'b'], SWR)).toEqual(['oldA', 'newb']);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('getOrSetMany with softTimeout and cacheNull: a written empty value is returned (F-2)', async () => {
+      /* With cacheNull the refreshed null for 'a' and the omitted 'b' are written, so the
+         caller gets them instead of the stale values. */
+      const { engine } = setup();
+      await engine.set({ key: 'a' }, 'oldA', SWR);
+      await engine.set({ key: 'b' }, 'oldB', SWR);
+      vi.setSystemTime(150);
+      const loader = vi.fn(async () => new Map<string, string | null>([['a', null]]));
+      const soft = { ...SWR, softTimeout: 50, cacheNull: true };
+      expect(await engine.getOrSetMany({}, ['a', 'b'], loader, soft)).toEqual([null, undefined]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('a failed refresh only emits error{operation: refresh}', async () => {
       /* The background loader rejects: the caller already has the stale value, one refresh
          error is reported and the stale entry stays. */

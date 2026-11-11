@@ -481,6 +481,61 @@ describe('CacheEngine swr softTimeout', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each([undefined, null])(
+    'a refresh that loads %s without cacheNull returns the stale value (F-2)',
+    async (empty) => {
+      /* The refresh resolves an empty value within softTimeout 50, but it is not written: the
+         store keeps 'old', so the caller gets 'old', as if the refresh had missed the window. */
+      const { engine } = makeEngine();
+      await engine.set({ key: 'k' }, 'old', SWR);
+      vi.setSystemTime(150);
+      const loader = vi.fn(() => delayed(10, empty));
+      const state = track(
+        engine.getOrSet<string | null | undefined>({ key: 'k' }, loader, {
+          ...SWR,
+          softTimeout: 50,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(state).toEqual({ settled: true, value: 'old' });
+      expect(loader).toHaveBeenCalledOnce();
+      expect(await engine.get({ key: 'k' })).toBe('old');
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('a refresh that writes null with cacheNull returns null (F-2)', async () => {
+    /* With cacheNull the refreshed null replaces the stale entry, so the caller gets null. */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', SWR);
+    vi.setSystemTime(150);
+    const loader = vi.fn(() => delayed(10, null));
+    const state = track(
+      engine.getOrSet<string | null>({ key: 'k' }, loader, {
+        ...SWR,
+        softTimeout: 50,
+        cacheNull: true,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(state).toEqual({ settled: true, value: null });
+    expect(await engine.get({ key: 'k' })).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a refresh that writes null through defaults.cacheNull returns null (F-2)', async () => {
+    /* cacheNull from the module defaults counts as written too: the caller gets null. */
+    const { engine } = makeEngine({ defaults: { cacheNull: true } });
+    await engine.set({ key: 'k' }, 'old', SWR);
+    vi.setSystemTime(150);
+    const value = await engine.getOrSet<string | null>({ key: 'k' }, async () => null, {
+      ...SWR,
+      softTimeout: 50,
+    });
+    expect(value).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('the softTimeout timer is always cleared', async () => {
     /* In time, timed out, failed and skipped: no timer is left behind once the call and its
        refresh are done, and the timer is unref'd. */

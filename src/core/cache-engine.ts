@@ -142,7 +142,7 @@ export class CacheEngine {
       tokens,
     );
     this.io = new EngineIO(options, events, versions, tokens);
-    this.load = new EngineLoad(this.io, options.defaults.lock);
+    this.load = new EngineLoad(this.io, options.defaults);
     this.batch = new EngineBatch(options, this.io, this.load);
   }
 
@@ -211,6 +211,8 @@ export class CacheEngine {
     if (servable(cached, strategy)) {
       this.io.hit(target.name, ref, cached.stale);
       if (!cached.stale) return cached.value as T;
+      // A refresh already in flight is joined, even one that started before this stale entry
+      // was written: its result is what the store will hold, so it is the value to wait for.
       const refreshing = this.load.refresh(plan);
       // Without softTimeout nothing is awaited here, as in 0.7.
       const { softTimeout } = options;

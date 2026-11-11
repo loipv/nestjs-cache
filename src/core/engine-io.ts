@@ -211,6 +211,8 @@ export class EngineIO {
           : { found: false, uncertain: true };
       });
       if (extended.length === 0) return checked;
+      // Not compare-and-delete: an entry rewritten since this read is removed too (one extra
+      // miss, never stale data).
       return deleteInvalid(this.envelope, target, extended).then(() => checked);
     });
   }
