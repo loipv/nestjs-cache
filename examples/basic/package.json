@@ -1,0 +1,25 @@
+{
+  "name": "nestjs-cache-example-basic",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Example app for @loipv/nestjs-cache. Run `npm run example:check` in the repository root: it packs the library and installs the tarball here, which is why the library is not listed below.",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/main.js",
+    "smoke": "node dist/smoke.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/platform-express": "^12.4.2",
+    "@prometheus-io/client": "^0.16.1",
+    "ioredis": "^6.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3"
+  }
+}

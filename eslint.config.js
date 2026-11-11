@@ -1,7 +1,7 @@
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'test/consumers', '.superpowers'] },
+  { ignores: ['dist', 'coverage', 'test/consumers', 'examples', '.superpowers'] },
   {
     files: ['**/*.ts'],
     extends: [tseslint.configs.strictTypeChecked],

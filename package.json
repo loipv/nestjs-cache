@@ -75,6 +75,7 @@
     "check:pack": "node scripts/check-pack.mjs",
     "check:pkg": "publint && attw --pack .",
     "check:workflows": "node scripts/check-workflows.mjs",
+    "example:check": "node scripts/example-check.mjs",
     "docs:check": "node scripts/check-docs.mjs",
     "docs:coverage": "node scripts/check-docs-coverage.mjs",
     "changeset": "changeset",

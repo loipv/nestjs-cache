@@ -4,3 +4,6 @@ coverage/
 *.tgz
 test/consumers/*/node_modules/
 test/consumers/*/package-lock.json
+examples/*/node_modules/
+examples/*/package-lock.json
+examples/*/dist/

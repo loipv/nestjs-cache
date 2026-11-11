@@ -35,6 +35,7 @@ jobs:
       - run: npm run check:pack
       - run: npm run check:pkg
       - run: npm run check:workflows
+      - run: npm run example:check
 
   unit:
     runs-on: ubuntu-latest
