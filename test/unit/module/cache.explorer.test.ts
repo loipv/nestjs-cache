@@ -5,6 +5,7 @@ import { Logger, Module } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheEvict } from '../../../src/decorators/cache-evict.js';
 import { CachePut } from '../../../src/decorators/cache-put.js';
+import { HttpCache } from '../../../src/http/http-cache.decorator.js';
 import { Cacheable } from '../../../src/decorators/cacheable.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
 import { CacheConfigError } from '../../../src/errors.js';
@@ -31,6 +32,22 @@ describe('CacheExplorer', () => {
     await expect(ref.init()).rejects.toThrow(
       'Unknown cache store "nope" in Bad.find (@Cacheable). Configured stores: default',
     );
+  });
+
+  it('rejects an unknown store named by @HttpCache', async () => {
+    /* Review Focus 2: unit level */
+    @Controller()
+    class Bad {
+      @HttpCache({ store: 'nope' })
+      find(): number {
+        return 1;
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      controllers: [Bad],
+    }).compile();
+    await expect(ref.init()).rejects.toThrow(/@HttpCache.*nope|nope.*@HttpCache/);
   });
 
   it('names the decorator kind for @CacheEvict and @CachePut', async () => {

@@ -14,6 +14,7 @@ const KIND_LABELS: Record<CacheMetadataEntry['kind'], string> = {
   cacheable: '@Cacheable',
   put: '@CachePut',
   evict: '@CacheEvict',
+  http: '@HttpCache',
 };
 
 /**

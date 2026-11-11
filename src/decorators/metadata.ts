@@ -3,7 +3,7 @@ import { isReservedNamespace } from '../core/key-builder.js';
 import { CACHE_METADATA } from '../module/tokens.js';
 
 export interface CacheMetadataEntry {
-  kind: 'cacheable' | 'put' | 'evict';
+  kind: 'cacheable' | 'put' | 'evict' | 'http';
   method: string | symbol;
   store: string;
   lock: boolean | undefined;
@@ -17,7 +17,8 @@ export function getCacheMetadata(ctor: object): readonly CacheMetadataEntry[] {
 
 export function describeMethod(target: object, method: string | symbol): string {
   const name = (target as { constructor: { name: string } }).constructor.name;
-  return `${name}.${String(method)}`;
+  // `'*'` is the class-level marker (an `@HttpCache` on the class): report the class alone.
+  return method === '*' ? name : `${name}.${String(method)}`;
 }
 
 export function addCacheMetadata(target: object, entry: CacheMetadataEntry): void {
