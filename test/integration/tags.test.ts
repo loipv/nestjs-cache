@@ -8,7 +8,8 @@ import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
 import {
-  hasHostPubSub,
+  canReachPubSub,
+  skipTitle,
   selectedAdapters,
   startAdapter,
   type StartedAdapter,
@@ -83,6 +84,12 @@ async function missesWithin(
   }
   return false;
 }
+
+const PUBSUB = new Map(
+  await Promise.all(
+    selectedAdapters().map(async (name) => [name, await canReachPubSub(name)] as const),
+  ),
+);
 
 describe.each(selectedAdapters())('cache tags (integration) on %s', (adapterName) => {
   let redis: StartedAdapter;
@@ -165,8 +172,10 @@ describe.each(selectedAdapters())('cache tags (integration) on %s', (adapterName
     });
   });
 
-  // Two tiered stores sync over pub/sub: skipped where the host cannot reach it (ruling T1-B).
-  describe.skipIf(!hasHostPubSub(adapterName))('with two tieredStore apps', () => {
+  // Two tiered stores sync over pub/sub: skipped where the probe finds it unreachable (ruling T1-B).
+  const reachable = PUBSUB.get(adapterName) === true;
+  const tieredTitle = 'with two tieredStore apps';
+  describe.skipIf(!reachable)(reachable ? tieredTitle : skipTitle(tieredTitle), () => {
     let apps: App[];
 
     beforeEach(async () => {

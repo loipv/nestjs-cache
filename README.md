@@ -139,8 +139,8 @@ CacheModule.forRoot({
 
 ## node-redis
 
-`nodeRedisAdapter` wraps a [`redis`](https://github.com/redis/node-redis) client, cluster or Sentinel (v5 or v6). `redis` (`^5.0.0 || ^6.0.0`) is
-an optional peer dependency. Pass a client that is already `connect()`ed: the adapter only connects the subscriber
+`nodeRedisAdapter` wraps a [`redis`](https://github.com/redis/node-redis) client, cluster or Sentinel (v5 or v6).
+`redis` (`^5.0.0 || ^6.0.0`) is an optional peer dependency. Pass a client that is already `connect()`ed: the adapter only connects the subscriber
 connection it duplicates itself. Cluster mode is detected automatically (the client has `masters`).
 
 ```ts
@@ -222,14 +222,15 @@ const store = redisStore({ client: nodeRedisAdapter(sentinel) });
   invalidation; like any lost message this is bounded by `l1Ttl`.
 - While a tiered store is open over it, the sentinel's `'error'` events are also reported as `error` events with
   `operation: 'subscribe'`. Still attach your own `'error'` listener.
-- **`nodeAddressMap` and a tiered store (`redis` v5 only).** node-redis 5.x applies `nodeAddressMap` to its data connections but not to
-  its Sentinel pub/sub connection, which connects to the address the sentinel announces. If that address cannot be
-  reached from your app (NAT, Docker port mapping, Kubernetes without routable pod IPs), the tiered store's
-  invalidation subscription never connects. After a failover node-redis then waits for that connection before it uses
-  the new master, so every command on that client hangs, and `close()` hangs too. Any SUBSCRIBE on the client triggers
-  it, not only this library's. It is fixed upstream in node-redis 6.3.1, so `redis` v6 is not affected. On v5, if the master
-  and replica addresses the sentinels announce are reachable from your app, you are not affected either. Otherwise
-  upgrade to `redis` v6, use ioredis (`natMap` covers its subscriber too), make the announced addresses reachable
+- **`nodeAddressMap` and a tiered store (`redis` before 6.3.1).** node-redis 5.x and 6.0.0 to 6.3.0 apply
+  `nodeAddressMap` to their data connections but not to their Sentinel pub/sub connection, which connects to the
+  address the sentinel announces. If that address cannot be reached from your app (NAT, Docker port mapping,
+  Kubernetes without routable pod IPs), the tiered store's invalidation subscription never connects. After a failover
+  node-redis then waits for that connection before it uses the new master, so every command on that client hangs, and
+  `close()` hangs too. Any SUBSCRIBE on the client triggers it, not only this library's. It is fixed upstream in
+  node-redis 6.3.1, so `redis` 6.3.1 or later is not affected. On earlier versions, if the master and replica
+  addresses the sentinels announce are reachable from your app, you are not affected either. Otherwise upgrade to
+  `redis` 6.3.1 or later, use ioredis (`natMap` covers its subscriber too), make the announced addresses reachable
   (`replica-announce-ip` / `sentinel announce-ip`), or do not put a tiered store over it.
 
 ## Decorators

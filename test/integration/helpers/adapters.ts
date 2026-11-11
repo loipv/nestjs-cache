@@ -3,6 +3,7 @@ import { createClient, createCluster, createSentinel } from 'redis';
 import { afterAll } from 'vitest';
 import { nodeRedisAdapter, type NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
 import type { RedisStoreOptions } from '../../../src/stores/redis.store.js';
+import { probePubSub } from './pubsub-probe.js';
 import { startRedisCluster, type RedisClusterHandle } from './redis-cluster.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './redis-sentinel.js';
 import { startRedis } from './redis.js';
@@ -24,22 +25,36 @@ const ALL_ADAPTERS: readonly AdapterName[] = [
   'node-redis-sentinel',
 ];
 
+const reachability = new Map<AdapterName, Promise<boolean>>();
+
 /**
- * Why pub/sub cases skip an adapter, or undefined when the host can test its pub/sub. Ruling
- * T1-B: redis (node-redis) v5 applies `nodeAddressMap` to a Sentinel's data clients but not to its
- * pub/sub proxy (v6.3.1 fixes that, so this skip applies to v5 only), which connects to the master's container-network address; from the host (through Docker's
- * port mapping) that SUBSCRIBE never connects. Unit tests cover node-redis Sentinel pub/sub against
- * a fake.
+ * Whether the host can use `name`'s pub/sub, probed once per test file (the cache is per module,
+ * and Vitest loads this module once per file). It uses the file's shared container or Sentinel
+ * set through a temporary client, so it starts no extra container. A file calls it with top-level
+ * `await` before declaring cases, then uses `it.skipIf(!reachable)` and `skipTitle`.
  */
-export function pubSubSkipReason(name: AdapterName): string | undefined {
-  return name === 'node-redis-sentinel'
-    ? "redis v5 Sentinel's pub/sub ignores nodeAddressMap, so the host cannot reach it (ruling T1-B)"
-    : undefined;
+export function canReachPubSub(name: AdapterName): Promise<boolean> {
+  let result = reachability.get(name);
+  if (result === undefined) {
+    result = (async () => {
+      let started: StartedAdapter | undefined;
+      try {
+        started = await startAdapter(name);
+        return await probePubSub(started.client);
+      } catch {
+        return false;
+      } finally {
+        await started?.stop().catch(() => undefined);
+      }
+    })();
+    reachability.set(name, result);
+  }
+  return result;
 }
 
-/** The adapters whose pub/sub the host can test (see `pubSubSkipReason`). */
-export function hasHostPubSub(name: AdapterName): boolean {
-  return pubSubSkipReason(name) === undefined;
+/** The title of a case that skips because pub/sub is unreachable from this host. */
+export function skipTitle(title: string): string {
+  return `${title} (skipped: pub/sub unreachable from this host)`;
 }
 
 /**
@@ -90,6 +105,12 @@ export interface StartedAdapter {
  */
 let sharedCluster: Promise<RedisClusterHandle> | undefined;
 let sharedSentinel: Promise<RedisSentinelHandle> | undefined;
+let sharedStandalone: ReturnType<typeof startRedis> | undefined;
+
+function standalone(): ReturnType<typeof startRedis> {
+  sharedStandalone ??= startRedis();
+  return sharedStandalone;
+}
 
 function cluster(): Promise<RedisClusterHandle> {
   sharedCluster ??= startRedisCluster();
@@ -104,6 +125,12 @@ function sentinel(): Promise<RedisSentinelHandle> {
 afterAll(async () => {
   const pending = sharedCluster;
   sharedCluster = undefined;
+  if (pending !== undefined) await (await pending).stop();
+});
+
+afterAll(async () => {
+  const pending = sharedStandalone;
+  sharedStandalone = undefined;
   if (pending !== undefined) await (await pending).stop();
 });
 
@@ -131,7 +158,7 @@ export function startAdapter(name: AdapterName): Promise<StartedAdapter> {
 }
 
 async function startIoredis(): Promise<StartedAdapter> {
-  const redis = await startRedis();
+  const redis = await standalone();
   const client = new Redis(redis.url);
   return {
     client,
@@ -149,12 +176,9 @@ async function startIoredis(): Promise<StartedAdapter> {
       pttl: (key) => client.pttl(key),
       keys: (pattern) => scanIoredis(client, pattern),
     },
+    // The container is shared by the file's adapters and stops in the file's afterAll.
     stop: async () => {
-      try {
-        await client.quit();
-      } finally {
-        await redis.stop();
-      }
+      await client.quit();
     },
   };
 }
@@ -224,14 +248,14 @@ async function scanNodeRedis(
 }
 
 async function startNodeRedis(): Promise<StartedAdapter> {
-  const redis = await startRedis();
+  const redis = await standalone();
   const client = newNodeRedisClient(redis.url);
   // Without an 'error' listener, an error node-redis emits (a dropped socket) would crash the run.
   client.on('error', () => undefined);
   try {
     await client.connect();
   } catch (error) {
-    await redis.stop();
+    client.destroy();
     throw error;
   }
   return {
@@ -251,11 +275,7 @@ async function startNodeRedis(): Promise<StartedAdapter> {
       keys: (pattern) => scanNodeRedis(client, pattern),
     },
     stop: async () => {
-      try {
-        await client.close();
-      } finally {
-        await redis.stop();
-      }
+      await client.close();
     },
   };
 }
@@ -333,7 +353,7 @@ async function startNodeRedisSentinel(): Promise<StartedAdapter> {
     name: handle.name,
     sentinelRootNodes: handle.sentinels,
     // node-redis's nodeAddressMap has the shape of ioredis's natMap (an object keyed by
-    // "host:port"); redis v5 does not apply it to the Sentinel's pub/sub, see pubSubSkipReason.
+    // "host:port"); redis v5 does not apply it to the Sentinel's pub/sub, see probePubSub.
     nodeAddressMap: handle.natMap,
   });
   // As in startNodeRedis.

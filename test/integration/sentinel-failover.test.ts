@@ -9,7 +9,8 @@ import { memoryStore } from '../../src/stores/memory.store.js';
 import { nodeRedisAdapter } from '../../src/stores/node-redis.adapter.js';
 import { redisStore, type RedisStoreOptions } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
-import { hasHostPubSub, selectedAdapters } from './helpers/adapters.js';
+import { selectedAdapters, skipTitle } from './helpers/adapters.js';
+import { probePubSub } from './helpers/pubsub-probe.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './helpers/redis-sentinel.js';
 
 const RECOVERY_MS = 30_000;
@@ -100,90 +101,117 @@ async function closeWithin(close: () => Promise<void>, ms = 5_000): Promise<void
   }
 }
 
-describe.each(ADAPTERS)('Sentinel failover (integration) on %s', (adapterName) => {
-  let handle: RedisSentinelHandle | undefined;
-  const clients: Client[] = [];
-  const apps: TestingModule[] = [];
-  const caches: CacheService[] = [];
+interface Setup {
+  name: SentinelAdapter;
+  /** Its own Sentinel set: a failover changes the topology other files must not see. */
+  handle: RedisSentinelHandle;
+  /** Whether the probe reached the Sentinel's pub/sub from this host. */
+  reachable: boolean;
+}
 
-  function started(): RedisSentinelHandle {
-    if (handle === undefined) throw new Error('the Sentinel set did not start');
-    return handle;
+/* The probe needs a live Sentinel set before the cases are declared, so each adapter's set starts
+   here and the describe below stops it. Probing publishes only; the topology is unchanged. */
+const SETUPS: Setup[] = [];
+for (const name of ADAPTERS) {
+  const handle = await startRedisSentinel();
+  let reachable = false;
+  try {
+    const probe = await connect(name, handle);
+    try {
+      reachable = await probePubSub(probe.client);
+    } finally {
+      await closeWithin(() => probe.close()).catch(() => undefined);
+    }
+  } catch {
+    // a client that cannot even connect leaves pub/sub unreachable; the cases report the rest
   }
+  SETUPS.push({ name, handle, reachable });
+}
 
-  async function startInstance(): Promise<CacheService> {
-    const client = await connect(adapterName, started());
-    clients.push(client);
-    const ref = await Test.createTestingModule({
-      imports: [
-        CacheModule.forRoot({
-          stores: {
-            default: hasHostPubSub(adapterName)
-              ? tieredStore({
-                  l1: memoryStore(),
-                  l2: redisStore({ client: client.client }),
-                  l1Ttl: 60_000,
-                })
-              : // The L1 invalidation channel cannot be reached from the host (ruling T1-B).
-                redisStore({ client: client.client }),
-          },
-        }),
-      ],
-    }).compile();
-    await ref.init();
-    apps.push(ref);
-    return ref.get(CacheService);
-  }
+describe.each(SETUPS)(
+  'Sentinel failover (integration) on $name',
+  ({ name: adapterName, handle: sentinelSet, reachable }) => {
+    let handle: RedisSentinelHandle | undefined;
+    const clients: Client[] = [];
+    const apps: TestingModule[] = [];
+    const caches: CacheService[] = [];
 
-  beforeAll(async () => {
-    // Its own Sentinel set: a failover changes the topology other files must not see.
-    handle = await startRedisSentinel();
-    caches.push(await startInstance(), await startInstance());
-  });
+    function started(): RedisSentinelHandle {
+      if (handle === undefined) throw new Error('the Sentinel set did not start');
+      return handle;
+    }
 
-  afterAll(async () => {
-    // Every close is bounded and settled, so the containers are stopped even when one fails or
-    // hangs; the first failure is rethrown at the end. Apps close before the clients they use.
-    const results = await Promise.allSettled(apps.map((app) => closeWithin(() => app.close())));
-    results.push(
-      ...(await Promise.allSettled(clients.map((client) => closeWithin(() => client.close())))),
-    );
-    results.push(...(await Promise.allSettled([handle?.stop()])));
-    const failed = results.find((result) => result.status === 'rejected');
-    if (failed !== undefined) throw failed.reason;
-  });
+    async function startInstance(): Promise<CacheService> {
+      const client = await connect(adapterName, started());
+      clients.push(client);
+      const ref = await Test.createTestingModule({
+        imports: [
+          CacheModule.forRoot({
+            stores: {
+              default: reachable
+                ? tieredStore({
+                    l1: memoryStore(),
+                    l2: redisStore({ client: client.client }),
+                    l1Ttl: 60_000,
+                  })
+                : // The probe found the L1 invalidation channel unreachable from this host (ruling T1-B).
+                  redisStore({ client: client.client }),
+            },
+          }),
+        ],
+      }).compile();
+      await ref.init();
+      apps.push(ref);
+      return ref.get(CacheService);
+    }
 
-  const tieredTitle = hasHostPubSub(adapterName)
-    ? 'a write on one instance evicts the other L1 again'
-    : "skipped: node-redis Sentinel's pub/sub ignores nodeAddressMap (ruling T1-B): a write on one instance evicts the other L1 again";
+    beforeAll(async () => {
+      handle = sentinelSet;
+      caches.push(await startInstance(), await startInstance());
+    });
 
-  it('set and get through the store recover within 30 s of a failover', async () => {
-    const [a, b] = caches as [CacheService, CacheService];
-    await a.set('before', { n: 1 });
-    expect(await b.get('before')).toEqual({ n: 1 });
+    afterAll(async () => {
+      // Every close is bounded and settled, so the containers are stopped even when one fails or
+      // hangs; the first failure is rethrown at the end. Apps close before the clients they use.
+      const results = await Promise.allSettled(apps.map((app) => closeWithin(() => app.close())));
+      results.push(
+        ...(await Promise.allSettled(clients.map((client) => closeWithin(() => client.close())))),
+      );
+      results.push(...(await Promise.allSettled([handle?.stop()])));
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed !== undefined) throw failed.reason;
+    });
 
-    await started().failover();
+    const tieredTitle = 'a write on one instance evicts the other L1 again';
 
-    await eventually(async () => {
-      await a.set('after', { n: 2 });
-      expect(await a.get('after')).toEqual({ n: 2 });
-      expect(await b.get('after')).toEqual({ n: 2 });
-    }, RECOVERY_MS);
-  });
+    it('set and get through the store recover within 30 s of a failover', async () => {
+      const [a, b] = caches as [CacheService, CacheService];
+      await a.set('before', { n: 1 });
+      expect(await b.get('before')).toEqual({ n: 1 });
 
-  it.skipIf(!hasHostPubSub(adapterName))(tieredTitle, async () => {
-    const [a, b] = caches as [CacheService, CacheService];
-    /* After a failover a subscriber can miss messages for ~10 s (ruling T1-C), so each round
+      await started().failover();
+
+      await eventually(async () => {
+        await a.set('after', { n: 2 });
+        expect(await a.get('after')).toEqual({ n: 2 });
+        expect(await b.get('after')).toEqual({ n: 2 });
+      }, RECOVERY_MS);
+    });
+
+    it.skipIf(!reachable)(reachable ? tieredTitle : skipTitle(tieredTitle), async () => {
+      const [a, b] = caches as [CacheService, CacheService];
+      /* After a failover a subscriber can miss messages for ~10 s (ruling T1-C), so each round
        writes a new value on A and polls B until it sees it: B's L1 copy has been evicted. */
-    let n = 0;
-    await eventually(async () => {
-      n += 1;
-      await a.set('evict', n);
-      expect(await b.get('evict')).toBe(n);
-      n += 1;
-      await a.set('evict', n);
-      await pause(100);
-      expect(await b.get('evict')).toBe(n);
-    }, RECOVERY_MS);
-  });
-});
+      let n = 0;
+      await eventually(async () => {
+        n += 1;
+        await a.set('evict', n);
+        expect(await b.get('evict')).toBe(n);
+        n += 1;
+        await a.set('evict', n);
+        await pause(100);
+        expect(await b.get('evict')).toBe(n);
+      }, RECOVERY_MS);
+    });
+  },
+);

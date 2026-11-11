@@ -7,8 +7,8 @@ import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
 import {
-  hasHostPubSub,
-  pubSubSkipReason,
+  canReachPubSub,
+  skipTitle,
   selectedAdapters,
   startAdapter,
   type StartedAdapter,
@@ -69,13 +69,16 @@ async function expectServedFromL1(
   );
 }
 
-/* Every case below syncs two instances over pub/sub (waitForSync in beforeEach), so an adapter
-   whose pub/sub the host cannot reach skips the suite and starts no container (ruling T1-B). */
-const WITH_PUBSUB = selectedAdapters().filter(hasHostPubSub);
-const WITHOUT_PUBSUB = selectedAdapters().filter((name) => !hasHostPubSub(name));
+/* Every case below syncs two instances over pub/sub (waitForSync in beforeEach), so the suite
+   is skipped, under a skip title, for an adapter whose pub/sub the probe finds unreachable. */
+const ADAPTERS = await Promise.all(
+  selectedAdapters().map(async (name) => ({ name, reachable: await canReachPubSub(name) })),
+);
+const WITH_PUBSUB = ADAPTERS.filter((a) => a.reachable).map((a) => a.name);
+const WITHOUT_PUBSUB = ADAPTERS.filter((a) => !a.reachable).map((a) => a.name);
 
-describe.each(WITHOUT_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
-  it.skip(`skipped: ${pubSubSkipReason(adapterName) ?? ''}`, () => undefined);
+describe.each(WITHOUT_PUBSUB)('TieredStore (integration) on %s', () => {
+  it.skip(skipTitle('syncs two instances over pub/sub'), () => undefined);
 });
 
 describe.each(WITH_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
