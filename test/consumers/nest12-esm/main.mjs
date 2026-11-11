@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import * as lib from '@loipv/nestjs-cache';
 import * as promClient from '@prometheus-io/client';
+import { createClient } from 'redis';
 import { NestFactory } from '@nestjs/core';
 import { Injectable, Module } from '@nestjs/common';
 
@@ -10,6 +11,8 @@ assert.equal(typeof lib.CachePut, 'function');
 assert.equal(typeof lib.CacheEvict, 'function');
 assert.equal(lib.CACHE_ENGINE, Symbol.for('@loipv/nestjs-cache:engine'));
 assert.ok(new lib.CacheConfigError('x') instanceof Error);
+// node-redis v5 client: the adapter is built without connecting.
+assert.equal(typeof lib.nodeRedisAdapter(createClient()).createSubscriber, 'function');
 
 class UserService {
   calls = 0;

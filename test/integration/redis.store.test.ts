@@ -6,9 +6,10 @@ import { CacheService } from '../../src/core/cache.service.js';
 import { CacheModule } from '../../src/module/cache.module.js';
 import type { InvalidationMessage } from '../../src/stores/cache-store.interface.js';
 import { redisStore } from '../../src/stores/redis.store.js';
+import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
 import { startRedis } from './helpers/redis.js';
 
-describe('RedisStore (integration)', () => {
+describe('RedisStore (integration), ioredis standalone only', () => {
   let redis: { url: string; stop(): Promise<void> };
   let client: Redis;
 
@@ -24,14 +25,6 @@ describe('RedisStore (integration)', () => {
   afterAll(async () => {
     await client.quit();
     await redis.stop();
-  });
-
-  it('works end to end with a raw ioredis client', async () => {
-    const store = redisStore({ client });
-    await store.set('i:a', 'v', 5_000);
-    expect(await store.get('i:a')).toBe('v');
-    await store.delete(['i:a']);
-    expect(await store.get('i:a')).toBeUndefined();
   });
 
   /* getMany against a real Redis returns values in input order using exactly one MGET. */
@@ -59,20 +52,57 @@ describe('RedisStore (integration)', () => {
     expect(await store.getMany([])).toEqual([]);
     expect(counts.get('mget')).toBe(1);
   });
+});
+
+describe.each(selectedAdapters())('RedisStore (integration) on %s', (adapterName) => {
+  let redis: StartedAdapter;
+  let client: StartedAdapter['client'];
+
+  beforeAll(async () => {
+    redis = await startAdapter(adapterName);
+    client = redis.client;
+  });
+
+  beforeEach(async () => {
+    await redis.flush();
+  });
+
+  afterAll(async () => {
+    await redis.stop();
+  });
+
+  it('works end to end with the adapter client', async () => {
+    const store = redisStore({ client });
+    await store.set('i:a', 'v', 5_000);
+    expect(await store.get('i:a')).toBe('v');
+    await store.delete(['i:a']);
+    expect(await store.get('i:a')).toBeUndefined();
+  });
+
+  /* getMany returns values in input order, with a missing key and a duplicate, and [] for []. */
+  it('getMany returns the right order', async () => {
+    const store = redisStore({ client });
+    await store.setMany([
+      { key: 'm:a', value: '1', ttlMs: 5_000 },
+      { key: 'm:c', value: '3', ttlMs: 5_000 },
+    ]);
+    expect(await store.getMany(['m:c', 'm:b', 'm:a', 'm:c'])).toEqual(['3', undefined, '1', '3']);
+    expect(await store.getMany([])).toEqual([]);
+  });
 
   it('clear removes only the prefix, including glob characters', async () => {
     const store = redisStore({ client });
-    for (let i = 0; i < 250; i += 1) await store.set(`a[1]:${i}`, 'v', 60_000);
+    for (let i = 0; i < 250; i += 1) await store.set(`a[1]:${String(i)}`, 'v', 60_000);
     await store.set('a1:x', 'v', 60_000);
     await store.set('b:x', 'v', 60_000);
     await store.clear('a[1]:');
-    expect((await client.keys('*')).sort()).toEqual(['a1:x', 'b:x']);
+    expect((await redis.raw.keys('*')).sort()).toEqual(['a1:x', 'b:x']);
   });
 
   it('carries invalidation messages between two stores', async () => {
-    const other = new Redis(redis.url);
+    /* Both stores share one client: each store's subscriber is a duplicate of it. */
     const a = redisStore({ client });
-    const b = redisStore({ client: other });
+    const b = redisStore({ client });
     const got: InvalidationMessage[] = [];
     try {
       await b.invalidation.subscribe((m) => got.push(m));
@@ -83,7 +113,6 @@ describe('RedisStore (integration)', () => {
     } finally {
       await a.close();
       await b.close();
-      await other.quit();
     }
   });
 

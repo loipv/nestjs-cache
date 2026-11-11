@@ -8,6 +8,7 @@ import type { CacheStore } from '../../src/stores/cache-store.interface.js';
 import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
+import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
 import { startRedis } from './helpers/redis.js';
 
 const NAMESPACES = { users: { versioned: true } } as const;
@@ -62,7 +63,93 @@ async function waitForSync(from: CacheService, to: CacheService): Promise<void> 
   throw new Error('instances did not sync within 5 s');
 }
 
-describe('versioned namespaces (integration)', () => {
+describe.each(selectedAdapters())('versioned namespaces (integration) on %s', (adapterName) => {
+  let redis: StartedAdapter;
+
+  beforeAll(async () => {
+    redis = await startAdapter(adapterName);
+  });
+
+  beforeEach(async () => {
+    await redis.flush();
+  });
+
+  afterAll(async () => {
+    await redis.stop();
+  });
+
+  describe('with redisStore', () => {
+    let app: { ref: TestingModule; cache: CacheService };
+
+    beforeEach(async () => {
+      app = await startApp(redisStore({ client: redis.client }));
+    });
+
+    afterEach(async () => {
+      await app.ref.close();
+    });
+
+    it('clear leaves the old key in Redis but get misses', async () => {
+      /* Data lives under app:users@<v>:1; clear writes a new token instead of scanning, so
+         the old key still exists in Redis, yet the next get misses. */
+      await app.cache.set('1', { n: 1 }, { namespace: 'users' });
+      const [oldKey, ...rest] = await redis.raw.keys('app:users@*');
+      expect(rest).toEqual([]);
+      expect(oldKey).toMatch(/^app:users@[0-9a-z]{8}:1$/);
+      expect(await app.cache.get('1', { namespace: 'users' })).toEqual({ n: 1 });
+      await app.cache.clear('users');
+      expect(await redis.raw.get(oldKey ?? '')).not.toBeNull();
+      expect(await app.cache.get('1', { namespace: 'users' })).toBeUndefined();
+    });
+
+    it('the version key lives for 30 days', async () => {
+      /* app:__version__:users is written with a TTL above 29 days, and again on clear. */
+      await app.cache.set('1', 'x', { namespace: 'users' });
+      expect(await redis.raw.pttl('app:__version__:users')).toBeGreaterThan(TWENTY_NINE_DAYS);
+      const before = await redis.raw.get('app:__version__:users');
+      await app.cache.clear('users');
+      expect(await redis.raw.get('app:__version__:users')).not.toBe(before);
+      expect(await redis.raw.pttl('app:__version__:users')).toBeGreaterThan(TWENTY_NINE_DAYS);
+    });
+  });
+
+  describe('with two tieredStore instances', () => {
+    let apps: { ref: TestingModule; cache: CacheService }[];
+
+    beforeEach(async () => {
+      apps = [];
+      for (let i = 0; i < 2; i += 1) {
+        const store = tieredStore({
+          l1: memoryStore(),
+          l2: redisStore({ client: redis.client }),
+          l1Ttl: 60_000,
+        });
+        apps.push(await startApp(store, { cacheTtl: 200 }));
+      }
+      const [a, b] = apps.map((app) => app.cache) as [CacheService, CacheService];
+      await waitForSync(a, b);
+      await waitForSync(b, a);
+    });
+
+    afterEach(async () => {
+      for (const app of apps) await app.ref.close();
+    });
+
+    it("B sees A's clear once cacheTtl has passed", async () => {
+      /* B caches the version for 200 ms. After A clears, B misses within 250 ms on the real
+         clock: its version cache expired and pub/sub dropped the version key from its L1. */
+      const [a, b] = apps.map((app) => app.cache) as [CacheService, CacheService];
+      await a.set('1', { n: 1 }, { namespace: 'users' });
+      expect(await b.get('1', { namespace: 'users' })).toEqual({ n: 1 });
+      await a.clear('users');
+      expect(await a.get('1', { namespace: 'users' })).toBeUndefined();
+      await pause(250);
+      expect(await b.get('1', { namespace: 'users' })).toBeUndefined();
+    });
+  });
+});
+
+describe('versioned namespaces (integration), ioredis standalone only', () => {
   let redis: { url: string; stop(): Promise<void> };
   let admin: Redis;
 
@@ -78,82 +165,6 @@ describe('versioned namespaces (integration)', () => {
   afterAll(async () => {
     await admin.quit();
     await redis.stop();
-  });
-
-  describe('with redisStore', () => {
-    let client: Redis;
-    let app: { ref: TestingModule; cache: CacheService };
-
-    beforeEach(async () => {
-      client = new Redis(redis.url);
-      app = await startApp(redisStore({ client }));
-    });
-
-    afterEach(async () => {
-      await app.ref.close();
-      await client.quit();
-    });
-
-    it('clear leaves the old key in Redis but get misses', async () => {
-      /* Data lives under app:users@<v>:1; clear writes a new token instead of scanning, so
-         the old key still exists in Redis, yet the next get misses. */
-      await app.cache.set('1', { n: 1 }, { namespace: 'users' });
-      const [oldKey, ...rest] = await admin.keys('app:users@*');
-      expect(rest).toEqual([]);
-      expect(oldKey).toMatch(/^app:users@[0-9a-z]{8}:1$/);
-      expect(await app.cache.get('1', { namespace: 'users' })).toEqual({ n: 1 });
-      await app.cache.clear('users');
-      expect(await admin.exists(oldKey ?? '')).toBe(1);
-      expect(await app.cache.get('1', { namespace: 'users' })).toBeUndefined();
-    });
-
-    it('the version key lives for 30 days', async () => {
-      /* app:__version__:users is written with a TTL above 29 days, and again on clear. */
-      await app.cache.set('1', 'x', { namespace: 'users' });
-      expect(await admin.pttl('app:__version__:users')).toBeGreaterThan(TWENTY_NINE_DAYS);
-      const before = await admin.get('app:__version__:users');
-      await app.cache.clear('users');
-      expect(await admin.get('app:__version__:users')).not.toBe(before);
-      expect(await admin.pttl('app:__version__:users')).toBeGreaterThan(TWENTY_NINE_DAYS);
-    });
-  });
-
-  describe('with two tieredStore instances', () => {
-    let clients: Redis[];
-    let apps: { ref: TestingModule; cache: CacheService }[];
-
-    beforeEach(async () => {
-      clients = [new Redis(redis.url), new Redis(redis.url)];
-      apps = [];
-      for (const client of clients) {
-        const store = tieredStore({
-          l1: memoryStore(),
-          l2: redisStore({ client }),
-          l1Ttl: 60_000,
-        });
-        apps.push(await startApp(store, { cacheTtl: 200 }));
-      }
-      const [a, b] = apps.map((app) => app.cache) as [CacheService, CacheService];
-      await waitForSync(a, b);
-      await waitForSync(b, a);
-    });
-
-    afterEach(async () => {
-      for (const app of apps) await app.ref.close();
-      for (const client of clients) await client.quit();
-    });
-
-    it("B sees A's clear once cacheTtl has passed", async () => {
-      /* B caches the version for 200 ms. After A clears, B misses within 250 ms on the real
-         clock: its version cache expired and pub/sub dropped the version key from its L1. */
-      const [a, b] = apps.map((app) => app.cache) as [CacheService, CacheService];
-      await a.set('1', { n: 1 }, { namespace: 'users' });
-      expect(await b.get('1', { namespace: 'users' })).toEqual({ n: 1 });
-      await a.clear('users');
-      expect(await a.get('1', { namespace: 'users' })).toBeUndefined();
-      await pause(250);
-      expect(await b.get('1', { namespace: 'users' })).toBeUndefined();
-    });
   });
 
   describe('with a tiered store over a paused Redis', () => {

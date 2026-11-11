@@ -6,7 +6,7 @@ import { CacheService } from '../../src/core/cache.service.js';
 import { CacheModule } from '../../src/module/cache.module.js';
 import type { IoredisLike } from '../../src/stores/ioredis.adapter.js';
 import { redisStore } from '../../src/stores/redis.store.js';
-import { startRedis } from './helpers/redis.js';
+import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
 
 /** Runs every step in order; each later step runs in a `finally`, so one failure leaks nothing. */
 async function closeAll(steps: readonly (() => Promise<unknown>)[]): Promise<void> {
@@ -19,67 +19,66 @@ async function closeAll(steps: readonly (() => Promise<unknown>)[]): Promise<voi
   }
 }
 
-describe('RedisLock primitives', () => {
-  let redis: { url: string; stop(): Promise<void> };
-  let client: Redis;
+describe.each(selectedAdapters())('RedisLock primitives on %s', (adapterName) => {
+  let redis: StartedAdapter;
 
   beforeAll(async () => {
-    redis = await startRedis();
-    client = new Redis(redis.url);
+    redis = await startAdapter(adapterName);
   });
 
   beforeEach(async () => {
-    await client.flushall();
+    await redis.flush();
   });
 
   afterAll(async () => {
-    await closeAll([() => client.quit(), () => redis.stop()]);
+    await redis.stop();
   });
 
   it('acquire, contend, release against real Redis', async () => {
-    const store = redisStore({ client });
+    const store = redisStore({ client: redis.client });
     const a = await store.lock!.acquire('app:__lock__:it:k', 5_000);
     expect(a).toBeDefined();
     expect(await store.lock!.acquire('app:__lock__:it:k', 5_000)).toBeUndefined();
-    const pttl = await client.pttl('app:__lock__:it:k');
+    const pttl = await redis.raw.pttl('app:__lock__:it:k');
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(5_000);
     await a!.release();
-    expect(await client.exists('app:__lock__:it:k')).toBe(0);
+    expect(await redis.raw.get('app:__lock__:it:k')).toBeNull();
   });
 
   it('a stale handle does not release a newer owner', async () => {
-    const store = redisStore({ client });
+    const store = redisStore({ client: redis.client });
     const old = await store.lock!.acquire('app:__lock__:it:s', 5_000);
-    await client.del('app:__lock__:it:s');
+    await redis.raw.del('app:__lock__:it:s');
     const fresh = await store.lock!.acquire('app:__lock__:it:s', 5_000);
     expect(fresh).toBeDefined();
     await old!.release();
-    expect(await client.exists('app:__lock__:it:s')).toBe(1);
+    expect(await redis.raw.get('app:__lock__:it:s')).not.toBeNull();
     await fresh!.release();
-    expect(await client.exists('app:__lock__:it:s')).toBe(0);
-  });
-
-  it('a real ioredis client is assignable to IoredisLike without a cast', () => {
-    const like: IoredisLike = client;
-    expect(like).toBeDefined();
+    expect(await redis.raw.get('app:__lock__:it:s')).toBeNull();
   });
 });
 
-describe('distributed lock across two apps', () => {
-  let redis: { url: string; stop(): Promise<void> };
-  const clients: Redis[] = [];
+describe('RedisLock typing, ioredis only', () => {
+  it('a real ioredis client is assignable to IoredisLike without a cast', () => {
+    const client = new Redis({ lazyConnect: true });
+    const like: IoredisLike = client;
+    expect(like).toBeDefined();
+    client.disconnect();
+  });
+});
+
+describe.each(selectedAdapters())('distributed lock across two apps on %s', (adapterName) => {
+  let redis: StartedAdapter;
   const refs: TestingModule[] = [];
   let cacheA: CacheService;
   let cacheB: CacheService;
 
   async function startApp(): Promise<CacheService> {
-    const client = new Redis(redis.url);
-    clients.push(client);
     const ref = await Test.createTestingModule({
       imports: [
         CacheModule.forRoot({
-          stores: { default: redisStore({ client }) },
+          stores: { default: redisStore({ client: redis.client }) },
           defaults: { lock: { enabled: true } },
         }),
       ],
@@ -90,17 +89,14 @@ describe('distributed lock across two apps', () => {
   }
 
   beforeAll(async () => {
-    redis = await startRedis();
+    redis = await startAdapter(adapterName);
+    await redis.flush(); // the cluster container is shared between the cluster adapters
     cacheA = await startApp();
     cacheB = await startApp();
   });
 
   afterAll(async () => {
-    await closeAll([
-      ...refs.map((ref) => () => ref.close()),
-      ...clients.map((client) => () => client.quit()),
-      () => redis.stop(),
-    ]);
+    await closeAll([...refs.map((ref) => () => ref.close()), () => redis.stop()]);
   });
 
   it('loads once across the cluster when two instances miss together', async () => {
