@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheEngine } from '../../../src/core/cache-engine.js';
+import { CacheEvents } from '../../../src/core/events.js';
 import type { CacheEnvelope } from '../../../src/core/envelope.js';
+import { resolveOptions } from '../../../src/module/cache.options.js';
+import type { CacheStore } from '../../../src/stores/cache-store.interface.js';
+import { memoryStore } from '../../../src/stores/memory.store.js';
+import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -844,5 +850,54 @@ describe('CacheEngine tags: the read path and invalidateTags', () => {
     expect({ b: token('b'), c: token('c') }).toEqual(before);
     const values = await Promise.all(['a', 'b', 'c', 'd'].map((key) => engine.get({ key })));
     expect(values).toEqual([undefined, 'b', 'c', undefined]);
+  });
+});
+
+describe('CacheEngine tags: a tiered store whose L2 reads reject', () => {
+  function build() {
+    const l1 = memoryStore();
+    const down = (): Promise<never> => Promise.reject(new Error('l2 down'));
+    const l2: CacheStore = { get: down, set: down, delete: down, clear: down };
+    const events = new CacheEvents();
+    const operations: string[] = [];
+    events.on('error', (payload) => operations.push(payload.operation));
+    const engine = new CacheEngine(
+      resolveOptions({ prefix: 'app', stores: { default: tieredStore({ l1, l2 }) } }),
+      events,
+    );
+    return { l1, engine, operations };
+  }
+
+  it('uses a tag token found in L1', async () => {
+    /* The token key is in L1, so the strict read never reaches the failing L2: the entry
+       stamped with it is a hit and the loader does not run. */
+    const { l1, engine, operations } = build();
+    await l1.set('app:__tag__:t', 'tok1', 60_000);
+    const envelope: CacheEnvelope = {
+      v: 1,
+      value: 'cached',
+      storedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      tags: { t: 'tok1' },
+    };
+    await l1.set('app:k', JSON.stringify(envelope), 60_000);
+    const loader = vi.fn(async () => 'loaded');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { tags: ['t'] })).toBe('cached');
+    expect(loader).not.toHaveBeenCalled();
+    expect(operations).toEqual([]);
+  });
+
+  it('with the token in neither the process cache nor L1 the entry is a miss and nothing is written', async () => {
+    /* The strict token read rejects: the loader runs, nothing is written, and each call
+       reports one version error. */
+    const { l1, engine, operations } = build();
+    const loader = vi.fn(async () => 'loaded');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { tags: ['t'] })).toBe('loaded');
+    expect(operations).toEqual(['version']);
+    expect(await engine.getOrSet({ key: 'k' }, loader, { tags: ['t'] })).toBe('loaded');
+    expect(operations).toEqual(['version', 'version']);
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(await l1.get('app:k')).toBeUndefined();
+    expect(await l1.get('app:__tag__:t')).toBeUndefined();
   });
 });
