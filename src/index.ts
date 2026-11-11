@@ -72,7 +72,7 @@ export type { RedisClientAdapter, RedisSubscriberAdapter } from './stores/redis-
 export { TieredStore, tieredStore } from './stores/tiered.store.js';
 export type { TieredStoreOptions } from './stores/tiered.store.js';
 export {
-  circuitBreaker,
+  circuitBreakerStore,
   CircuitBreakerStore,
   CircuitOpenError,
 } from './resilience/circuit-breaker.store.js';

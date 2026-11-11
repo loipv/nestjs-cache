@@ -7,7 +7,7 @@ import { CacheConfigError } from '../../../src/errors.js';
 import { CacheHealthIndicator } from '../../../src/health/cache-health.indicator.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
 import type { ResolvedCacheOptions } from '../../../src/module/cache.options.js';
-import { circuitBreaker } from '../../../src/resilience/circuit-breaker.store.js';
+import { circuitBreakerStore } from '../../../src/resilience/circuit-breaker.store.js';
 import type { CacheStore } from '../../../src/stores/cache-store.interface.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
@@ -136,7 +136,7 @@ describe('CacheHealthIndicator', () => {
 
   it('reports circuit open through a real breaker', async () => {
     const inner = withPing(() => Promise.reject(new Error('down')));
-    const breaker = circuitBreaker(inner, { failureThreshold: 1 });
+    const breaker = circuitBreakerStore(inner, { failureThreshold: 1 });
     const indicator = indicatorFor({ default: breaker });
     expect(await indicator.check('cache')).toEqual({
       cache: { status: 'down', message: 'down' },

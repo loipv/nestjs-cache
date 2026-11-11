@@ -68,3 +68,7 @@ export const op: lib.CacheOperation = 'tag';
 // @ts-expect-error 'metrics' is not a CacheOperation
 export const metricsOp: lib.CacheOperation = 'metrics';
 expectTypeOf<lib.CacheEventMap['error']['operation']>().toEqualTypeOf<lib.CacheOperation>();
+
+/* 0.9-T6 G-08: the breaker factory is circuitBreakerStore, paired with CircuitBreakerStore. */
+expectTypeOf(lib.circuitBreakerStore).returns.toEqualTypeOf<lib.CircuitBreakerStore>();
+expectTypeOf<Index>().not.toHaveProperty('circuitBreaker');

@@ -48,7 +48,7 @@ function positiveNumber(name: string, value: number | undefined, fallback: numbe
     value > MAX_TIMER_DELAY
   ) {
     throw new CacheConfigError(
-      `Invalid circuitBreaker option ${name}: ${String(value)} (must be a finite number > 0 and <= ${String(MAX_TIMER_DELAY)})`,
+      `Invalid circuitBreakerStore option ${name}: ${String(value)} (must be a finite number > 0 and <= ${String(MAX_TIMER_DELAY)})`,
     );
   }
   return value;
@@ -58,7 +58,7 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
     throw new CacheConfigError(
-      `Invalid circuitBreaker option ${name}: ${String(value)} (must be an integer >= 1)`,
+      `Invalid circuitBreakerStore option ${name}: ${String(value)} (must be an integer >= 1)`,
     );
   }
   return value;
@@ -290,7 +290,7 @@ export class CircuitBreakerStore implements CacheStore {
 }
 
 /** Wraps `store` with a circuit breaker. Throws `CacheConfigError` for invalid options. */
-export function circuitBreaker(
+export function circuitBreakerStore(
   store: CacheStore,
   options?: CircuitBreakerOptions,
 ): CircuitBreakerStore {

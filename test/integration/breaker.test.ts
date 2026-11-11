@@ -6,7 +6,7 @@ import { CacheEvents } from '../../src/core/events.js';
 import type { BreakerState } from '../../src/core/events.js';
 import { CacheService } from '../../src/core/cache.service.js';
 import { CacheModule } from '../../src/module/cache.module.js';
-import { circuitBreaker } from '../../src/resilience/circuit-breaker.store.js';
+import { circuitBreakerStore } from '../../src/resilience/circuit-breaker.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { startRedis } from './helpers/redis.js';
 
@@ -25,7 +25,7 @@ describe('circuit breaker with a stopped Redis (integration)', () => {
       imports: [
         CacheModule.forRoot({
           stores: {
-            default: circuitBreaker(redisStore({ client }), {
+            default: circuitBreakerStore(redisStore({ client }), {
               failureThreshold: 2,
               timeout: 200,
               openDuration: 60_000,

@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { circuitBreaker, CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
+import {
+  circuitBreakerStore,
+  CircuitOpenError,
+} from '../../../src/resilience/circuit-breaker.store.js';
 import type { CacheEventSink } from '../../../src/core/events.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { memoryStore, type MemoryStore } from '../../../src/stores/memory.store.js';
@@ -762,7 +765,7 @@ describe('TieredStore', () => {
       const inner = new FakeStore();
       const t = tieredStore({
         l1: memoryStore(),
-        l2: circuitBreaker(inner, { failureThreshold: 1 }),
+        l2: circuitBreakerStore(inner, { failureThreshold: 1 }),
         invalidation: bus,
       });
       t.bind(sink);
@@ -882,7 +885,7 @@ describe('TieredStore', () => {
       const inner = new FakeStore();
       const tiered = tieredStore({
         l1: memoryStore(),
-        l2: circuitBreaker(inner, { failureThreshold: 1 }),
+        l2: circuitBreakerStore(inner, { failureThreshold: 1 }),
         invalidation: bus,
       });
       tiered.bind(sink);
@@ -1030,7 +1033,7 @@ describe('TieredStore batch', () => {
     const inner = new BatchStore();
     const t = tieredStore({
       l1: memoryStore(),
-      l2: circuitBreaker(inner, { failureThreshold: 1 }),
+      l2: circuitBreakerStore(inner, { failureThreshold: 1 }),
       invalidation: bus,
     });
     t.bind(sink);
@@ -1069,7 +1072,7 @@ describe('TieredStore batch', () => {
     const inner = new BatchStore();
     const t = tieredStore({
       l1,
-      l2: circuitBreaker(inner, { failureThreshold: 1 }),
+      l2: circuitBreakerStore(inner, { failureThreshold: 1 }),
       invalidation: bus,
     });
     t.bind(sink);

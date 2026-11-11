@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CacheHealthIndicator } from '../../../src/health/cache-health.indicator.js';
 import type { ResolvedCacheOptions } from '../../../src/module/cache.options.js';
-import { circuitBreaker, CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
+import {
+  circuitBreakerStore,
+  CircuitOpenError,
+} from '../../../src/resilience/circuit-breaker.store.js';
 import { ioredisAdapter } from '../../../src/stores/ioredis.adapter.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
 import { redisStore } from '../../../src/stores/redis.store.js';
@@ -23,8 +26,8 @@ describe('store ping', () => {
     const withPing = Object.assign(new FakeStore(), { ping: () => Promise.resolve() });
     expect('ping' in tieredStore({ l1: memoryStore(), l2: withPing })).toBe(true);
     expect('ping' in tieredStore({ l1: memoryStore(), l2: new FakeStore() })).toBe(false);
-    expect('ping' in circuitBreaker(withPing)).toBe(true);
-    expect('ping' in circuitBreaker(new FakeStore())).toBe(false);
+    expect('ping' in circuitBreakerStore(withPing)).toBe(true);
+    expect('ping' in circuitBreakerStore(new FakeStore())).toBe(false);
     expect('ping' in memoryStore()).toBe(true);
     await expect(memoryStore().ping()).resolves.toBeUndefined();
   });
@@ -60,7 +63,7 @@ describe('store ping', () => {
   it('breaker guards ping', async () => {
     const ping = vi.fn(() => Promise.reject(new Error('down')));
     const inner = Object.assign(new FakeStore(), { ping });
-    const breaker = circuitBreaker(inner, { failureThreshold: 1 });
+    const breaker = circuitBreakerStore(inner, { failureThreshold: 1 });
     await expect(breaker.ping?.()).rejects.toThrow('down');
     await expect(breaker.ping?.()).rejects.toBeInstanceOf(CircuitOpenError);
     expect(ping).toHaveBeenCalledTimes(1);
@@ -82,9 +85,9 @@ describe('store ping', () => {
       expect(l2.receivers).toEqual([l2]);
     });
 
-    it('circuitBreaker calls the inner ping with the inner as this', async () => {
+    it('circuitBreakerStore calls the inner ping with the inner as this', async () => {
       const inner = new PingingStore();
-      await circuitBreaker(inner).ping?.();
+      await circuitBreakerStore(inner).ping?.();
       expect(inner.receivers).toEqual([inner]);
     });
   });

@@ -11,7 +11,7 @@ import { CacheLogger } from '../../../src/module/cache.logger.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
 import { resolveOptions } from '../../../src/module/cache.options.js';
 import { CACHE_ENGINE, CACHE_LOGGER } from '../../../src/module/tokens.js';
-import { circuitBreaker } from '../../../src/resilience/circuit-breaker.store.js';
+import { circuitBreakerStore } from '../../../src/resilience/circuit-breaker.store.js';
 import { memoryStore } from '../../../src/stores/memory.store.js';
 import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -276,7 +276,7 @@ describe('CacheModule', () => {
             stores: {
               default: tieredStore({ l1: memoryStore(), l2: new FakeStore() }),
               closing,
-              flaky: circuitBreaker(flaky, { failureThreshold: 1 }),
+              flaky: circuitBreakerStore(flaky, { failureThreshold: 1 }),
             },
           }),
         ],

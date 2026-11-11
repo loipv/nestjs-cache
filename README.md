@@ -820,11 +820,11 @@ await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock:
 Wrap a store so that a slow or failing backend stops being called, instead of adding its timeout to every request.
 
 ```ts
-import { circuitBreaker, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache';
+import { circuitBreakerStore, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache';
 
 const store = tieredStore({
   l1: memoryStore(),
-  l2: circuitBreaker(redisStore({ client: redis }), {
+  l2: circuitBreakerStore(redisStore({ client: redis }), {
     failureThreshold: 5, // default
     openDuration: 10_000, // default, ms
     timeout: 500, // default, ms
@@ -840,7 +840,7 @@ const store = tieredStore({
 
 - Defaults: `failureThreshold` 5 (an integer `>= 1`), `openDuration` 10_000, `timeout` 500. `timeout` and
   `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
-  otherwise `circuitBreaker` throws `CacheConfigError`. `circuitBreaker(...)` returns a `CircuitBreakerStore`, its options are
+  otherwise `circuitBreakerStore` throws `CacheConfigError`. `circuitBreakerStore(...)` returns a `CircuitBreakerStore`, its options are
   typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
 - Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `lock.acquire` and `lock.release`. `invalidation`, `bind`
   and `close` are passed through. The breaker has `getAndTouch` and `lock` only if the wrapped store does.
@@ -1076,20 +1076,20 @@ export class HealthController {
 It never rejects, except with `CacheConfigError` for an unknown store name or a `timeout` that is not a finite number
 from 1 to 2147483647. It does not emit `error` events, and a `ping` that rejects after the timeout is handled.
 
-| Store                 | `ping`                                                                     |
-| --------------------- | -------------------------------------------------------------------------- |
-| `memoryStore`         | Always resolves                                                            |
-| `redisStore`          | Redis `PING`. Present only when the Redis client adapter has `ping`        |
-| `tieredStore`         | Calls the L2 store's `ping`. Present only when L2 has it                   |
-| `circuitBreaker(...)` | Goes through the breaker: rejects with `CircuitOpenError` while it is open |
-| Store without `ping`  | Reported as `up` with `ping: 'unsupported'`                                |
+| Store                      | `ping`                                                                     |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `memoryStore`              | Always resolves                                                            |
+| `redisStore`               | Redis `PING`. Present only when the Redis client adapter has `ping`        |
+| `tieredStore`              | Calls the L2 store's `ping`. Present only when L2 has it                   |
+| `circuitBreakerStore(...)` | Goes through the breaker: rejects with `CircuitOpenError` while it is open |
+| Store without `ping`       | Reported as `up` with `ping: 'unsupported'`                                |
 
 `ioredisAdapter` provides `ping` and `mget` only when the client has them; both are optional members of `IoredisLike`, so a hand-written stub can leave them out (health then reports `ping: 'unsupported'`).
 
 With ioredis's default offline queue, a `ping` that timed out stays queued until ioredis gives up
 (`maxRetriesPerRequest`, default 20), so frequent checks while Redis is down queue PINGs until then. Set
 `maxRetriesPerRequest` low or `enableOfflineQueue: false` on the client if that matters. On a store wrapped with
-`circuitBreaker(...)`, a failed `ping` counts toward `failureThreshold` like any other operation. Once `openDuration`
+`circuitBreakerStore(...)`, a failed `ping` counts toward `failureThreshold` like any other operation. Once `openDuration`
 has passed, the next call, which may be a `ping`, becomes the single probe; while that probe is in flight (half-open),
 other calls including `ping` are rejected with `CircuitOpenError`.
 
@@ -1148,12 +1148,12 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
 `CacheConfigError` is thrown only in these cases:
 
-| When                                | Cases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, `softTimeout`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `softTimeout` on `@CachePut`; `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; invalid decorator `tags` (not an array or function, an empty string, a malformed template, `@CacheEvict({ tags: [] })`); a namespace starting with `__`                                                 |
-| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store                                                                                                                                                                       |
-| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl`, `maxTtl` or `softTimeout` (including `maxTtl < ttl`); `softTimeout` on `get`, `getMany`, `set` or `setMany`; a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`; `invalidateTags` with an empty list, an empty string, a non-array, more than 32 tags or an unknown store |
+| When                                     | Cases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Class definition (decorators)            | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, `softTimeout`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `softTimeout` on `@CachePut`; `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; invalid decorator `tags` (not an array or function, an empty string, a malformed template, `@CacheEvict({ tags: [] })`); a namespace starting with `__`                                                 |
+| `circuitBreakerStore(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| App startup                              | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store                                                                                                                                                                       |
+| `CacheService` call (rejects)            | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl`, `maxTtl` or `softTimeout` (including `maxTtl < ttl`); `softTimeout` on `get`, `getMany`, `set` or `setMany`; a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`; `invalidateTags` with an empty list, an empty string, a non-array, more than 32 tags or an unknown store |
 
 `compressedSerializer(...)` with invalid options also throws `CacheConfigError`. Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.

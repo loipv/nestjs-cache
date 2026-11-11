@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadWithLock } from '../../../src/core/lock-runner.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import {
-  circuitBreaker,
+  circuitBreakerStore,
   CircuitBreakerStore,
   CircuitOpenError,
 } from '../../../src/resilience/circuit-breaker.store.js';
@@ -50,13 +50,13 @@ function breakerStates(sink: ReturnType<typeof makeSink>): unknown[] {
 }
 
 /** Opens a breaker with `failureThreshold` 1 by failing one `get`. */
-async function openWithOneFailure(inner: FakeStore, b: ReturnType<typeof circuitBreaker>) {
+async function openWithOneFailure(inner: FakeStore, b: ReturnType<typeof circuitBreakerStore>) {
   inner.failNext('get');
   await expect(b.get('k')).rejects.toThrow('get failed');
   expect(b.state).toBe('open');
 }
 
-describe('circuitBreaker', () => {
+describe('circuitBreakerStore', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -68,7 +68,7 @@ describe('circuitBreaker', () => {
 
   it('opens after failureThreshold consecutive failures and rejects without calling the store', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 2 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 2 });
     const sink = makeSink();
     b.bind(sink);
     inner.failNext('get');
@@ -89,7 +89,7 @@ describe('circuitBreaker', () => {
 
   it('uses the defaults: 5 failures, 10_000 ms open, 500 ms timeout', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     for (let i = 0; i < 4; i++) {
       inner.failNext('set');
       await expect(b.set('k', 'v', 10)).rejects.toThrow('set failed');
@@ -120,7 +120,7 @@ describe('circuitBreaker', () => {
 
   it('a success resets the failure count', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 2 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 2 });
     inner.failNext('get');
     await expect(b.get('k')).rejects.toThrow();
     await expect(b.get('k')).resolves.toBeUndefined();
@@ -134,7 +134,7 @@ describe('circuitBreaker', () => {
 
   it('counts failures across all guarded operations', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 4 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 4 });
     inner.failNext('get');
     inner.failNext('set');
     inner.failNext('delete');
@@ -149,7 +149,7 @@ describe('circuitBreaker', () => {
 
   it('forwards arguments and results of guarded operations', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     await b.set('a', '1', 25);
     expect(inner.data.get('a')).toEqual({ value: '1', ttlMs: 25 });
     await expect(b.get('a')).resolves.toBe('1');
@@ -163,7 +163,7 @@ describe('circuitBreaker', () => {
 
   it('half-open lets exactly one probe through', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1_000 });
     const sink = makeSink();
     b.bind(sink);
     await openWithOneFailure(inner, b);
@@ -196,7 +196,7 @@ describe('circuitBreaker', () => {
 
   it('a probe that succeeds resets the count (threshold > 1)', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 2, openDuration: 100 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 2, openDuration: 100 });
     inner.failNext('get');
     inner.failNext('get');
     await expect(b.get('k')).rejects.toThrow();
@@ -212,7 +212,7 @@ describe('circuitBreaker', () => {
 
   it('a failed probe reopens and restarts openDuration', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 3, openDuration: 1_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 3, openDuration: 1_000 });
     const sink = makeSink();
     b.bind(sink);
     for (let i = 0; i < 3; i++) {
@@ -241,7 +241,7 @@ describe('circuitBreaker', () => {
 
   it('a probe that times out reopens with a fresh openDuration', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1_000 });
     await openWithOneFailure(inner, b);
     vi.setSystemTime(1_000);
     hangNextGet(inner);
@@ -260,7 +260,7 @@ describe('circuitBreaker', () => {
 
   it('a half-open probe that throws synchronously reopens with a fresh openDuration', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1_000 });
     const sink = makeSink();
     b.bind(sink);
     await openWithOneFailure(inner, b);
@@ -281,7 +281,7 @@ describe('circuitBreaker', () => {
 
   it('a probe that times out and then succeeds late leaves the breaker open', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 1_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1_000 });
     const sink = makeSink();
     b.bind(sink);
     await openWithOneFailure(inner, b);
@@ -304,7 +304,7 @@ describe('circuitBreaker', () => {
 
   it('a timeout counts as a failure', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     const sink = makeSink();
     b.bind(sink);
     hangNextGet(inner);
@@ -317,7 +317,7 @@ describe('circuitBreaker', () => {
 
   it('uses the configured timeout in the message', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { timeout: 42 });
+    const b = circuitBreakerStore(inner, { timeout: 42 });
     hangNextGet(inner);
     const result = expect(b.get('k')).rejects.toThrow(
       'Cache store operation timed out after 42 ms',
@@ -328,7 +328,7 @@ describe('circuitBreaker', () => {
 
   it('a late success after a timeout does not reset the count (Review Focus 4)', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 2 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 2 });
     const slow = hangNextGet(inner);
     const first = expect(b.get('k')).rejects.toThrow(TIMEOUT_MESSAGE);
     await vi.advanceTimersByTimeAsync(500);
@@ -343,7 +343,7 @@ describe('circuitBreaker', () => {
 
   it('a late result does not change the state of an open breaker', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 10_000 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 10_000 });
     const sink = makeSink();
     b.bind(sink);
     const slow = hangNextGet(inner);
@@ -359,7 +359,7 @@ describe('circuitBreaker', () => {
 
   it('a timed-out operation that later rejects counts once', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 2 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 2 });
     const slow = hangNextGet(inner);
     const first = expect(b.get('k')).rejects.toThrow(TIMEOUT_MESSAGE);
     await vi.advanceTimersByTimeAsync(500);
@@ -372,7 +372,7 @@ describe('circuitBreaker', () => {
 
   it('ignores outcomes of operations admitted before the last state change', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 100 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 100 });
     const sink = makeSink();
     b.bind(sink);
     // Admitted while closed; settles while the breaker is half-open with a probe in flight.
@@ -396,7 +396,7 @@ describe('circuitBreaker', () => {
 
   it('treats a synchronous throw from the inner store as a failure', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     vi.spyOn(inner, 'delete').mockImplementationOnce(() => {
       throw new Error('sync');
     });
@@ -413,7 +413,7 @@ describe('circuitBreaker', () => {
     process.on('unhandledRejection', onUnhandled);
     try {
       const inner = new FakeStore();
-      const b = circuitBreaker(inner, { failureThreshold: 10 });
+      const b = circuitBreakerStore(inner, { failureThreshold: 10 });
       const slow = hangNextGet(inner);
       const first = expect(b.get('k')).rejects.toThrow(TIMEOUT_MESSAGE);
       await vi.advanceTimersByTimeAsync(500);
@@ -421,7 +421,7 @@ describe('circuitBreaker', () => {
       slow.reject(new Error('late'));
 
       const lock = new FakeLock();
-      const locking = circuitBreaker(Object.assign(new FakeStore(), { lock }));
+      const locking = circuitBreakerStore(Object.assign(new FakeStore(), { lock }));
       const lateAcquire = deferred<LockHandle | undefined>();
       vi.spyOn(lock, 'acquire').mockImplementationOnce(() => lateAcquire.promise);
       const acquired = expect(locking.lock?.acquire('k', 100)).rejects.toThrow(TIMEOUT_MESSAGE);
@@ -438,7 +438,7 @@ describe('circuitBreaker', () => {
   });
 
   it('only exposes getAndTouch/lock when the inner store has them (Review Focus 5)', () => {
-    const plain = circuitBreaker(new FakeStore());
+    const plain = circuitBreakerStore(new FakeStore());
     expect(plain.lock).toBeUndefined();
     expect(plain.getAndTouch).toBeUndefined();
     expect(plain.invalidation).toBeUndefined();
@@ -446,7 +446,7 @@ describe('circuitBreaker', () => {
     expect('getAndTouch' in plain).toBe(false);
     expect('invalidation' in plain).toBe(false);
 
-    const rich = circuitBreaker(
+    const rich = circuitBreakerStore(
       Object.assign(new FakeStore(), { lock: new FakeLock(), getAndTouch: vi.fn() }),
     );
     expect(rich.lock).toBeDefined();
@@ -463,7 +463,7 @@ describe('circuitBreaker', () => {
       new FakeStore(),
       { getAndTouch },
     );
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     await expect(b.getAndTouch?.('k', 30)).resolves.toBe('k:30');
     expect(getAndTouch).toHaveBeenCalledWith('k', 30);
 
@@ -477,7 +477,7 @@ describe('circuitBreaker', () => {
   it('getAndTouch times out like any other operation', async () => {
     const touch = deferred<string | undefined>();
     const inner = Object.assign(new FakeStore(), { getAndTouch: vi.fn(() => touch.promise) });
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     const result = expect(b.getAndTouch?.('k', 1)).rejects.toThrow(TIMEOUT_MESSAGE);
     await vi.advanceTimersByTimeAsync(500);
     await result;
@@ -487,7 +487,7 @@ describe('circuitBreaker', () => {
   it('guards lock.acquire and handle.release', async () => {
     const lock = new FakeLock();
     const inner = Object.assign(new FakeStore(), { lock });
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     expect(b.lock).not.toBe(lock);
 
     const handle = await b.lock?.acquire('k', 100);
@@ -512,7 +512,9 @@ describe('circuitBreaker', () => {
 
   it('a failed release counts as a failure; release is rejected while open', async () => {
     const lock = new FakeLock();
-    const b = circuitBreaker(Object.assign(new FakeStore(), { lock }), { failureThreshold: 1 });
+    const b = circuitBreakerStore(Object.assign(new FakeStore(), { lock }), {
+      failureThreshold: 1,
+    });
     const first = await b.lock?.acquire('a', 100);
     const second = await b.lock?.acquire('b', 100);
     lock.failNext('release');
@@ -527,7 +529,7 @@ describe('circuitBreaker', () => {
   it('forwards invalidation, bind and close unchanged', async () => {
     const bus: InvalidationBus = new FakeBus();
     const inner = Object.assign(new FakeStore(), { invalidation: bus });
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     expect(b.invalidation).toBe(bus);
     expect('invalidation' in b).toBe(true);
 
@@ -549,7 +551,7 @@ describe('circuitBreaker', () => {
       delete: () => Promise.resolve(),
       clear: () => Promise.resolve(),
     };
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     expect(() => {
       b.bind(makeSink());
     }).not.toThrow();
@@ -559,7 +561,7 @@ describe('circuitBreaker', () => {
 
   it('emits nothing before bind', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 100 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 100 });
     await openWithOneFailure(inner, b);
     vi.setSystemTime(100);
     await expect(b.get('k')).resolves.toBeUndefined();
@@ -574,7 +576,7 @@ describe('circuitBreaker', () => {
 
   it('a throwing sink never reaches the caller', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner, { failureThreshold: 1, openDuration: 100 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 100 });
     b.bind({
       emit: () => {
         throw new Error('sink');
@@ -598,31 +600,31 @@ describe('circuitBreaker', () => {
     ['timeout', Number.NaN],
     ['timeout', '500'],
   ] as const)('rejects %s = %s', (f, v) => {
-    expect(() => circuitBreaker(new FakeStore(), { [f]: v })).toThrow(CacheConfigError);
+    expect(() => circuitBreakerStore(new FakeStore(), { [f]: v })).toThrow(CacheConfigError);
   });
 
   it('names the option and the rule in the config error', () => {
-    expect(() => circuitBreaker(new FakeStore(), { failureThreshold: 1.5 })).toThrow(
-      'Invalid circuitBreaker option failureThreshold: 1.5 (must be an integer >= 1)',
+    expect(() => circuitBreakerStore(new FakeStore(), { failureThreshold: 1.5 })).toThrow(
+      'Invalid circuitBreakerStore option failureThreshold: 1.5 (must be an integer >= 1)',
     );
-    expect(() => circuitBreaker(new FakeStore(), { openDuration: 0 })).toThrow(
-      'Invalid circuitBreaker option openDuration: 0 (must be a finite number > 0 and <= 2147483647)',
+    expect(() => circuitBreakerStore(new FakeStore(), { openDuration: 0 })).toThrow(
+      'Invalid circuitBreakerStore option openDuration: 0 (must be a finite number > 0 and <= 2147483647)',
     );
-    expect(() => circuitBreaker(new FakeStore(), { timeout: -1 })).toThrow(
-      'Invalid circuitBreaker option timeout: -1 (must be a finite number > 0 and <= 2147483647)',
+    expect(() => circuitBreakerStore(new FakeStore(), { timeout: -1 })).toThrow(
+      'Invalid circuitBreakerStore option timeout: -1 (must be a finite number > 0 and <= 2147483647)',
     );
   });
 
   it('accepts valid explicit options', () => {
     expect(() =>
-      circuitBreaker(new FakeStore(), { failureThreshold: 1, openDuration: 0.5, timeout: 1 }),
+      circuitBreakerStore(new FakeStore(), { failureThreshold: 1, openDuration: 0.5, timeout: 1 }),
     ).not.toThrow();
-    expect(() => circuitBreaker(new FakeStore(), {})).not.toThrow();
+    expect(() => circuitBreakerStore(new FakeStore(), {})).not.toThrow();
   });
 
   it('clears its timers', async () => {
     const inner = new FakeStore();
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     await b.get('k');
     expect(vi.getTimerCount()).toBe(0);
     await b.set('k', 'v', 1);
@@ -642,7 +644,7 @@ describe('circuitBreaker', () => {
     const lock = new FakeLock();
     lock.held.add('k');
     const inner = Object.assign(new FakeStore(), { lock });
-    const b = circuitBreaker(inner, { failureThreshold: 10, timeout: 500 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 10, timeout: 500 });
     const hooks = { onLock: vi.fn(), onError: vi.fn() };
     const getSpy = vi.spyOn(inner, 'get').mockImplementation(() => new Promise(() => undefined));
     const load = vi.fn(() => Promise.resolve('loaded'));
@@ -677,7 +679,7 @@ describe('circuitBreaker', () => {
   });
 });
 
-describe('circuitBreaker timers (real)', () => {
+describe('circuitBreakerStore timers (real)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -685,7 +687,7 @@ describe('circuitBreaker timers (real)', () => {
   it('unrefs the timeout timer', async () => {
     const spy = vi.spyOn(globalThis, 'setTimeout');
     const inner = new FakeStore();
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     const slow = hangNextGet(inner);
     const pending = b.get('k');
     expect(spy).toHaveBeenCalledOnce();
@@ -759,7 +761,7 @@ describe('late lock handles and duration bounds', () => {
       };
       const inner = Object.assign(new FakeStore(), { lock });
       const sink = makeSink();
-      const b = circuitBreaker(inner, { failureThreshold: 5 });
+      const b = circuitBreakerStore(inner, { failureThreshold: 5 });
       b.bind(sink);
       const guarded = b.lock!.acquire('k', 1_000);
       const caught = guarded.catch((e: unknown) => e);
@@ -803,7 +805,7 @@ describe('late lock handles and duration bounds', () => {
             }),
         );
         const inner = Object.assign(new FakeStore(), { lock: { acquire } });
-        const b = circuitBreaker(inner, { failureThreshold: 5 });
+        const b = circuitBreakerStore(inner, { failureThreshold: 5 });
         const caught = b.lock!.acquire('k', 1_000).catch((e: unknown) => e);
         await vi.advanceTimersByTimeAsync(700);
         expect(((await caught) as Error).message).toBe(
@@ -821,30 +823,33 @@ describe('late lock handles and duration bounds', () => {
   );
 
   it.each(['timeout', 'openDuration'] as const)('rejects %s above the setTimeout limit', (name) => {
-    expect(() => circuitBreaker(new FakeStore(), { [name]: 2_147_483_648 })).toThrow(
-      `Invalid circuitBreaker option ${name}: 2147483648 (must be a finite number > 0 and <= 2147483647)`,
+    expect(() => circuitBreakerStore(new FakeStore(), { [name]: 2_147_483_648 })).toThrow(
+      `Invalid circuitBreakerStore option ${name}: 2147483648 (must be a finite number > 0 and <= 2147483647)`,
     );
-    expect(() => circuitBreaker(new FakeStore(), { [name]: 2_147_483_647 })).not.toThrow();
+    expect(() => circuitBreakerStore(new FakeStore(), { [name]: 2_147_483_647 })).not.toThrow();
   });
 });
 
 describe('index exports', () => {
-  it('exports circuitBreaker and CircuitOpenError', async () => {
-    const index = await import('../../../src/index.js');
-    expect(index.circuitBreaker).toBe(circuitBreaker);
+  it('exports circuitBreakerStore and CircuitOpenError', async () => {
+    /* 0.9-T6 G-08: the factory is named after its class, like memoryStore/MemoryStore; the old
+       name circuitBreaker is gone. */
+    const index: Record<string, unknown> = await import('../../../src/index.js');
+    expect(index).not.toHaveProperty('circuitBreaker');
+    expect(index.circuitBreakerStore).toBe(circuitBreakerStore);
     expect(index.CircuitOpenError).toBe(CircuitOpenError);
     expect(index.CircuitBreakerStore).toBe(CircuitBreakerStore);
   });
 });
 
-describe('circuitBreaker batch', () => {
+describe('circuitBreakerStore batch', () => {
   /* The batch members are present only when the inner store has them. */
   it('getMany and setMany exist only when the inner store has them', async () => {
-    const plain = circuitBreaker(new FakeStore());
+    const plain = circuitBreakerStore(new FakeStore());
     expect('getMany' in plain).toBe(false);
     expect('setMany' in plain).toBe(false);
     const inner = memoryStore();
-    const b = circuitBreaker(inner);
+    const b = circuitBreakerStore(inner);
     expect('getMany' in b).toBe(true);
     expect('setMany' in b).toBe(true);
     await b.setMany?.([{ key: 'a', value: '1', ttlMs: 1_000 }]);
@@ -861,7 +866,7 @@ describe('circuitBreaker batch', () => {
       Promise.resolve(),
     );
     const inner = Object.assign(new FakeStore(), { getStrict, setStrict });
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     await expect(b.getStrict?.('k')).resolves.toBe('k!');
     await expect(b.setStrict?.('k', 'v', 30)).resolves.toBeUndefined();
     expect(setStrict).toHaveBeenCalledWith('k', 'v', 30);
@@ -877,7 +882,7 @@ describe('circuitBreaker batch', () => {
 
   /* A plain inner store: the breaker has neither member, so `in` checks stay truthful. */
   it('has no getStrict or setStrict when the inner store lacks them', () => {
-    const breaker = circuitBreaker(new FakeStore());
+    const breaker = circuitBreakerStore(new FakeStore());
     expect('getStrict' in breaker).toBe(false);
     expect('setStrict' in breaker).toBe(false);
     expect(breaker.getStrict).toBeUndefined();
@@ -888,7 +893,7 @@ describe('circuitBreaker batch', () => {
   it('an open circuit rejects getMany with CircuitOpenError', async () => {
     const inner = memoryStore();
     const spy = vi.spyOn(inner, 'getMany').mockRejectedValue(new Error('down'));
-    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
     await expect(b.getMany?.(['a', 'b', 'c'])).rejects.toThrow('down');
     expect(b.state).toBe('open');
     await expect(b.getMany?.(['a'])).rejects.toBeInstanceOf(CircuitOpenError);
