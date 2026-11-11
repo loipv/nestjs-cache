@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { CacheService } from '../../../src/core/cache.service.js';
 import { CacheConfigError } from '../../../src/errors.js';
 import { makeEngine } from '../helpers/engine.js';
@@ -11,6 +11,11 @@ describe('CacheService', () => {
   }
 
   it('get/set/delete/clear/getOrSet delegate with namespace and store', async () => {
+    /* T2-A: the clock is frozen, so the 5 ms entry cannot expire before it is read back under load. */
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const { service, store } = setup();
     await service.set('k', 1, { namespace: 'n', ttl: 5 });
     expect(store.data.get('n:k')?.ttlMs).toBe(5);
