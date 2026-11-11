@@ -3,6 +3,7 @@
 Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching.
 
 - `@Cacheable`, `@CachePut` and `@CacheEvict` decorators, plus a `CacheService` for direct calls.
+- `@HttpCache` for opt-in caching of controller routes (Express and Fastify).
 - Named stores: in-memory, Redis (ioredis or node-redis, standalone or Cluster) and a two-tier L1/L2 store synced over Pub/Sub.
 - Concurrent misses on the same key are coalesced into one load (per process), or across instances with the optional distributed lock.
 - Expiry strategies: `fixed`, `swr` (stale-while-revalidate) and `sliding`.
@@ -233,6 +234,69 @@ Callbacks may declare fewer parameters than the method.
 Unknown store names fail at startup. A bad key template, `allEntries` without `namespace`, an empty `key: []` for
 `@CacheEvict`, a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl` that is not a finite number greater than 0
 are rejected with `CacheConfigError`, as is a `cacheNull` that is not a boolean. See Error behaviour for the full list.
+
+## HTTP caching
+
+`@HttpCache` caches a controller route's response body. It is opt-in: a route without the decorator is never cached.
+
+```ts
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { CacheEvict, HttpCache } from '@loipv/nestjs-cache';
+
+@Controller('users')
+export class UsersController {
+  @Get()
+  @HttpCache({ namespace: 'users', ttl: 60_000 })
+  list(): Promise<User[]> {
+    /* ... */
+  }
+
+  @Get(':id')
+  @HttpCache({ namespace: 'users', key: (req) => `user:${req.params.id}` })
+  find(@Param('id') id: string): Promise<User> {
+    /* ... */
+  }
+
+  @Post()
+  @CacheEvict({ namespace: 'users', allEntries: true })
+  create(@Body() dto: CreateUserDto): Promise<User> {
+    /* ... */
+  }
+}
+```
+
+`CacheModule` must be global or imported into the controller's module. It works on Express and Fastify.
+
+- **Where:** on a method or on a class. A method's options replace the class's options entirely (no merge). Only `GET`
+  and `HEAD` are cached (`HEAD` shares the `GET` entry); other methods and non-HTTP contexts pass through.
+- **Options:** `ttl`, `namespace` (default `'http'`), `store`, `lock`, `cacheNull`, `nullTtl`, `key`, `unless` and the
+  strategy options (`strategy: 'swr'` with `staleTtl`/`maxTtl`, or `'sliding'`). Invalid options throw
+  `CacheConfigError` when the decorator runs; an unknown `store` fails at startup (`app.init()`) with a message that
+  names `@HttpCache`.
+- **Default key:** the request URL with the query sorted by name, then value, and `%` and `:` percent-encoded:
+  `/users?b=2&a=1` and `/users?a=1&b=2` share the entry `/users?a=1&b=2`.
+- **Key callback:** `key` is a fixed string, or `(req) => string | undefined` where `req` is
+  `{ method, url, path, query, params, headers }`. Returning `undefined` skips the cache for that request, for example
+  `key: (req) => (req.headers.authorization ? undefined : req.url)` caches only anonymous requests. A callback that
+  throws, or returns something other than a non-empty string, emits one `error` event with `operation: 'key'` and the
+  handler runs uncached.
+- **What is cached:** the handler's return value (the body) only. `StreamableFile`, `Buffer`, `Uint8Array` and streams
+  are never cached. `undefined` is never cached, so routes that use `@Res()` are not supported. `null` is cached only
+  with `cacheNull`. `@HttpCode` and `@Header` still apply on a hit.
+- **Server-side cache:** the library adds no response headers and ignores the request `Cache-Control`.
+- **Errors:** an error from the handler, including `HttpException`, reaches your exception filters and is not cached.
+  A cache or store error never reaches the client: it emits an `error` event and the handler runs.
+- **Engine features** apply unchanged: single-flight per process, `lock` across instances, `swr` and `sliding`, the
+  circuit breaker, events and Prometheus metrics.
+
+Invalidation: put list routes in a namespace and clear it from the mutations with
+`@CacheEvict({ namespace: 'users', allEntries: true })`. Declare the namespace with
+`namespaces: { users: { versioned: true } }` so that clear is O(1) (see Versioned namespaces). For single-record
+routes, build the key from the request (``key: (req) => `user:${req.params.id}` ``) and evict it with
+`@CacheEvict({ namespace: 'users', key: 'user:{0}' })`, with `@Param('id') id` as the method's first parameter.
+
+Coming from `@nestjs/cache-manager`? See the
+[migration guide](docs/migration-from-cache-manager.md).
 
 ## Dynamic keys
 
@@ -895,7 +959,8 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.3 - Observability (done):** Prometheus metrics (`CachePrometheusModule`) with a sample Grafana dashboard, configurable log level with debug logs, circuit breaker logs, and a `@nestjs/terminus` health indicator (`CacheHealthIndicator`). All from the main entry point.
 - **0.4 - Versioned namespaces and batches (done):** O(1) `clear` for opt-in versioned namespaces, `getMany`/`setMany`/`getOrSetMany`, `escapeKeyArgs`, lock keys under the prefix, and an optional `ping`.
 - **0.5 - Redis Cluster and node-redis (done):** Redis Cluster through ioredis, `nodeRedisAdapter` for `redis` v5 (standalone and cluster), `CacheStore.getStrict`/`setStrict`, `RedisClientAdapter.scanIterator`, and the tiered-store fix for versioned namespaces while L2 is down.
-- **0.6 - Tags and HTTP caching (planned):** cache tags, `HttpCacheInterceptor`, and a migration guide.
+- **0.6 - HTTP caching (done):** `@HttpCache` and `HttpCacheInterceptor` for opt-in route caching on Express and Fastify, and a [migration guide](docs/migration-from-cache-manager.md) from `@nestjs/cache-manager`.
+- **0.7 - Tags (planned):** cache tags.
 
 ## Releasing
 
