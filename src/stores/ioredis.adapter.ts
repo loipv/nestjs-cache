@@ -156,13 +156,23 @@ function clusterCommands(client: IoredisClusterLike): KeyspaceCommands {
   };
 }
 
-/** Reads the masters when iteration starts, so a topology change before `clear` is seen. */
+/**
+ * Reads the masters when iteration starts, so a topology change before `clear` is seen. Rejects
+ * when none is known (a `lazyConnect` Cluster before its first command): scanning zero masters
+ * would let `clear` succeed without deleting anything.
+ */
 async function* scanMasters(
   client: IoredisClusterLike,
   match: string,
   count: number,
 ): AsyncIterable<string[]> {
-  yield* scanNodes(client.nodes('master'), async (node, cursor) => {
+  const masters = client.nodes('master');
+  if (masters.length === 0) {
+    throw new Error(
+      'ioredisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
+    );
+  }
+  yield* scanNodes(masters, async (node, cursor) => {
     const [next, keys] = await node.scan(cursor, 'MATCH', match, 'COUNT', count);
     return { cursor: next, keys };
   });

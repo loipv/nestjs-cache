@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CacheConfigError } from '../../../src/errors.js';
 import { ioredisAdapter, RELEASE_SCRIPT } from '../../../src/stores/ioredis.adapter.js';
 import { keySlot } from '../../../src/stores/key-slot.js';
+import { redisStore } from '../../../src/stores/redis.store.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
 import { FakeCluster, FakeConnection } from '../helpers/fake-ioredis.js';
 
@@ -329,6 +330,26 @@ describe('ioredisAdapter cluster mode', () => {
     expect(m2!.scan).toHaveBeenCalledWith('0', 'MATCH', 'p:*', 'COUNT', 100);
     expect(m3!.scan).toHaveBeenCalledWith('0', 'MATCH', 'p:*', 'COUNT', 100);
     expect(cluster.scan).not.toHaveBeenCalled();
+  });
+
+  /* A lazyConnect Cluster knows no master before its first command. Scanning zero masters would
+     let clear succeed while deleting nothing, so scanIterator rejects with a plain Error (not a
+     CacheConfigError), RedisStore.clear rejects with it and no UNLINK is sent. */
+  it('scanIterator and clear reject when no cluster master is known yet', async () => {
+    const cluster = new FakeCluster();
+    cluster.nodes.mockReturnValue([]);
+    const adapter = ioredisAdapter(cluster.asCluster());
+    const pages: string[][] = [];
+    const iterating = (async () => {
+      for await (const page of adapter.scanIterator!('*', 100)) pages.push(page);
+    })();
+    await expect(iterating).rejects.toThrow('no cluster master');
+    await expect(iterating).rejects.not.toBeInstanceOf(CacheConfigError);
+    expect(pages).toEqual([]);
+
+    const store = redisStore({ client: cluster.asCluster() });
+    await expect(store.clear('')).rejects.toThrow('no cluster master');
+    expect(cluster.unlink).not.toHaveBeenCalled();
   });
 
   /* A cursor scan cannot cover a cluster: scan rejects with a CacheConfigError that points to
