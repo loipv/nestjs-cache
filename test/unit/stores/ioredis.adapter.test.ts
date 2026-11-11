@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CacheConfigError } from '../../../src/errors.js';
 import { ioredisAdapter, RELEASE_SCRIPT } from '../../../src/stores/ioredis.adapter.js';
+import { keySlot } from '../../../src/stores/key-slot.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
-import { FakeConnection } from '../helpers/fake-ioredis.js';
+import { FakeCluster, FakeConnection } from '../helpers/fake-ioredis.js';
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
@@ -263,5 +265,139 @@ describe('ioredisAdapter optional members', () => {
     const adapter = ioredisAdapter(fake.asIoredis());
     expect('mget' in adapter).toBe(false);
     expect('ping' in adapter).toBe(false);
+  });
+});
+
+describe('ioredisAdapter cluster mode', () => {
+  /* '{a}1' and '{a}2' share the slot of 'a'; '{b}1' is in another slot. One MGET per slot, and
+     the values come back in input order with null mapped to undefined. */
+  it('uses per-slot MGET in cluster mode', async () => {
+    expect(keySlot('{a}1')).not.toBe(keySlot('{b}1'));
+    const cluster = new FakeCluster();
+    cluster.mget.mockImplementation((...keys: string[]) =>
+      Promise.resolve(keys.map((key) => (key === '{a}2' ? null : `v:${key}`))),
+    );
+    const adapter = ioredisAdapter(cluster.asCluster());
+    await expect(adapter.mget?.(['{a}1', '{b}1', '{a}2'])).resolves.toEqual([
+      'v:{a}1',
+      'v:{b}1',
+      undefined,
+    ]);
+    expect(cluster.mget).toHaveBeenCalledTimes(2);
+    expect(cluster.mget).toHaveBeenCalledWith('{a}1', '{a}2');
+    expect(cluster.mget).toHaveBeenCalledWith('{b}1');
+  });
+
+  /* Keys in two slots: one UNLINK per slot, each with only that slot's keys. */
+  it('uses per-slot UNLINK in cluster mode', async () => {
+    const cluster = new FakeCluster();
+    cluster.unlink.mockResolvedValue(1);
+    const adapter = ioredisAdapter(cluster.asCluster());
+    await adapter.unlink(['{a}1', '{b}1', '{a}2']);
+    expect(cluster.unlink).toHaveBeenCalledTimes(2);
+    expect(cluster.unlink).toHaveBeenCalledWith('{a}1', '{a}2');
+    expect(cluster.unlink).toHaveBeenCalledWith('{b}1');
+  });
+
+  /* Review Focus 3: empty key lists resolve at once and never reach the cluster client. */
+  it('sends no command for empty mget or unlink in cluster mode', async () => {
+    const cluster = new FakeCluster();
+    const adapter = ioredisAdapter(cluster.asCluster());
+    await expect(adapter.mget?.([])).resolves.toEqual([]);
+    await expect(adapter.unlink([])).resolves.toBeUndefined();
+    expect(cluster.mget).not.toHaveBeenCalled();
+    expect(cluster.unlink).not.toHaveBeenCalled();
+  });
+
+  /* Three masters: the first has two pages, the second none, the third one. scanIterator asks
+     for the masters, scans each to cursor '0' with MATCH/COUNT and yields the non-empty pages. */
+  it('scanIterator walks every master', async () => {
+    const cluster = new FakeCluster();
+    const [m1, m2, m3] = cluster.masters;
+    m1!.scan.mockResolvedValueOnce(['5', ['p:1']]).mockResolvedValueOnce(['0', ['p:2']]);
+    m2!.scan.mockResolvedValueOnce(['0', []]);
+    m3!.scan.mockResolvedValueOnce(['0', ['p:3']]);
+    const adapter = ioredisAdapter(cluster.asCluster());
+    const pages: string[][] = [];
+    for await (const page of adapter.scanIterator!('p:*', 100)) pages.push(page);
+    expect(pages).toEqual([['p:1'], ['p:2'], ['p:3']]);
+    expect(cluster.nodes).toHaveBeenCalledWith('master');
+    expect(m1!.scan.mock.calls).toEqual([
+      ['0', 'MATCH', 'p:*', 'COUNT', 100],
+      ['5', 'MATCH', 'p:*', 'COUNT', 100],
+    ]);
+    expect(m2!.scan).toHaveBeenCalledWith('0', 'MATCH', 'p:*', 'COUNT', 100);
+    expect(m3!.scan).toHaveBeenCalledWith('0', 'MATCH', 'p:*', 'COUNT', 100);
+    expect(cluster.scan).not.toHaveBeenCalled();
+  });
+
+  /* A cursor scan cannot cover a cluster: scan rejects with a CacheConfigError that points to
+     scanIterator, and sends nothing. */
+  it('scan rejects with CacheConfigError in cluster mode', async () => {
+    const cluster = new FakeCluster();
+    const adapter = ioredisAdapter(cluster.asCluster());
+    const scanning = adapter.scan('0', '*', 100);
+    await expect(scanning).rejects.toBeInstanceOf(CacheConfigError);
+    await expect(scanning).rejects.toThrow('scanIterator');
+    expect(cluster.scan).not.toHaveBeenCalled();
+  });
+
+  /* publish goes through SPUBLISH. The subscriber is a duplicate with shardedSubscribers forced
+     on; it sends SSUBSCRIBE and delivers 'smessage' events, never using SUBSCRIBE or 'message'. */
+  it('publishes with spublish and subscribes with ssubscribe on smessage in cluster mode', async () => {
+    const cluster = new FakeCluster();
+    const adapter = ioredisAdapter(cluster.asCluster());
+    const subscriber = adapter.createSubscriber();
+    expect(cluster.duplicateCalls).toEqual([[[], { shardedSubscribers: true }]]);
+    const connection = cluster.clusterDuplicates[0]!;
+    const onMessage = vi.fn();
+    await subscriber.subscribe('ch', onMessage);
+    expect(connection.ssubscribe).toHaveBeenCalledWith('ch');
+    expect(connection.subscribe).not.toHaveBeenCalled();
+
+    await adapter.publish('ch', 'hello');
+    expect(cluster.spublish).toHaveBeenCalledWith('ch', 'hello');
+    expect(cluster.publish).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledWith('hello');
+
+    connection.emit('message', 'ch', 'unsharded');
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    await subscriber.close();
+    expect(connection.quit).toHaveBeenCalledTimes(1);
+  });
+
+  /* A failed SSUBSCRIBE is sent again on 'ready', as for the unsharded subscriber. */
+  it('retries a failed ssubscribe on ready in cluster mode', async () => {
+    const cluster = new FakeCluster();
+    const subscriber = ioredisAdapter(cluster.asCluster()).createSubscriber();
+    const connection = cluster.clusterDuplicates[0]!;
+    connection.ssubscribe.mockImplementationOnce(() => Promise.reject(new Error('MOVED')));
+    const onMessage = vi.fn();
+    await expect(subscriber.subscribe('ch', onMessage)).rejects.toThrow('MOVED');
+    connection.emit('ready');
+    await flush();
+    connection.spublishRemote('ch', 'm');
+    expect(onMessage).toHaveBeenCalledWith('m');
+    expect(connection.ssubscribe).toHaveBeenCalledTimes(2);
+  });
+
+  /* A plain client, whether isCluster is false (a real ioredis Redis) or absent, keeps the 0.4
+     behaviour: no scanIterator, PUBLISH, a plain duplicate and SUBSCRIBE. */
+  it('a non-cluster client (isCluster false or absent) behaves exactly as in 0.4', async () => {
+    const absent = new FakeConnection();
+    const explicit = Object.assign(new FakeConnection(), { isCluster: false });
+    for (const client of [absent, explicit]) {
+      client.unlink.mockResolvedValue(2);
+      client.scan.mockResolvedValue(['0', ['k']]);
+      const adapter = ioredisAdapter(client.asIoredis());
+      expect('scanIterator' in adapter).toBe(false);
+      await adapter.publish('ch', 'm');
+      expect(client.publish).toHaveBeenCalledWith('ch', 'm');
+      await adapter.unlink(['{a}1', '{b}1']);
+      expect(client.unlink).toHaveBeenCalledWith('{a}1', '{b}1');
+      await expect(adapter.scan('0', '*', 10)).resolves.toEqual({ cursor: '0', keys: ['k'] });
+      await adapter.createSubscriber().subscribe('ch', vi.fn());
+      expect(client.duplicates[0]!.subscribe).toHaveBeenCalledWith('ch');
+    }
   });
 });

@@ -1,10 +1,10 @@
 import type { InvalidationBus, InvalidationMessage } from './cache-store.interface.js';
 import { ioredisAdapter, isRedisClientAdapter } from './ioredis.adapter.js';
-import type { IoredisLike } from './ioredis.adapter.js';
+import type { IoredisClusterLike, IoredisLike } from './ioredis.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 
 export interface RedisStoreOptions {
-  client: IoredisLike | RedisClientAdapter;
+  client: IoredisLike | IoredisClusterLike | RedisClientAdapter;
   /** Defaults to 'nestjs-cache:invalidate'. */
   channel?: string;
 }
@@ -12,7 +12,9 @@ export interface RedisStoreOptions {
 /** Internal: the channel used when none is configured. */
 export const DEFAULT_CHANNEL = 'nestjs-cache:invalidate';
 
-export function toRedisAdapter(client: IoredisLike | RedisClientAdapter): RedisClientAdapter {
+export function toRedisAdapter(
+  client: IoredisLike | IoredisClusterLike | RedisClientAdapter,
+): RedisClientAdapter {
   return isRedisClientAdapter(client) ? client : ioredisAdapter(client);
 }
 

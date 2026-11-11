@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
-import type { IoredisLike } from '../../../src/stores/ioredis.adapter.js';
+import type { IoredisClusterLike, IoredisLike } from '../../../src/stores/ioredis.adapter.js';
 
 /**
  * Stand-in for an ioredis connection. Like ioredis, it only delivers messages on channels whose
@@ -54,5 +54,42 @@ export class FakeConnection extends EventEmitter {
 
   asIoredis(): IoredisLike {
     return this as unknown as IoredisLike;
+  }
+}
+
+/**
+ * Stand-in for an ioredis `Cluster`: `nodes('master')` returns three fake masters, and sharded
+ * pub/sub (`spublish`, `ssubscribe`, `'smessage'`) reaches the clusters made by `duplicate`.
+ */
+export class FakeCluster extends FakeConnection {
+  readonly isCluster = true;
+  readonly masters = [new FakeConnection(), new FakeConnection(), new FakeConnection()];
+  /** The arguments of every `duplicate` call, in order. */
+  readonly duplicateCalls: unknown[][] = [];
+  readonly clusterDuplicates: FakeCluster[] = [];
+  readonly shardChannels = new Set<string>();
+  nodes = vi.fn(() => this.masters.map((master) => master.asIoredis()));
+  spublish = vi.fn((channel: string, message: string) => {
+    for (const cluster of this.clusterDuplicates) cluster.spublishRemote(channel, message);
+    return Promise.resolve(1);
+  });
+  ssubscribe = vi.fn((...channels: string[]) => {
+    for (const channel of channels) this.shardChannels.add(channel);
+    return Promise.resolve(channels.length);
+  });
+
+  override duplicate(...args: unknown[]): IoredisLike {
+    this.duplicateCalls.push(args);
+    const cluster = new FakeCluster();
+    this.clusterDuplicates.push(cluster);
+    return cluster.asIoredis();
+  }
+
+  spublishRemote(channel: string, message: string): void {
+    if (this.shardChannels.has(channel)) this.emit('smessage', channel, message);
+  }
+
+  asCluster(): IoredisClusterLike {
+    return this as unknown as IoredisClusterLike;
   }
 }

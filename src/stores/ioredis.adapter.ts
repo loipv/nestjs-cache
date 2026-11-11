@@ -1,3 +1,5 @@
+import { CacheConfigError } from '../errors.js';
+import { mgetBySlot, scanNodes, unlinkBySlot } from './cluster-ops.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 
 /**
@@ -31,6 +33,33 @@ export interface IoredisLike {
   disconnect?(): void;
 }
 
+/** The data commands a Cluster shares with a single-node client. */
+type IoredisCommands = Omit<IoredisLike, 'duplicate' | 'on'>;
+
+/**
+ * Structural subset of an ioredis `Cluster` (ioredis 5.6.0 or later, for sharded pub/sub).
+ * Declared by hand so the library never imports ioredis. `ioredisAdapter` runs in Cluster mode
+ * when `isCluster` is `true`.
+ */
+export interface IoredisClusterLike extends IoredisCommands {
+  readonly isCluster: boolean;
+  /** The master nodes; `scanIterator` scans each of them. */
+  nodes(role: 'master'): IoredisLike[];
+  spublish(channel: string, message: string): Promise<unknown>;
+  ssubscribe(...channels: string[]): Promise<unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Cluster's EventEmitter `on` takes `(...args: any[]) => void`, which `never[]` does not accept
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  /** The adapter's subscriber is `duplicate([], { shardedSubscribers: true })`. */
+  duplicate(
+    startupNodes?: unknown[],
+    options?: { shardedSubscribers?: boolean },
+  ): IoredisClusterLike;
+}
+
+function isClusterClient(client: IoredisLike | IoredisClusterLike): client is IoredisClusterLike {
+  return (client as Partial<IoredisClusterLike>).isCluster === true;
+}
+
 /** Deletes the key only when it still holds the caller's token (the `RedisLock` release). */
 export const RELEASE_SCRIPT =
   "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
@@ -38,7 +67,7 @@ export const RELEASE_SCRIPT =
 /** How long `close` waits for QUIT before it drops the subscriber connection. */
 const CLOSE_TIMEOUT_MS = 1_000;
 
-export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
+export function ioredisAdapter(client: IoredisLike | IoredisClusterLike): RedisClientAdapter {
   const adapter: RedisClientAdapter = {
     async get(key) {
       return (await client.get(key)) ?? undefined;
@@ -49,26 +78,13 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
     async getex(key, ttlMs) {
       return (await client.getex(key, 'PX', Math.ceil(ttlMs))) ?? undefined;
     },
-    async unlink(keys) {
-      if (keys.length === 0) return;
-      await client.unlink(...keys);
-    },
-    async scan(cursor, match, count) {
-      const [next, keys] = await client.scan(cursor, 'MATCH', match, 'COUNT', count);
-      return { cursor: next, keys };
-    },
     async setIfAbsent(key, value, ttlMs) {
       return (await client.set(key, value, 'PX', ttlMs, 'NX')) === 'OK';
     },
     async deleteIfEquals(key, value) {
       return (await client.eval(RELEASE_SCRIPT, 1, key, value)) === 1;
     },
-    async publish(channel, message) {
-      await client.publish(channel, message);
-    },
-    createSubscriber() {
-      return createSubscriber(client.duplicate());
-    },
+    ...(isClusterClient(client) ? clusterCommands(client) : singleNodeCommands(client)),
   };
   // Optional members exist only when the client has them, so `'ping' in adapter` is truthful.
   if (typeof client.ping === 'function') {
@@ -77,13 +93,79 @@ export function ioredisAdapter(client: IoredisLike): RedisClientAdapter {
     };
   }
   if (typeof client.mget === 'function') {
-    adapter.mget = async (keys) => {
+    const mget = async (keys: readonly string[]): Promise<(string | undefined)[]> => {
       if (keys.length === 0) return [];
       const values = (await client.mget?.(...keys)) ?? [];
       return keys.map((_, index) => values[index] ?? undefined);
     };
+    // A Cluster rejects a multi-key command across slots (CROSSSLOT): one MGET per slot.
+    adapter.mget = isClusterClient(client) ? (keys) => mgetBySlot(keys, mget) : mget;
   }
   return adapter;
+}
+
+type KeyspaceCommands = Pick<
+  RedisClientAdapter,
+  'unlink' | 'scan' | 'publish' | 'createSubscriber' | 'scanIterator'
+>;
+
+function singleNodeCommands(client: IoredisLike): KeyspaceCommands {
+  return {
+    async unlink(keys) {
+      if (keys.length === 0) return;
+      await client.unlink(...keys);
+    },
+    async scan(cursor, match, count) {
+      const [next, keys] = await client.scan(cursor, 'MATCH', match, 'COUNT', count);
+      return { cursor: next, keys };
+    },
+    async publish(channel, message) {
+      await client.publish(channel, message);
+    },
+    createSubscriber() {
+      return createSubscriber(client.duplicate(), false);
+    },
+  };
+}
+
+/** Spec 3.3: multi-key commands per slot, SCAN on every master, sharded pub/sub. */
+function clusterCommands(client: IoredisClusterLike): KeyspaceCommands {
+  return {
+    unlink(keys) {
+      return unlinkBySlot(keys, async (slotKeys) => {
+        await client.unlink(...slotKeys);
+      });
+    },
+    scan() {
+      return Promise.reject(
+        new CacheConfigError(
+          'ioredisAdapter: scan is not supported on a Redis Cluster client, because one cursor covers one node; use scanIterator, which scans every master',
+        ),
+      );
+    },
+    scanIterator(match, count) {
+      return scanMasters(client, match, count);
+    },
+    async publish(channel, message) {
+      await client.spublish(channel, message);
+    },
+    createSubscriber() {
+      // Without shardedSubscribers, ioredis sends SSUBSCRIBE to a random node and gets MOVED.
+      return createSubscriber(client.duplicate([], { shardedSubscribers: true }), true);
+    },
+  };
+}
+
+/** Reads the masters when iteration starts, so a topology change before `clear` is seen. */
+async function* scanMasters(
+  client: IoredisClusterLike,
+  match: string,
+  count: number,
+): AsyncIterable<string[]> {
+  yield* scanNodes(client.nodes('master'), async (node, cursor) => {
+    const [next, keys] = await node.scan(cursor, 'MATCH', match, 'COUNT', count);
+    return { cursor: next, keys };
+  });
 }
 
 interface Subscription {
@@ -105,7 +187,19 @@ function notifyAll<A extends unknown[]>(
   }
 }
 
-function createSubscriber(connection: IoredisLike): RedisSubscriberAdapter {
+/**
+ * The subscriber over a dedicated connection. With `sharded` (a Cluster), it sends SSUBSCRIBE and
+ * listens to 'smessage'; otherwise SUBSCRIBE and 'message'. Retries, reconnects and close are
+ * shared.
+ */
+function createSubscriber(
+  connection: IoredisLike | IoredisClusterLike,
+  sharded: boolean,
+): RedisSubscriberAdapter {
+  const subscribe = (channel: string): Promise<unknown> =>
+    sharded && isClusterClient(connection)
+      ? connection.ssubscribe(channel)
+      : connection.subscribe(channel);
   const handlers = new Map<string, (message: string) => void>();
   /**
    * The latest SUBSCRIBE per channel. ioredis restores a channel on reconnect only once a
@@ -121,7 +215,7 @@ function createSubscriber(connection: IoredisLike): RedisSubscriberAdapter {
     const subscription: Subscription = { status: 'pending', done: Promise.resolve() };
     // The executor turns a synchronous throw into a rejection, so nothing throws into ioredis.
     const sent = new Promise((resolve) => {
-      resolve(connection.subscribe(channel));
+      resolve(subscribe(channel));
     });
     subscription.done = sent.then(
       () => {
@@ -140,7 +234,7 @@ function createSubscriber(connection: IoredisLike): RedisSubscriberAdapter {
   connection.on('error', (error: unknown) => {
     notifyAll(errorHandlers, error);
   });
-  connection.on('message', (channel: string, message: string) => {
+  connection.on(sharded ? 'smessage' : 'message', (channel: string, message: string) => {
     handlers.get(channel)?.(message);
   });
   connection.on('ready', () => {
@@ -182,7 +276,7 @@ function createSubscriber(connection: IoredisLike): RedisSubscriberAdapter {
 }
 
 /** QUIT, or drop the connection if QUIT has not settled after `CLOSE_TIMEOUT_MS`. Never rejects. */
-async function closeConnection(connection: IoredisLike): Promise<void> {
+async function closeConnection(connection: IoredisLike | IoredisClusterLike): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<boolean>((resolve) => {
     timer = setTimeout(() => {
@@ -206,7 +300,7 @@ async function closeConnection(connection: IoredisLike): Promise<void> {
 }
 
 export function isRedisClientAdapter(
-  value: IoredisLike | RedisClientAdapter,
+  value: IoredisLike | IoredisClusterLike | RedisClientAdapter,
 ): value is RedisClientAdapter {
   return typeof (value as Partial<RedisClientAdapter>).createSubscriber === 'function';
 }
