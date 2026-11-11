@@ -69,7 +69,12 @@ export class EngineLoad {
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
   }
 
-  /** Loads and stores a missing entry; concurrent misses of the key share the load. */
+  /**
+   * Loads and stores a missing entry; concurrent misses of the key share the load. The flight
+   * key ignores `noWrite`, so single-flight works in both directions: a caller that would write
+   * can join a flight that does not (it gets the value, nothing is written for it), and a
+   * caller that cannot write joins a flight that does (it gets the value, which is stored).
+   */
   async onMiss<T>(plan: LoadPlan<T>): Promise<T> {
     const flightKey = this.flightKey(plan.target, plan.key);
     const joined = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));

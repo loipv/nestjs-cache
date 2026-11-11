@@ -47,7 +47,10 @@ interface KindState {
   readonly cache: Map<string, Cached>;
   /** The most entries `cache` keeps. */
   readonly limit: number;
-  /** In-flight read-or-create calls (`current`, `fresh` does not register). */
+  /**
+   * In-flight read-or-create calls (`current`). `fresh` does not register, but it and `bump`
+   * drop the slot's entry so an older read cannot replace the newer token.
+   */
   readonly inflight: Map<string, Promise<string>>;
   /**
    * In-flight plain reads (`currentMany`), which never create. A read caches its token only
@@ -55,8 +58,8 @@ interface KindState {
    */
   readonly reads: Map<string, Promise<string | undefined>>;
   /**
-   * Bumps completed while a `fresh` read of the slot was in flight: that read then caches
-   * nothing. Only kept while `freshes` has the slot.
+   * Per slot, the bumps that completed while a `fresh` read of it was in flight (a `fresh` that
+   * sees the count change caches nothing). Counted and kept only while `freshes` has the slot.
    */
   readonly bumps: Map<string, number>;
   /** `fresh` reads in flight per slot. */
@@ -187,7 +190,9 @@ export class VersionTokens {
    * with one `getStrict` each, in parallel, when the store has it, else with one `getMany` (one
    * `get` each without it). A token read is cached unless a bump or a fresh read completed
    * meanwhile, and an older read-or-create still in flight then no longer updates the cache; a
-   * missing key is not cached, and for a tag it also drops the cached token. Rejects when any store read rejects, for every waiter on it.
+   * missing key is not cached, and for a tag it also drops the cached token. A `current` that
+   * caches a token also unregisters a plain read still in flight, so that read cannot undo it.
+   * Rejects when any store read rejects, for every waiter on it.
    */
   async currentMany(
     target: Target,
@@ -306,6 +311,8 @@ export class VersionTokens {
     const key = tokenKey(this.prefix, kind, name);
     const existing = await readToken(target.store, key);
     if (existing !== undefined && existing !== '') return existing;
+    // A bump that lands between the read above and this write is overwritten by `created`: the
+    // entries stamped with the bumped token are orphaned (they read as misses), never read wrongly.
     const created = newVersionToken();
     await writeToken(target.store, key, created);
     const stored = await readToken(target.store, key);
