@@ -3,8 +3,9 @@ import { createClient, createCluster, createSentinel } from 'redis';
 import { afterAll } from 'vitest';
 import { nodeRedisAdapter, type NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
 import type { RedisStoreOptions } from '../../../src/stores/redis.store.js';
-import { probePubSub, type ProbeClient } from './pubsub-probe.js';
-import { StartupTimeoutError, withinStartup } from './startup-timeout.js';
+import type { ProbeClient } from './pubsub-probe.js';
+import { checkPubSub } from './pubsub-reachability.js';
+import { withinStartup } from './startup-timeout.js';
 import { startRedisCluster, type RedisClusterHandle } from './redis-cluster.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './redis-sentinel.js';
 import { startRedis } from './redis.js';
@@ -34,34 +35,22 @@ const reachability = new Map<AdapterName, Promise<boolean>>();
  * set through a temporary client, so it starts no extra container. The probe drives that raw
  * client, not the library's adapter, so an adapter pub/sub bug fails the cases instead of skipping
  * them. A file calls it with top-level `await` before declaring cases, then uses
- * `it.skipIf(!reachable)` and `skipTitle`. A startup that does not finish within
- * `STARTUP_TIMEOUT_MS` rejects, failing the file with its name.
+ * `it.skipIf(!reachable)` and `skipTitle`. A startup that fails, or does not finish within
+ * `STARTUP_TIMEOUT_MS`, rejects and fails the file instead of skipping its pub/sub cases; so does
+ * an unreachable pub/sub under `CACHE_IT_REQUIRE_PUBSUB=1` (see `checkPubSub`).
  */
 export function canReachPubSub(name: AdapterName): Promise<boolean> {
   let result = reachability.get(name);
   if (result === undefined) {
-    result = (async () => {
-      let started: StartedAdapter;
-      try {
-        started = await withinStartup(
-          startAdapter(name),
-          `Starting ${name} for the pub/sub probe`,
-          (late) => late.stop(),
-        );
-      } catch (error) {
-        // A startup that hangs fails the file, which then runs no afterAll: stop what it shares.
-        if (error instanceof StartupTimeoutError) {
-          stopShared();
-          throw error;
-        }
-        return false;
-      }
-      try {
-        return await probePubSub(started.probe);
-      } finally {
-        await started.stop().catch(() => undefined);
-      }
-    })();
+    result = checkPubSub(name, () =>
+      withinStartup(startAdapter(name), `Starting ${name} for the pub/sub probe`, (late) =>
+        late.stop(),
+      ),
+    ).catch((error: unknown) => {
+      // The file fails at collection and then runs no afterAll: stop what it shares.
+      stopShared();
+      throw error;
+    });
     reachability.set(name, result);
   }
   return result;

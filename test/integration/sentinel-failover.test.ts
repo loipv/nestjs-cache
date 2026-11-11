@@ -11,6 +11,7 @@ import { redisStore, type RedisStoreOptions } from '../../src/stores/redis.store
 import { tieredStore } from '../../src/stores/tiered.store.js';
 import { selectedAdapters, skipTitle } from './helpers/adapters.js';
 import { probePubSub, type ProbeClient } from './helpers/pubsub-probe.js';
+import { requireReachable } from './helpers/pubsub-reachability.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './helpers/redis-sentinel.js';
 import { withinStartup } from './helpers/startup-timeout.js';
 
@@ -139,6 +140,8 @@ async function startSetups(): Promise<void> {
     } catch {
       // a client that cannot even connect leaves pub/sub unreachable; the cases report the rest
     }
+    // Under CACHE_IT_REQUIRE_PUBSUB=1 an unreachable pub/sub fails the file.
+    requireReachable(name, setup.reachable);
   }
 }
 try {

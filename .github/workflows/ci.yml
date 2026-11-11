@@ -74,6 +74,9 @@ jobs:
           - { ioredis: 6, adapters: 'node-redis,node-redis-cluster,node-redis-sentinel', redis: 5 }
     env:
       CACHE_IT_ADAPTERS: ${{ matrix.adapters }}
+      # On redis v6 every adapter's pub/sub must be reachable: an unreachable one fails the run
+      # instead of skipping. redis v5 Sentinel pub/sub may be unreachable through NAT.
+      CACHE_IT_REQUIRE_PUBSUB: ${{ matrix.redis != 5 && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
