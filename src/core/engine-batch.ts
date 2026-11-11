@@ -6,9 +6,9 @@ import {
   uncertain,
   type BatchPutOptions,
 } from './engine-envelope.js';
-import type { BatchItem, EngineIO, WriteItem } from './engine-io.js';
+import type { BatchItem, EngineIO } from './engine-io.js';
 import type { Target } from './engine-keys.js';
-import { applyStamps, type BatchTagOption } from './engine-tags.js';
+import type { BatchTagOption } from './engine-tags.js';
 import type { BatchPlan, EngineLoad, LoadItem } from './engine-load.js';
 import { emptyKeyError, isEmptyKey } from './key-builder.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -85,12 +85,7 @@ export class EngineBatch {
       const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
       return { ...item, value, strategy, ttl: this.io.ttlFor(strategy, ttl) };
     });
-    let stamped: readonly WriteItem[] = writes;
-    if (tags !== undefined && writes.length > 0) {
-      const tagged = writes.map(({ value, ref }) => ({ value, key: ref.key }));
-      stamped = applyStamps(writes, await this.io.tags.stampBatch(target, tags, tagged));
-    }
-    await this.io.writeMany(target, stamped);
+    await this.io.writeMany(target, await this.io.tags.stampWrites(target, tags, writes));
   }
 
   /** `CacheEngine.getOrSetMany` after validation; `ttl` is the effective ttl. */

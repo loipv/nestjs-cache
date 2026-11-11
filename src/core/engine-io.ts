@@ -13,13 +13,7 @@ import {
   type PutOptions,
 } from './engine-envelope.js';
 import { EngineKeys, type ResolvedKey, type Target } from './engine-keys.js';
-import {
-  applyStamps,
-  EngineTags,
-  type Stamping,
-  type TagCheck,
-  type TagStamp,
-} from './engine-tags.js';
+import { EngineTags, type Stamping, type TagCheck, type TagStamp } from './engine-tags.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -278,13 +272,11 @@ export class EngineIO {
       const plan = writePlan(this.envelope, target, item.value, options, strategy);
       if (typeof plan === 'object') planned.push({ ...item, ...plan });
     }
-    const { tags } = options;
-    let writes: readonly WriteItem[] = planned;
-    if (taken !== undefined) {
+    let writes: readonly WriteItem[];
+    if (taken === undefined) {
+      writes = await this.tags.stampWrites(target, options.tags, planned);
+    } else {
       writes = taken === 'skip' ? [] : planned.map((write) => ({ ...write, tags: taken }));
-    } else if (tags !== undefined && planned.length > 0) {
-      const entries = planned.map(({ value, ref }) => ({ value, key: ref.key }));
-      writes = applyStamps(planned, await this.tags.stampBatch(target, tags, entries));
     }
     await this.writeMany(target, writes);
   }

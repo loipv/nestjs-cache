@@ -54,14 +54,18 @@ export function normalizeTags(raw: unknown): string[] {
   return [...unique];
 }
 
-/** The stamp of `names` from `tokens`; built with own keys, so `__proto__` is a plain tag. */
-function stampOf(names: readonly string[], tokens: ReadonlyMap<string, string>): TagStamp {
-  return Object.fromEntries(
-    names.flatMap((name) => {
-      const token = tokens.get(name);
-      return token === undefined ? [] : [[name, token] as const];
-    }),
-  );
+/**
+ * The stamp of `names` from `tokens`; built with own keys, so `__proto__` is a plain tag. A name
+ * without a token makes it `'skip'`: a partial stamp would survive that tag's invalidation.
+ */
+function stampOf(names: readonly string[], tokens: ReadonlyMap<string, string>): Stamping {
+  const entries: [string, string][] = [];
+  for (const name of names) {
+    const token = tokens.get(name);
+    if (token === undefined) return 'skip';
+    entries.push([name, token]);
+  }
+  return Object.fromEntries(entries);
 }
 
 /**
@@ -97,7 +101,7 @@ export function knownTags<O>(option: O | undefined): option is Exclude<O, Callab
 }
 
 /** `items` with their stamps (same order); a skipped item is left out. */
-export function applyStamps<I>(
+function applyStamps<I>(
   items: readonly I[],
   stamps: readonly Stamping[],
 ): (I & { tags: TagStamp })[] {
@@ -194,6 +198,20 @@ export class EngineTags {
       this.reportError(target.name, 'version', error);
       throw error;
     }
+  }
+
+  /**
+   * The batch writes `items` stamped for `option` together (one token call), in input order; an
+   * item whose tags fail is left out. Without tags or items, `items` as they are.
+   */
+  async stampWrites<T, I extends { readonly value: T; readonly ref: { readonly key: string } }>(
+    target: Target,
+    option: BatchTagOption<T> | undefined,
+    items: readonly I[],
+  ): Promise<readonly I[]> {
+    if (option === undefined || items.length === 0) return items;
+    const entries = items.map(({ value, ref }) => ({ value, key: ref.key }));
+    return applyStamps(items, await this.stampBatch(target, option, entries));
   }
 
   /**

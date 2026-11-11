@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { MAX_TAGS, normalizeTags } from '../../../src/core/engine-tags.js';
+import { describe, expect, it, vi } from 'vitest';
+import { EngineTags, MAX_TAGS, normalizeTags } from '../../../src/core/engine-tags.js';
+import type { VersionTokens } from '../../../src/core/version-tokens.js';
+import { FakeStore } from '../helpers/fake-store.js';
 
 function tags(count: number): string[] {
   return Array.from({ length: count }, (_, i) => `t${String(i)}`);
@@ -64,5 +66,20 @@ describe('normalizeTags', () => {
     /* '' is never a tag, even next to valid ones. */
     expect(() => normalizeTags(['a', ''])).toThrow(TypeError);
     expect(() => normalizeTags(['a', ''])).toThrow(/empty/);
+  });
+});
+
+describe('EngineTags', () => {
+  it('a tag without a token skips the write instead of a partial stamp', async () => {
+    /* 0.7-T4: ensureMany resolves without `b`. The entry tagged [a, b] is skipped (fail-safe), an
+       entry tagged [a] alone is stamped, and an untagged entry keeps the empty stamp. */
+    const ensureMany = vi.fn(() => Promise.resolve(new Map([['a', 'tok-a']])));
+    const reportError = vi.fn();
+    const tags = new EngineTags({ ensureMany } as unknown as VersionTokens, reportError);
+    const target = { name: 'default', store: new FakeStore() };
+    await expect(
+      tags.stampEach(target, [() => ['a', 'b'], () => ['a'], () => []]),
+    ).resolves.toEqual(['skip', { a: 'tok-a' }, {}]);
+    expect(ensureMany).toHaveBeenCalledTimes(1);
   });
 });
