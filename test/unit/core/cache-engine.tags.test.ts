@@ -1228,4 +1228,36 @@ describe('CacheEngine tags: re-reading mismatched tokens and deleting invalid sl
     expect(await b.engine.get({ key: 'k' }, sliding)).toBe('new');
     expect(await b.engine.getMany({}, ['x', 'y'], sliding)).toEqual([1, 2]);
   });
+  it('a tiered store whose L1 token copy lags never deletes a sliding entry (miss only)', async () => {
+    /* T4-F: B uses a real tieredStore (memory L1, shared L2, no bus). A writes straight to L2:
+       it invalidates `t` and writes a sliding entry stamped with the new token. B's L1 still
+       holds the old token key, so B's "store" token read (getStrict) returns the stale L1 copy.
+       The check is a miss, but a store with getStrict never deletes on the sliding path, so A's
+       newer entry stays in L2 on the single-key and the batch path. */
+    const l2 = new FakeStore();
+    const a = makeEngine({ prefix: 'app', stores: { default: l2 } });
+    const events = new CacheEvents();
+    const operations: string[] = [];
+    events.on('error', (payload) => operations.push(payload.operation));
+    const b = new CacheEngine(
+      resolveOptions({
+        prefix: 'app',
+        stores: { default: tieredStore({ l1: memoryStore(), l2 }) },
+      }),
+      events,
+    );
+    const sliding = { strategy: 'sliding' as const, tags: ['t'] };
+    await a.engine.set({ key: 'warm' }, 'w', sliding);
+    expect(await b.get({ key: 'warm' }, sliding)).toBe('w');
+    await a.engine.invalidateTags(['t']);
+    await a.engine.set({ key: 'k' }, 'new', sliding);
+    // B's cached token expired; its L1 copy of the token key (l1Ttl 10 s) has not.
+    vi.setSystemTime(1_000);
+    l2.calls.length = 0;
+    expect(await b.get({ key: 'k' }, sliding)).toBeUndefined();
+    expect(await b.getMany({}, ['k'], sliding)).toEqual([undefined]);
+    expect(l2.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    expect(envelopeOf(l2, 'app:k')?.value).toBe('new');
+    expect(operations).toEqual([]);
+  });
 });

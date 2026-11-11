@@ -34,7 +34,8 @@ export type BatchPutOptions<T> = WritePolicy<T> & { tags?: BatchTagOption<T> } &
 /**
  * A read entry. `tags` is set only by a read that defers the tag check (`EngineIO.readMany`):
  * the stamp still to check, and `touched` is then the entry's store key when that read extended
- * its TTL with `getAndTouch` (deleted if the check finds it invalid). `uncertain` marks a tagged
+ * its TTL with `getAndTouch` on a store without `getStrict` (deleted if the check finds it
+ * invalid). `uncertain` marks a tagged
  * entry whose tag tokens could not be read (spec 3.2 step 4): a miss loaded without writing.
  */
 export type Lookup =
@@ -142,8 +143,10 @@ export async function decode(
   }
   const { tags } = envelope;
   const deferred = hasTags(tags) && verify === undefined ? tags : undefined;
-  // `getAndTouch` extended the entry's TTL before its tags could be checked.
-  const extended = touched && reSetTtl === undefined;
+  // `getAndTouch` extended the entry's TTL before its tags could be checked. A store with
+  // `getStrict` (tiered) may answer token reads from a local tier that lags, so a mismatch
+  // there is never grounds to delete (T4-F): such an entry is a plain miss.
+  const extended = touched && reSetTtl === undefined && store.getStrict === undefined;
   if (hasTags(tags) && verify !== undefined) {
     const check = await verify(tags);
     // A tag miss leaves the entry in the store: the next write replaces it (spec 3.2). Only an
