@@ -18,6 +18,13 @@ export type CacheOperation =
   /** Only used in logs, for a failing metrics update; an `error` event never carries it. */
   | 'metrics';
 
+/** Internal: reports a cache failure as an `error` event; `EngineIO.reportError`. */
+export type ReportError = (
+  store: string | undefined,
+  operation: CacheOperation,
+  error: unknown,
+) => void;
+
 export interface CacheEventMap {
   hit: { store: string; namespace: string | undefined; key: string; stale: boolean };
   miss: { store: string; namespace: string | undefined; key: string };

@@ -1,7 +1,7 @@
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
-import type { CacheEventMap, CacheEvents, CacheOperation } from './events.js';
+import type { CacheEventMap, CacheEvents, CacheOperation, ReportError } from './events.js';
 import {
   decode,
   toIntegerMs,
@@ -10,7 +10,7 @@ import {
   type Lookup,
   type PutOptions,
 } from './engine-envelope.js';
-import { EngineKeys, type ReportError, type ResolvedKey, type Target } from './engine-keys.js';
+import { EngineKeys, type ResolvedKey, type Target } from './engine-keys.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';

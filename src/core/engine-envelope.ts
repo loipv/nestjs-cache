@@ -1,8 +1,9 @@
 import type { StrategyOptions } from '../decorators/options.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { jsonSerializer } from '../serializers/json.serializer.js';
-import type { ReportError, Target } from './engine-keys.js';
+import type { Target } from './engine-keys.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
+import type { ReportError } from './events.js';
 import {
   classifyEnvelope,
   createStrategy,

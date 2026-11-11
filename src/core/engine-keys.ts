@@ -1,6 +1,6 @@
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import type { CacheStore } from '../stores/cache-store.interface.js';
-import type { CacheOperation } from './events.js';
+import type { ReportError } from './events.js';
 import { fullKey, lockKey } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
 
@@ -14,13 +14,6 @@ export interface ResolvedKey {
   full: string;
   lock: string;
 }
-
-/** Reports a cache failure as an `error` event; `EngineIO.reportError`. */
-export type ReportError = (
-  store: string | undefined,
-  operation: CacheOperation,
-  error: unknown,
-) => void;
 
 /** Key resolution: the data and lock keys of an entry, with the namespace version if any. */
 export class EngineKeys {

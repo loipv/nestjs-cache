@@ -1,13 +1,7 @@
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
-import {
-  EMPTY_STRATEGY,
-  isEmpty,
-  servable,
-  type BatchItem,
-  type EngineIO,
-  type PutOptions,
-  type Target,
-} from './engine-io.js';
+import { EMPTY_STRATEGY, isEmpty, servable, type PutOptions } from './engine-envelope.js';
+import type { BatchItem, EngineIO } from './engine-io.js';
+import type { Target } from './engine-keys.js';
 import type { BatchPlan, EngineLoad } from './engine-load.js';
 import { emptyKeyError, isEmptyKey } from './key-builder.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
