@@ -215,6 +215,18 @@ describe.each(['express', 'fastify'] as const)('HttpCache end to end on %s', (ki
     expect(counter.calls).toBe(1);
   });
 
+  it('HEAD after GET on the same URL is served from the GET entry', async () => {
+    /* F-5: HEAD shares the GET entry: the handler runs once for both requests */
+    const { base, counter } = await start();
+    const first = await fetch(`${base}/items`);
+    expect(first.status).toBe(200);
+    await first.text();
+    const head = await fetch(`${base}/items`, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe('');
+    expect(counter.calls).toBe(1);
+  });
+
   it('query order shares one entry', async () => {
     /* ?a=1&b=2 and ?b=2&a=1 normalize to one key */
     const { base, counter } = await start();
