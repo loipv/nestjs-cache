@@ -233,7 +233,7 @@ Type checking: decorating a method that does not return a `Promise` is a compile
 Callbacks may declare fewer parameters than the method.
 
 Unknown store names fail at startup. A bad key template, `allEntries` without `namespace`, an empty `key: []` for
-`@CacheEvict`, a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl` that is not a finite number greater than 0
+`@CacheEvict`, invalid `tags` (see Tags), a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl` that is not a finite number greater than 0
 are rejected with `CacheConfigError`, as is a `cacheNull` that is not a boolean. See Error behaviour for the full list.
 
 ## HTTP caching
@@ -411,9 +411,13 @@ it, then call `invalidateTags` (or use `@CacheEvict({ tags })`); every entry car
 ```ts
 import { Cacheable, CacheEvict, CacheService } from '@loipv/nestjs-cache';
 
+// Illustrative: `repo`, `Product` and `UpdateProductDto` are your own.
 @Injectable()
 export class ProductsService {
-  constructor(private readonly cache: CacheService) {}
+  constructor(
+    private readonly cache: CacheService,
+    private readonly repo: ProductsRepository,
+  ) {}
 
   // Templates use the key syntax and honour escapeKeyArgs.
   @Cacheable({ namespace: 'products', key: 'product:{0}', tags: ['product:{0}', 'catalog'] })
@@ -421,20 +425,16 @@ export class ProductsService {
     return this.repo.find(id);
   }
 
-  // A callback of the result and the arguments; annotate its parameters.
-  @Cacheable({
-    namespace: 'products',
-    key: 'list:{0}',
-    tags: (result: Product[], category: string) => [
-      `category:${category}`,
-      ...result.map((p) => `product:${p.id}`),
-    ],
-  })
+  // Tag a list by category, not by every item in it: one entry carries at most 32 tags.
+  @Cacheable({ namespace: 'products', key: 'list:{0}', tags: ['category:{0}'] })
   list(category: string) {
     return this.repo.list(category);
   }
 
-  @CacheEvict({ tags: ['product:{0}'] })
+  // A callback of the arguments (or, for @Cacheable/@CachePut, also the result); annotate its parameters.
+  @CacheEvict({
+    tags: (id: string, dto: UpdateProductDto) => [`product:${id}`, `category:${dto.category}`],
+  })
   update(id: string, dto: UpdateProductDto) {
     return this.repo.update(id, dto);
   }
@@ -445,6 +445,9 @@ export class ProductsService {
   }
 }
 ```
+
+Entries written without a tag stamp are not affected by `invalidateTags` until their own TTL. When you add `tags` to
+an existing method or call, clear the affected namespaces after the rollout (or wait one TTL).
 
 Declaring tags:
 
@@ -474,6 +477,11 @@ Invalidating:
 Limits and errors:
 
 - At most 32 tags per entry after de-duplication, and tag strings must be non-empty.
+- With `escapeKeyArgs: true` a template tag renders escaped (`product:a%3Ab` for id `a:b`), so `invalidateTags` must
+  use the same escaped form.
+- A tag callback receives `null` or `undefined` when `cacheNull` caches an empty result. A callback that dereferences
+  it produces a `tag` error, and the null is not cached.
+- A custom `Serializer` must round-trip the envelope's `tags` field, or invalidation is silently disabled.
 - An invalid runtime tag list (for example a callback that returns an empty string) emits one `error` event with
   `operation: 'tag'`; the entry is not written and the caller still gets the value.
 - A token read or write failure emits an `error` event with `operation: 'version'`.
@@ -486,6 +494,11 @@ Consistency and cost:
 - Each tag has a version key `<prefix>:__tag__:<tag>` with a 30-day TTL. Reads cost no extra round-trip while the tag
   tokens are cached in the process; up to 10 000 tag tokens are kept per process (the least recently refreshed is
   evicted first).
+- Tag token keys live 30 days in the same store, count toward `memoryStore` `maxEntries`, and one key per distinct tag
+  accumulates in Redis. Bound tags built from untrusted input.
+- On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old tag
+  token for up to `l1Ttl` plus `versioning.cacheTtl` (the tag token key is cached in L1), not only
+  `versioning.cacheTtl`.
 - Invalidated entries are not deleted. They become misses and leave the store when their TTL expires.
 
 Write timing:
@@ -494,14 +507,19 @@ Write timing:
   method runs, so an invalidation during the load is never missed.
 - Tags from a callback on the result are computed after the load. An invalidation that happens during that load can
   be missed until the entry's TTL; prefer argument tags when you need strictness.
+- `@CachePut` and `@CacheEvict({ tags })` sharing a tag on one method: `@CachePut` takes its tokens before the method
+  runs, so an evict of that tag that runs afterwards makes the freshly put entry a miss. Only
+  `@CacheEvict({ beforeInvocation: true })` placed outermost, with `@CachePut` inside, keeps the entry.
 
 Outages and upgrades:
 
 - If tag tokens cannot be read, a store with `getStrict` (such as `tieredStore`) uses the last known tokens. Any other
   store treats a tagged entry as a miss, and `getOrSet` loads without writing and without the distributed lock.
 - With `strategy: 'swr'`, an entry invalidated by a tag is a hard miss; it is never served stale.
-- Rolling deploy: instances still on 0.6 ignore the `tags` field and can serve invalidated entries until they are
-  upgraded.
+- Rolling deploy: instances still on 0.6 ignore the `tags` field, so entries they write carry no tag stamp and
+  `invalidateTags` does not affect them until their own TTL (the same holds for entries written before `tags` was
+  added to a method or call). Only entries written with tags are affected by an invalidation; clear the affected
+  namespaces after the rollout, or wait one TTL.
 
 ## Batch operations
 
@@ -999,12 +1017,12 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
 `CacheConfigError` is thrown only in these cases:
 
-| When                                | Cases                                                                                                                                                                                                                                                                                                            |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; a namespace starting with `__`                                                 |
-| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                 |
-| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store |
-| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`           |
+| When                                | Cases                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; invalid decorator `tags` (not an array or function, an empty string, a malformed template, `@CacheEvict({ tags: [] })`); a namespace starting with `__`                        |
+| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                                                                                                                 |
+| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store                                                                                                 |
+| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`; `invalidateTags` with an empty list, an empty string, a non-array, more than 32 tags or an unknown store |
 
 Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.
@@ -1039,6 +1057,7 @@ event and does not reach the caller.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
 - **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is down, a two-tier store (or any store with `getStrict`) falls back to the last known token (one `version` error per failed read); with no known token the loader runs and nothing is cached. A `clear` while L2 is down fails and leaves the token unchanged. An instance that missed another instance's `clear` just before the outage keeps the old token during it, so stale data is limited to L1 and lasts at most `l1Ttl`. Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
+- **Tag invalidation windows.** Right after an invalidation, instances whose cached tag tokens differ treat each other's entries as misses and rewrite them for up to `versioning.cacheTtl`; a hot tagged key is effectively uncached fleet-wide for that window, and with `lock` on a waiter can wait up to `lock.waitTimeout`. A sliding read on a store with `getAndTouch` extends an invalidated entry's TTL before the tag check (it is never served; bounded by `maxTtl`). A `getOrSet` issued after `invalidateTags` can join a load that started before it and receive that load's value once (the written entry is stale-stamped, so the next read misses), like the concurrent-misses caveat below.
 - **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.

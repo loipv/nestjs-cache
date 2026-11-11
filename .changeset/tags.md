@@ -15,7 +15,9 @@ Added:
 Changed:
 
 - `CacheOperation` gains `'tag'` (an invalid runtime tag list). The stored envelope gains an optional `tags` field
-  (`CacheEnvelope`); instances on 0.6 ignore it and can serve invalidated entries during a rolling deploy.
+  (`CacheEnvelope`); instances on 0.6 ignore it, so entries written without a tag stamp (by 0.6 instances, or before `tags` was added
+  to a method or call) are not affected by `invalidateTags` until their own TTL. When adding tags to an existing cache,
+  clear the affected namespaces after the rollout (or wait one TTL).
 - The HTTP interceptor no longer calls the `key` callback twice when applied twice, and its cache call starts only when
   the response is subscribed to.
 - The ioredis sharded subscriber uses one consistent condition to decide when to use sharded Pub/Sub.
