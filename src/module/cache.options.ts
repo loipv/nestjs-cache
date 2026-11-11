@@ -33,7 +33,10 @@ export interface CacheModuleOptions {
    * Defaults to `false`; key callbacks are never escaped.
    */
   escapeKeyArgs?: boolean;
-  /** Namespaces with `versioned: true` get O(1) `clear` through a version token in their keys. */
+  /**
+   * Namespaces with `versioned: true` get O(1) `clear` through a version token in their keys.
+   * Matching is exact: a sub-namespace such as `users:admin` does not follow a versioned `users`.
+   */
   namespaces?: { [namespace: string]: { versioned?: boolean } };
   /** `cacheTtl` (ms, default 1000) is how long a version token is cached in this process. */
   versioning?: { cacheTtl?: number };

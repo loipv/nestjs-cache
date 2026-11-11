@@ -166,8 +166,8 @@ The same cluster rules apply (Redis 7+, per-slot batches, `clear` scans every ma
   `error` events with `operation: 'subscribe'`.
 - If the client's reconnect strategy gives up (ioredis `retryStrategy` returning `null`, node-redis
   `reconnectStrategy` returning `false` or an `Error`), the invalidation subscription is not retried and L1 sync stays
-  off for that instance until restart; the failure is reported (possibly twice: once from the client's error event and once from the failed subscribe). With the default strategies the subscriber keeps
-  retrying.
+  off for that instance until restart; the failure is reported (possibly twice: once from the client's error event and
+  once from the failed subscribe). With the default strategies the subscriber keeps retrying.
 
 ## Decorators
 
@@ -442,8 +442,8 @@ const users = await cache.getOrSetMany<User>(
 - `CacheStore` has the optional `getMany` and `setMany`. `redisStore` uses one `MGET` when the client has `mget`;
   other stores are called key by key.
 - `setMany` with a duplicated key keeps the last value.
-- `setMany` entries must be `[key, value]` pairs. An element that is not a pair throws a `TypeError` from
-  destructuring.
+- `setMany` entries must be `[key, value]` pairs. An element that cannot be destructured (`null`, a number) throws a
+  `TypeError`; one that can is not checked, so a 2-character string such as `'ab'` silently becomes key `a`, value `b`.
 - With a versioned namespace the batch methods read the token once for the call.
 
 ## Null caching and TTL jitter
