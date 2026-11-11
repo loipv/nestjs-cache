@@ -24,6 +24,13 @@ export type BatchTagOption<T> = readonly string[] | ((value: T, key: string) => 
 export type Stamping = TagStamp | 'skip';
 
 /**
+ * How a read entry's stamp compares with the current tag tokens: `valid` (served), `invalid`
+ * (a miss, loaded and written as usual) or `uncertain` (the tokens could not be read: a miss
+ * that is loaded without writing, spec 3.2 step 4).
+ */
+export type TagCheck = 'valid' | 'invalid' | 'uncertain';
+
+/**
  * `raw` as a tag list: an array of non-empty strings, de-duplicated (first occurrence kept), at
  * most `MAX_TAGS` long. Always a new array. Throws a `TypeError` naming the broken rule.
  */
@@ -55,6 +62,25 @@ function stampOf(names: readonly string[], tokens: ReadonlyMap<string, string>):
       return token === undefined ? [] : [[name, token] as const];
     }),
   );
+}
+
+/**
+ * The check of one stamp against `current`. A missing current token (the tag key is gone) is
+ * `invalid`; with `fallback` (the last known tokens after a failed read) it is `uncertain`,
+ * unless another tag of the stamp is known to differ.
+ */
+function checkStamp(
+  stamp: TagStamp,
+  current: ReadonlyMap<string, string | undefined>,
+  fallback: boolean,
+): TagCheck {
+  let unknown = false;
+  for (const [tag, token] of Object.entries(stamp)) {
+    const now = current.get(tag);
+    if (now === undefined && fallback) unknown = true;
+    else if (now !== token) return 'invalid';
+  }
+  return unknown ? 'uncertain' : 'valid';
 }
 
 /** Whether `stamp` adds a `tags` field: an absent or empty stamp does not. */
@@ -133,6 +159,41 @@ export class EngineTags {
       }
     }
     return lists.map((list) => (list === undefined ? 'skip' : stampOf(list, tokens)));
+  }
+
+  /**
+   * The checks of read entries' stamps, in input order, with one `currentMany` for the union of
+   * their tags (spec 3.2). A failed token read is one `version` error for the call; a store with
+   * `getStrict` then compares with the tokens this process last knew (even past `cacheTtl`), and
+   * any other store makes every stamp `uncertain`.
+   */
+  async verify(target: Target, stamps: readonly TagStamp[]): Promise<TagCheck[]> {
+    const names = [...new Set(stamps.flatMap((stamp) => Object.keys(stamp)))];
+    let current: ReadonlyMap<string, string | undefined>;
+    let fallback = false;
+    try {
+      current = await this.tokens.currentMany(target, 'tag', names);
+    } catch (error) {
+      this.reportError(target.name, 'version', error);
+      if (target.store.getStrict === undefined) return stamps.map(() => 'uncertain');
+      current = new Map(names.map((name) => [name, this.tokens.cached(target, 'tag', name)]));
+      fallback = true;
+    }
+    return stamps.map((stamp) => checkStamp(stamp, current, fallback));
+  }
+
+  /**
+   * Gives each of `names` (valid, de-duplicated) a new token (spec 3.4); this instance uses the
+   * new tokens at once. Every tag is tried; a failure is one `version` error, then the call
+   * rejects with the first failing tag's error.
+   */
+  async invalidate(target: Target, names: readonly string[]): Promise<void> {
+    try {
+      await this.tokens.bumpMany(target, 'tag', names);
+    } catch (error) {
+      this.reportError(target.name, 'version', error);
+      throw error;
+    }
   }
 
   /**

@@ -430,3 +430,354 @@ describe('CacheEngine tags: the write path', () => {
     expect(envelopeOf(store, 'app:k')?.tags).toEqual({ t: token('t') });
   });
 });
+
+/** A TagStore with `getStrict`, like a tiered store; its tag reads fail with `failTags` too. */
+class StrictStore extends TagStore {
+  readonly strictReads: string[] = [];
+
+  getStrict(key: string): Promise<string | undefined> {
+    this.strictReads.push(key);
+    if (this.failTags && key.startsWith('app:__tag__:')) {
+      return Promise.reject(new Error('strict tag read failed'));
+    }
+    return Promise.resolve(this.data.get(key)?.value);
+  }
+}
+
+/** A FakeStore with `getMany` and `getAndTouch`, each call recorded. */
+class BatchStore extends FakeStore {
+  readonly manyReads: string[][] = [];
+  readonly touches: string[] = [];
+
+  getMany(keys: readonly string[]): Promise<(string | undefined)[]> {
+    this.manyReads.push([...keys]);
+    return Promise.resolve(keys.map((key) => this.data.get(key)?.value));
+  }
+
+  getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    this.touches.push(key);
+    const entry = this.data.get(key);
+    if (entry !== undefined) entry.ttlMs = ttlMs;
+    return Promise.resolve(entry?.value);
+  }
+}
+
+/** A FakeStore whose writes of the named tag keys fail, each with its own error. */
+class FailingWrites extends FakeStore {
+  readonly failing = new Map<string, Error>();
+
+  override set(key: string, value: string, ttlMs: number): Promise<void> {
+    const error = this.failing.get(key);
+    if (error !== undefined) return Promise.reject(error);
+    return super.set(key, value, ttlMs);
+  }
+}
+
+function events(emitted: { event: string; payload: unknown }[]) {
+  return emitted.map((e) =>
+    e.event === 'error' ? `error:${(e.payload as { operation: string }).operation}` : e.event,
+  );
+}
+
+describe('CacheEngine tags: the read path and invalidateTags', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a matching stamp is a hit', async () => {
+    /* An entry whose tag tokens all match is served as usual: a hit, the loader never runs. */
+    const { engine, emitted } = setup();
+    await engine.set({ key: 'k' }, 'v', { tags: ['user:7', 'org:1'] });
+    emitted.length = 0;
+    const loader = vi.fn(async () => 'other');
+    expect(await engine.get({ key: 'k' })).toBe('v');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { tags: ['user:7'] })).toBe('v');
+    expect(loader).not.toHaveBeenCalled();
+    expect(events(emitted)).toEqual(['hit', 'hit']);
+  });
+
+  it('a bumped tag makes the entry a miss and getOrSet reloads', async () => {
+    /* invalidateTags gives the tag a new token: the stored stamp no longer matches, so get is a
+       miss (the entry is left in the store) and getOrSet loads and writes a new stamp. */
+    const { engine, store, emitted, token } = setup();
+    await engine.getOrSet({ key: 'k' }, async () => 'one', { tags: ['user:7'] });
+    const before = token('user:7');
+    await engine.invalidateTags(['user:7']);
+    expect(token('user:7')).not.toBe(before);
+    emitted.length = 0;
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(store.data.has('app:k')).toBe(true);
+    const loader = vi.fn(async () => 'two');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { tags: ['user:7'] })).toBe('two');
+    expect(loader).toHaveBeenCalledOnce();
+    expect(envelopeOf(store, 'app:k')).toMatchObject({
+      value: 'two',
+      tags: { 'user:7': token('user:7') },
+    });
+    expect(events(emitted)).toEqual(['miss', 'miss', 'load', 'set']);
+    expect(await engine.get({ key: 'k' })).toBe('two');
+  });
+
+  it('the invalidating instance sees its own invalidation immediately even with a long cacheTtl', async () => {
+    /* Review Focus 2: with cacheTtl 60 s, getOrSet -> invalidateTags -> getOrSet on the same
+       instance calls the loader again: the bump caches the new token at once. */
+    const store = new FakeStore();
+    const { engine } = makeEngine({
+      prefix: 'app',
+      versioning: { cacheTtl: 60_000 },
+      stores: { default: store },
+    });
+    const loader = vi.fn(async () => 'v');
+    await engine.getOrSet({ key: 'k' }, loader, { tags: ['user:7'] });
+    await engine.getOrSet({ key: 'k' }, loader, { tags: ['user:7'] });
+    expect(loader).toHaveBeenCalledOnce();
+    await engine.invalidateTags(['user:7']);
+    await engine.getOrSet({ key: 'k' }, loader, { tags: ['user:7'] });
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it('a missing tag version key is a miss and the read creates no token', async () => {
+    /* Review Focus 3: the tag key was deleted (clear, TTL). Once the cached token expires, the
+       entry is a miss on every read path, and no read writes the tag key back. */
+    const { engine, store, emitted } = setup();
+    await engine.set({ key: 'k' }, 'v', { tags: ['t'] });
+    await engine.setMany({}, [['m', 'w']], { tags: ['t'] });
+    store.data.delete('app:__tag__:t');
+    vi.setSystemTime(1_001);
+    emitted.length = 0;
+    const setsBefore = store.calls.filter((c) => c.op === 'set').length;
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(await engine.getMany({}, ['k', 'm'])).toEqual([undefined, undefined]);
+    expect(events(emitted)).toEqual(['miss', 'miss', 'miss']);
+    expect(store.calls.filter((c) => c.op === 'set')).toHaveLength(setsBefore);
+    expect(store.data.has('app:__tag__:t')).toBe(false);
+    // An untagged reload replaces the entry and still creates no token.
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'new')).toBe('new');
+    expect(store.data.has('app:__tag__:t')).toBe(false);
+    expect(envelopeOf(store, 'app:k')).not.toHaveProperty('tags');
+  });
+
+  it('swr: a stale entry whose tag was bumped is a hard miss, not served stale', async () => {
+    /* A stale swr entry is normally served while it refreshes. After its tag is invalidated
+       it is a miss: getOrSet awaits the load and returns the new value. */
+    const { engine, emitted } = setup();
+    const options = { ttl: 100, strategy: 'swr' as const, staleTtl: 1_000, tags: ['t'] };
+    await engine.getOrSet({ key: 'k' }, async () => 'one', options);
+    vi.setSystemTime(150);
+    await engine.invalidateTags(['t']);
+    emitted.length = 0;
+    expect(await engine.get({ key: 'k' }, options)).toBeUndefined();
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'two', options)).toBe('two');
+    expect(events(emitted)).toEqual(['miss', 'miss', 'load', 'set']);
+    expect(await engine.getOrSetMany({}, ['k'], async () => new Map(), options)).toEqual(['two']);
+  });
+
+  it('sliding (getAndTouch) checks tags too', async () => {
+    /* A sliding read goes through getAndTouch; an entry whose tag was bumped is still a miss
+       for get, getMany and getOrSet. */
+    const store = new BatchStore();
+    const { engine, emitted } = setup(store);
+    const options = { strategy: 'sliding' as const, tags: ['t'] };
+    await engine.set({ key: 'k' }, 'v', options);
+    expect(await engine.get({ key: 'k' }, options)).toBe('v');
+    await engine.invalidateTags(['t']);
+    emitted.length = 0;
+    store.touches.length = 0;
+    expect(await engine.get({ key: 'k' }, options)).toBeUndefined();
+    expect(await engine.getMany({}, ['k'], options)).toEqual([undefined]);
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'new', options)).toBe('new');
+    expect(store.touches).toEqual(['app:k', 'app:k', 'app:k']);
+    expect(events(emitted)).toEqual(['miss', 'miss', 'miss', 'load', 'set']);
+  });
+
+  it('getMany gathers the tags of all entries and calls currentMany once', async () => {
+    /* A batch read checks every tagged entry with one currentMany call over the union of their
+       tags; untagged entries need none. Only the entries with a bumped tag are misses, and
+       getOrSetMany loads just those. */
+    const store = new BatchStore();
+    const { engine } = setup(store);
+    await engine.setMany(
+      {},
+      [
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+      ],
+      { tags: (_, key) => [key, 'shared'] },
+    );
+    await engine.set({ key: 'u' }, 4);
+    await engine.invalidateTags(['b']);
+    const currentMany = vi.spyOn(engine.tokens, 'currentMany');
+    expect(await engine.getMany({}, ['a', 'b', 'c', 'u'])).toEqual([1, undefined, 3, 4]);
+    expect(currentMany).toHaveBeenCalledOnce();
+    expect(new Set(currentMany.mock.calls[0]?.[2])).toEqual(new Set(['a', 'b', 'c', 'shared']));
+    currentMany.mockClear();
+    const loader = vi.fn(async (missing: string[]) => new Map(missing.map((k) => [k, 9])));
+    expect(await engine.getOrSetMany({}, ['a', 'b', 'c', 'u'], loader)).toEqual([1, 9, 3, 4]);
+    expect(loader).toHaveBeenCalledExactlyOnceWith(['b']);
+    expect(currentMany).toHaveBeenCalledOnce();
+    currentMany.mockClear();
+    expect(await engine.getMany({}, ['u'])).toEqual([4]);
+    expect(currentMany).not.toHaveBeenCalled();
+  });
+
+  it('cached tokens mean no extra store reads', async () => {
+    /* While the tag tokens are cached (cacheTtl), a tagged hit costs exactly the data read:
+       one get for get, one getMany for getMany, and no getStrict at all. */
+    const strict = new StrictStore();
+    const single = setup(strict);
+    await single.engine.set({ key: 'k' }, 'v', { tags: ['t', 'u'] });
+    strict.calls.length = 0;
+    strict.strictReads.length = 0;
+    expect(await single.engine.get({ key: 'k' })).toBe('v');
+    expect(await single.engine.getOrSet({ key: 'k' }, async () => 'x', { tags: ['t'] })).toBe('v');
+    expect(strict.calls).toEqual([
+      { op: 'get', args: ['app:k'] },
+      { op: 'get', args: ['app:k'] },
+    ]);
+    expect(strict.strictReads).toEqual([]);
+
+    const batch = new BatchStore();
+    const many = setup(batch);
+    await many.engine.setMany(
+      {},
+      [
+        ['a', 1],
+        ['b', 2],
+      ],
+      { tags: (_, key) => [key] },
+    );
+    batch.calls.length = 0;
+    batch.manyReads.length = 0;
+    expect(await many.engine.getMany({}, ['a', 'b'])).toEqual([1, 2]);
+    expect(batch.manyReads).toEqual([['app:a', 'app:b']]);
+    expect(batch.calls).toEqual([]);
+  });
+
+  it('a token read failure reports one version error; a getStrict store falls back to the last known tokens; otherwise the entry is a miss and getOrSet loads without writing', async () => {
+    /* Spec 3.2 step 4 and D3. Without getStrict, a failed token read makes every tagged entry
+       of the call a miss (one `version` error per call) and the load writes nothing, so no
+       second error is caused by taking tokens. A getStrict store compares with the tokens this
+       process last knew, even past cacheTtl; a tag it never knew is such a miss too. */
+    const plain = new TagStore();
+    const p = setup(plain);
+    await p.engine.set({ key: 'k' }, 'old', { tags: ['t'] });
+    await p.engine.set({ key: 'j' }, 'old', { tags: ['u'] });
+    vi.setSystemTime(1_001);
+    plain.failTags = true;
+    p.emitted.length = 0;
+    expect(await p.engine.get({ key: 'k' })).toBeUndefined();
+    const loader = vi.fn(async () => 'new');
+    expect(await p.engine.getOrSet({ key: 'k' }, loader, { tags: ['t'] })).toBe('new');
+    expect(await p.engine.getOrSet({ key: 'k' }, loader)).toBe('new');
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(await p.engine.getMany({}, ['k', 'j'])).toEqual([undefined, undefined]);
+    const many = vi.fn(async (missing: string[]) => new Map(missing.map((key) => [key, 'L'])));
+    expect(await p.engine.getOrSetMany({}, ['k', 'j', 'x'], many)).toEqual(['L', 'L', 'L']);
+    expect(many).toHaveBeenCalledExactlyOnceWith(['k', 'j', 'x']);
+    expect(events(p.emitted)).toEqual([
+      ...['error:version', 'miss'],
+      ...['error:version', 'miss', 'load'],
+      ...['error:version', 'miss', 'load'],
+      ...['error:version', 'miss', 'miss'],
+      ...['error:version', 'miss', 'miss', 'miss', 'load', 'set'],
+    ]);
+    // The unverified entries were not written over; the plain miss was.
+    expect(envelopeOf(plain, 'app:k')?.value).toBe('old');
+    expect(envelopeOf(plain, 'app:j')?.value).toBe('old');
+    expect(envelopeOf(plain, 'app:x')?.value).toBe('L');
+
+    const strict = new StrictStore();
+    const s = setup(strict);
+    await s.engine.set({ key: 'k' }, 'v', { tags: ['t'] });
+    await s.engine.set({ key: 'gone' }, 'v', { tags: ['g'] });
+    await s.engine.invalidateTags(['g']);
+    vi.setSystemTime(2_002);
+    strict.failTags = true;
+    s.emitted.length = 0;
+    expect(await s.engine.get({ key: 'k' })).toBe('v');
+    expect(await s.engine.get({ key: 'gone' })).toBeUndefined();
+    expect(await s.engine.getMany({}, ['k', 'gone'])).toEqual(['v', undefined]);
+    expect(events(s.emitted)).toEqual([
+      ...['error:version', 'hit'],
+      ...['error:version', 'miss'],
+      ...['error:version', 'hit', 'miss'],
+    ]);
+
+    // Another instance on the same store never knew the token: a miss, loaded without a write.
+    const other = makeEngine({ prefix: 'app', stores: { default: strict } });
+    const otherLoader = vi.fn(async () => 'theirs');
+    expect(await other.engine.getOrSet({ key: 'k' }, otherLoader)).toBe('theirs');
+    expect(otherLoader).toHaveBeenCalledOnce();
+    expect(envelopeOf(strict, 'app:k')?.value).toBe('v');
+    expect(events(other.emitted)).toEqual(['error:version', 'miss', 'load']);
+  });
+
+  it('invalidateTags is per store', async () => {
+    /* Review Focus 1: the same tag in two stores has two tokens; invalidating it in one store
+       leaves the other store's entry a hit. */
+    const other = new FakeStore();
+    const { engine } = makeEngine({ prefix: 'app', stores: { default: new FakeStore(), other } });
+    await engine.set({ key: 'k' }, 'a', { tags: ['user:7'] });
+    await engine.set({ store: 'other', key: 'k' }, 'b', { tags: ['user:7'] });
+    await engine.invalidateTags(['user:7']);
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(await engine.get({ store: 'other', key: 'k' })).toBe('b');
+    await engine.set({ key: 'k' }, 'a', { tags: ['user:7'] });
+    await engine.invalidateTags(['user:7'], 'other');
+    expect(await engine.get({ key: 'k' })).toBe('a');
+    expect(await engine.get({ store: 'other', key: 'k' })).toBeUndefined();
+  });
+
+  it("invalidateTags(['a:b','ключ']) affects exactly those tags", async () => {
+    /* Review Focus 5: tag text is not escaped. Tags that share a part with the invalidated ones
+       (`a`, `b`, `a:b:c`, `ключ2`) keep their tokens. */
+    const { engine } = setup();
+    const tags = ['a:b', 'ключ', 'a', 'b', 'a:b:c', 'ключ2'];
+    for (const tag of tags) await engine.set({ key: tag }, tag, { tags: [tag] });
+    await engine.invalidateTags(['a:b', 'ключ']);
+    const values = await Promise.all(tags.map(async (tag) => engine.get({ key: tag })));
+    expect(values).toEqual([undefined, undefined, 'a', 'b', 'a:b:c', 'ключ2']);
+  });
+
+  it('a tag spanning two namespaces is invalidated in both', async () => {
+    /* A tag belongs to the store: entries in a plain and a versioned namespace that carry it
+       both become misses. */
+    const store = new FakeStore();
+    const { engine } = makeEngine({
+      prefix: 'app',
+      namespaces: { v: { versioned: true } },
+      stores: { default: store },
+    });
+    await engine.set({ namespace: 'n', key: 'k' }, 1, { tags: ['t'] });
+    await engine.set({ namespace: 'v', key: 'k' }, 2, { tags: ['t'] });
+    await engine.set({ namespace: 'v', key: 'j' }, 3, { tags: ['u'] });
+    await engine.invalidateTags(['t']);
+    expect(await engine.get({ namespace: 'n', key: 'k' })).toBeUndefined();
+    expect(await engine.getMany({ namespace: 'v' }, ['k', 'j'])).toEqual([undefined, 3]);
+  });
+
+  it('a token write failure: invalidateTags tries every tag, then rejects with the first error, and emits version errors', async () => {
+    /* Spec 3.4: every tag is bumped; the failing ones keep their old token. The call reports
+       one `version` error and rejects with the first failing tag's error (input order). */
+    const store = new FailingWrites();
+    const { engine, emitted, token } = setup(store);
+    for (const tag of ['a', 'b', 'c', 'd']) await engine.set({ key: tag }, tag, { tags: [tag] });
+    const before = { b: token('b'), c: token('c') };
+    const first = new Error('b write failed');
+    store.failing.set('app:__tag__:b', first);
+    store.failing.set('app:__tag__:c', new Error('c write failed'));
+    emitted.length = 0;
+    await expect(engine.invalidateTags(['a', 'b', 'c', 'd'])).rejects.toBe(first);
+    expect(emitted).toEqual([
+      { event: 'error', payload: { store: 'default', operation: 'version', error: first } },
+    ]);
+    expect({ b: token('b'), c: token('c') }).toEqual(before);
+    const values = await Promise.all(['a', 'b', 'c', 'd'].map((key) => engine.get({ key })));
+    expect(values).toEqual([undefined, 'b', 'c', undefined]);
+  });
+});

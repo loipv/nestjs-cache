@@ -6,6 +6,7 @@ import {
   EngineIO,
   isEmpty,
   servable,
+  uncertain,
   type BatchPutOptions,
   type KeyRef,
   type PutOptions,
@@ -13,7 +14,7 @@ import {
 } from './engine-io.js';
 import { EngineBatch, type BatchLoader, type BatchScope } from './engine-batch.js';
 import { EngineLoad } from './engine-load.js';
-import type { BatchTagOption, TagOption } from './engine-tags.js';
+import { normalizeTags, type BatchTagOption, type TagOption } from './engine-tags.js';
 import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
@@ -56,6 +57,20 @@ function checkEntries(entries: unknown): void {
   throw new CacheConfigError(
     `Invalid entries: ${String(entries)}. It must be an array of [key, value] pairs.`,
   );
+}
+
+/** The tags of an `invalidateTags` call (spec 4): a non-empty list of valid tags. */
+function tagsToInvalidate(tags: unknown): string[] {
+  let names: string[];
+  try {
+    names = normalizeTags(tags);
+  } catch (error) {
+    throw new CacheConfigError(error instanceof Error ? error.message : String(error));
+  }
+  if (names.length === 0) {
+    throw new CacheConfigError('Invalid tags: []. invalidateTags requires at least one tag.');
+  }
+  return names;
 }
 
 function checkBoolean(option: string, value: boolean | undefined): void {
@@ -181,9 +196,12 @@ export class CacheEngine {
     const key = pending instanceof Promise ? await pending : pending;
     if (key === undefined) return loader();
     const cached = await this.io.read(target, key, strategy, ttl);
-    const locking = options.lock ?? this.options.defaults.lock.enabled;
+    // An entry whose tags could not be checked is loaded without a write (spec 3.2 step 4), and
+    // without the lock: nothing would be written for other instances to wait for.
+    const noWrite = uncertain(cached);
+    const locking = !noWrite && (options.lock ?? this.options.defaults.lock.enabled);
     const lock = locking ? target.store.lock : undefined;
-    const plan = { target, ref, key, loader, options, strategy, ttl, lock };
+    const plan = { target, ref, key, loader, options, strategy, ttl, lock, noWrite };
     if (servable(cached, strategy)) {
       this.io.hit(target.name, ref, cached.stale);
       if (cached.stale) this.load.refresh(plan);
@@ -314,6 +332,19 @@ export class CacheEngine {
     this.io.resolve(storeName);
     this.checkNamespace(namespace);
     await this.io.clear(storeName, namespace);
+  }
+
+  /**
+   * Gives each tag a new version in the store (spec 3.4), so every entry stamped with one of them
+   * becomes a miss; this instance sees it at once, others once their cached token expires. Rejects
+   * `CacheConfigError` for an invalid list (empty, an empty or non-string tag, more than 32 after
+   * de-duplication) or an unknown store. A failed token write is one `version` error, and the
+   * call rejects with the first failing tag's error once every tag was tried.
+   */
+  async invalidateTags(tags: readonly string[], storeName?: string): Promise<void> {
+    const names = tagsToInvalidate(tags);
+    const target = this.io.resolve(storeName);
+    await this.io.tags.invalidate(target, names);
   }
 
   reportError(store: string | undefined, operation: CacheOperation, error: unknown): void {

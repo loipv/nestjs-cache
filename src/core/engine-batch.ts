@@ -1,9 +1,15 @@
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
-import { EMPTY_STRATEGY, isEmpty, servable, type BatchPutOptions } from './engine-envelope.js';
+import {
+  EMPTY_STRATEGY,
+  isEmpty,
+  servable,
+  uncertain,
+  type BatchPutOptions,
+} from './engine-envelope.js';
 import type { BatchItem, EngineIO, WriteItem } from './engine-io.js';
 import type { Target } from './engine-keys.js';
 import { applyStamps, type BatchTagOption } from './engine-tags.js';
-import type { BatchPlan, EngineLoad } from './engine-load.js';
+import type { BatchPlan, EngineLoad, LoadItem } from './engine-load.js';
 import { emptyKeyError, isEmptyKey } from './key-builder.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
 
@@ -35,12 +41,15 @@ export class EngineBatch {
   ): Promise<(T | undefined)[]> {
     const items = await this.batchItems(target, scope, this.uniqueKeys(target, keys));
     if (items === undefined) return keys.map(() => undefined);
-    const lookups = await this.io.readMany(
+    const read = await this.io.readMany(
       target,
       items.map((item) => item.key),
       strategy,
       this.options.defaults.ttl,
     );
+    // One tag check for the batch; awaited only when an entry is tagged (no 0.6 tick added).
+    const checked = this.io.checkStamps(target, read);
+    const lookups = checked instanceof Promise ? await checked : checked;
     const values = new Map<string, unknown>();
     items.forEach(({ ref }, i) => {
       const lookup = lookups[i];
@@ -104,19 +113,22 @@ export class EngineBatch {
       for (const key of unique) values.set(key, loaded.get(key));
       return keys.map((key) => values.get(key) as T | undefined);
     }
-    const lookups = await this.io.readMany(
+    const read = await this.io.readMany(
       target,
       items.map((item) => item.key),
       strategy,
       ttl,
     );
-    const missing: BatchItem[] = [];
+    const checked = this.io.checkStamps(target, read);
+    const lookups = checked instanceof Promise ? await checked : checked;
+    const missing: LoadItem[] = [];
     const stale: BatchItem[] = [];
     items.forEach((item, i) => {
       const lookup = lookups[i] ?? { found: false };
       if (!servable(lookup, strategy)) {
         this.io.miss(target.name, item.ref);
-        missing.push(item);
+        // Its tag tokens could not be read: loaded, but not written (spec 3.2 step 4).
+        missing.push(uncertain(lookup) ? { ...item, noWrite: true } : item);
         return;
       }
       this.io.hit(target.name, item.ref, lookup.stale);

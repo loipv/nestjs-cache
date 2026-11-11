@@ -128,6 +128,21 @@ export class CacheService {
   }
 
   /**
+   * Invalidates every entry stamped with one of `tags` in the store (`options.store`, else
+   * `default`), across namespaces: each tag gets a new version, so those entries read as misses.
+   * This instance sees it at once; other instances once their cached version expires
+   * (`versioning.cacheTtl`). Tags are plain strings, used as is.
+   *
+   * Rejects with `CacheConfigError` when `tags` is not a non-empty array of non-empty strings,
+   * has more than 32 tags after de-duplication, or the store is unknown. When a version write
+   * fails, every tag is still tried; an `error` event with operation `'version'` is emitted and
+   * the call rejects with the first failure.
+   */
+  invalidateTags(tags: readonly string[], options: { store?: string } = {}): Promise<void> {
+    return this.engine.invalidateTags(tags, options.store);
+  }
+
+  /**
    * Reads several keys of one namespace and store; results follow `keys`, `undefined` for a
    * miss. One store read for the batch (MGET on Redis), except with `strategy: 'sliding'`,
    * which touches each entry with its own `getAndTouch`.

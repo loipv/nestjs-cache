@@ -13,7 +13,13 @@ import {
   type PutOptions,
 } from './engine-envelope.js';
 import { EngineKeys, type ResolvedKey, type Target } from './engine-keys.js';
-import { applyStamps, EngineTags, type Stamping, type TagStamp } from './engine-tags.js';
+import {
+  applyStamps,
+  EngineTags,
+  type Stamping,
+  type TagCheck,
+  type TagStamp,
+} from './engine-tags.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -26,7 +32,7 @@ export interface KeyRef {
 }
 
 export type { BatchPutOptions, Lookup, PutOptions } from './engine-envelope.js';
-export { EMPTY_STRATEGY, isEmpty, servable, toIntegerMs } from './engine-envelope.js';
+export { EMPTY_STRATEGY, isEmpty, servable, toIntegerMs, uncertain } from './engine-envelope.js';
 export type { ResolvedKey, Target } from './engine-keys.js';
 
 /** One entry of a batch: its plain key (in `ref`, for events) and its resolved keys. */
@@ -110,11 +116,20 @@ export class EngineIO {
    * Reads and classifies an entry without emitting `hit`/`miss`; callers decide which one
    * applies. `ttl` is the effective ttl, used as the sliding touch ttl.
    */
-  async read(
+  read(target: Target, key: ResolvedKey, strategy: ExpiryStrategy, ttl: number): Promise<Lookup> {
+    return this.readEntry(target, key, strategy, ttl, true);
+  }
+
+  /**
+   * `read`; with `verify` a tagged entry is checked against the current tag tokens, without it
+   * the stamp is left in the lookup's `tags` (a batch checks them all at once).
+   */
+  private async readEntry(
     target: Target,
     { full: key }: ResolvedKey,
     strategy: ExpiryStrategy,
     ttl: number,
+    verify: boolean,
   ): Promise<Lookup> {
     const { name, store } = target;
     const plan = strategy.read(toIntegerMs(ttl));
@@ -139,14 +154,21 @@ export class EngineIO {
       strategy,
       plan.touch,
       reSet ? touchTtl : undefined,
+      verify ? (stamp) => this.verifyOne(target, stamp) : undefined,
     );
+  }
+
+  private async verifyOne(target: Target, stamp: TagStamp): Promise<TagCheck> {
+    const [check] = await this.tags.verify(target, [stamp]);
+    return check ?? 'uncertain';
   }
 
   /**
    * Reads several entries, in input order, as `read` would, without emitting `hit`/`miss`. A
-   * touching strategy (sliding) reads each key with `read`, so each entry's window is reset;
+   * touching strategy (sliding) reads each key on its own, so each entry's window is reset;
    * any other reads them all with one `store.getMany` (one `get` per key without it). A failing
-   * batch read is one `get` error and misses.
+   * batch read is one `get` error and misses. Tag stamps are not checked here: a tagged entry
+   * keeps its stamp in `tags`, and the caller passes the lookups to `checkStamps`.
    */
   async readMany(
     target: Target,
@@ -155,7 +177,7 @@ export class EngineIO {
     ttl: number,
   ): Promise<Lookup[]> {
     if (strategy.read(toIntegerMs(ttl)).touch) {
-      return Promise.all(keys.map((key) => this.read(target, key, strategy, ttl)));
+      return Promise.all(keys.map((key) => this.readEntry(target, key, strategy, ttl, false)));
     }
     const raws = await this.fetchMany(
       target,
@@ -166,6 +188,27 @@ export class EngineIO {
         decode(this.envelope, target, key.full, raws[i], strategy, false, undefined),
       ),
     );
+  }
+
+  /**
+   * `lookups` from `readMany` with their tag stamps checked: one `currentMany` for all their tags
+   * and at most one `version` error (spec 3.2). Synchronous when no entry is tagged, so an
+   * untagged batch gains no await.
+   */
+  checkStamps(target: Target, lookups: readonly Lookup[]): readonly Lookup[] | Promise<Lookup[]> {
+    const stamps = lookups.flatMap((lookup) =>
+      lookup.found && lookup.tags !== undefined ? [lookup.tags] : [],
+    );
+    if (stamps.length === 0) return lookups;
+    return this.tags.verify(target, stamps).then((checks) => {
+      let next = 0;
+      return lookups.map((lookup): Lookup => {
+        if (!lookup.found || lookup.tags === undefined) return lookup;
+        const check = checks[next++];
+        if (check === 'valid') return { found: true, value: lookup.value, stale: lookup.stale };
+        return check === 'invalid' ? { found: false } : { found: false, uncertain: true };
+      });
+    });
   }
 
   /** The raw strings of `keys`; a failure is one `get` error, its keys then read as misses. */

@@ -29,7 +29,15 @@ export interface LoadPlan<T> {
   ttl: number;
   /** Set only when the lock is enabled for the call and the store has one. */
   lock: LockProvider | undefined;
+  /**
+   * The read could not check the entry's tags (spec 3.2 step 4): the value is loaded but not
+   * written, and no tag tokens are taken for it.
+   */
+  noWrite?: boolean;
 }
+
+/** A batch item to load; `noWrite` as in `LoadPlan`, per item. */
+export type LoadItem = BatchItem & { noWrite?: boolean };
 
 /** Everything a batch load needs once the facade has validated the call. Batches never lock. */
 export interface BatchPlan<T> {
@@ -92,11 +100,11 @@ export class EngineLoad {
    */
   async onMissMany<T>(
     plan: BatchPlan<T>,
-    items: readonly BatchItem[],
+    items: readonly LoadItem[],
   ): Promise<Map<string, unknown>> {
     const outcomes = await Promise.all(this.flights(plan, items, false));
     const values = new Map<string, unknown>();
-    const skipped: BatchItem[] = [];
+    const skipped: LoadItem[] = [];
     items.forEach((item, i) => {
       const outcome = outcomes[i];
       if (outcome?.loaded === true) values.set(item.ref.key, outcome.value);
@@ -126,7 +134,7 @@ export class EngineLoad {
    */
   private flights<T>(
     plan: BatchPlan<T>,
-    items: readonly BatchItem[],
+    items: readonly LoadItem[],
     refreshing: boolean,
   ): Promise<Outcome<unknown>>[] {
     const own = items.filter(
@@ -142,23 +150,28 @@ export class EngineLoad {
   }
 
   /**
-   * Runs the loader for `items` and stores what it returned for them; other keys are ignored.
-   * Tags known up front have their tokens taken before the loader runs, as in `loadAndStore`.
+   * Runs the loader for `items` and stores what it returned for them, except `noWrite` items;
+   * other keys are ignored. Tags known up front have their tokens taken before the loader runs,
+   * as in `loadAndStore`, when any item is to be written.
    */
   private async loadMany<T>(
     plan: BatchPlan<T>,
-    items: readonly BatchItem[],
+    items: readonly LoadItem[],
     refreshing: boolean,
   ): Promise<ReadonlyMap<string, T>> {
     const { tags } = plan.options;
-    const taken = knownTags(tags) ? await this.io.tags.stamp(plan.target, () => tags) : undefined;
+    const writable = items.filter((item) => item.noWrite !== true);
+    const taken =
+      knownTags(tags) && writable.length > 0
+        ? await this.io.tags.stamp(plan.target, () => tags)
+        : undefined;
     const loaded = await this.runLoader(
       plan,
       items.map((item) => item.ref.key),
       refreshing,
     );
     // An omitted key is stored as if the loader had returned `undefined` for it.
-    const values = items.map((item) => ({ ...item, value: loaded.get(item.ref.key) as T }));
+    const values = writable.map(({ ref, key }) => ({ ref, key, value: loaded.get(ref.key) as T }));
     await this.io.storeMany(plan.target, values, plan.options, plan.strategy, taken);
     return loaded;
   }
@@ -256,13 +269,16 @@ export class EngineLoad {
   /**
    * A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. Tags
    * known up front (an array) have their tokens taken before the loader runs, and the write uses
-   * exactly those, so an invalidation during the load is not lost (spec 3.3).
+   * exactly those, so an invalidation during the load is not lost (spec 3.3). A `noWrite` plan
+   * only loads.
    */
   private async loadAndStore<T>(plan: LoadPlan<T>, refreshing: boolean): Promise<T> {
     const { target, ref, key, loader, options, strategy } = plan;
+    const writes = plan.noWrite !== true;
     // Awaited only with tags known up front: an untagged load keeps the 0.6 ticks.
     const { tags } = options;
-    const taken = knownTags(tags) ? await this.io.tags.stamp(target, () => tags) : undefined;
+    const taken =
+      writes && knownTags(tags) ? await this.io.tags.stamp(target, () => tags) : undefined;
     const started = Date.now();
     let value: T;
     try {
@@ -273,7 +289,7 @@ export class EngineLoad {
       throw error;
     }
     this.io.emitLoad(target.name, ref, started, true);
-    await this.io.store(target, ref, key, value, options, strategy, false, taken);
+    if (writes) await this.io.store(target, ref, key, value, options, strategy, false, taken);
     return value;
   }
 }

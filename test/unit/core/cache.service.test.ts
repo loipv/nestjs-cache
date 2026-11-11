@@ -388,3 +388,60 @@ describe('CacheService', () => {
     });
   });
 });
+
+describe('CacheService.invalidateTags', () => {
+  it("CacheService.invalidateTags rejects CacheConfigError for [], [''], non-arrays, 33 tags or an unknown store", async () => {
+    /* Spec 4: invalid arguments are a programming error, rejected at once with
+       CacheConfigError; nothing is read, written or emitted. */
+    const { engine, store, emitted } = makeEngine();
+    const service = new CacheService(engine);
+    const invalid: unknown[] = [
+      [],
+      [''],
+      ['ok', ''],
+      'tag',
+      undefined,
+      null,
+      [1],
+      Array.from({ length: 33 }, (_, i) => `t${String(i)}`),
+    ];
+    for (const tags of invalid) {
+      await expect(service.invalidateTags(tags as readonly string[])).rejects.toThrow(
+        CacheConfigError,
+      );
+    }
+    await expect(service.invalidateTags(['t'], { store: 'nope' })).rejects.toThrow(
+      CacheConfigError,
+    );
+    expect(store.calls).toEqual([]);
+    expect(emitted).toEqual([]);
+  });
+
+  it('invalidateTags bumps the tags in the chosen store, duplicates once', async () => {
+    /* The service forwards the tags and the store; 32 tags with duplicates are accepted and
+       each tag key is written once. */
+    const other = new FakeStore();
+    const { engine, store } = makeEngine({ stores: { default: new FakeStore(), other } });
+    const service = new CacheService(engine);
+    const invalidate = vi.spyOn(engine, 'invalidateTags');
+    const tags = Array.from({ length: 32 }, (_, i) => `t${String(i)}`);
+    await service.invalidateTags([...tags, ...tags], { store: 'other' });
+    await service.invalidateTags(['x']);
+    expect(invalidate.mock.calls).toEqual([
+      [[...tags, ...tags], 'other'],
+      [['x'], undefined],
+    ]);
+    expect(other.calls.filter((c) => c.op === 'set')).toHaveLength(32);
+    expect(other.data.has('__tag__:t31')).toBe(true);
+    expect([...store.data.keys()]).toEqual(['__tag__:x']);
+  });
+
+  it('rejects with the first token write error', async () => {
+    /* Spec 3.4: a failed token write rejects the service call (unlike other cache failures). */
+    const { engine, store } = makeEngine();
+    const service = new CacheService(engine);
+    store.failNext('set', new Error('down'));
+    await expect(service.invalidateTags(['a', 'b'])).rejects.toThrow('down');
+    expect(store.data.has('__tag__:b')).toBe(true);
+  });
+});

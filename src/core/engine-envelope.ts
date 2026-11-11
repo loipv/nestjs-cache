@@ -2,7 +2,13 @@ import type { StrategyOptions } from '../decorators/options.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { jsonSerializer } from '../serializers/json.serializer.js';
 import type { Target } from './engine-keys.js';
-import { hasTags, type BatchTagOption, type TagOption, type TagStamp } from './engine-tags.js';
+import {
+  hasTags,
+  type BatchTagOption,
+  type TagCheck,
+  type TagOption,
+  type TagStamp,
+} from './engine-tags.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { ReportError } from './events.js';
 import {
@@ -25,7 +31,22 @@ export type PutOptions<T> = WritePolicy<T> & { tags?: TagOption<T> } & StrategyO
 /** `PutOptions` of a batch load: a tag function also gets each entry's key (D2). */
 export type BatchPutOptions<T> = WritePolicy<T> & { tags?: BatchTagOption<T> } & StrategyOptions;
 
-export type Lookup = { found: true; value: unknown; stale: boolean } | { found: false };
+/**
+ * A read entry. `tags` is set only by a read that defers the tag check (`EngineIO.readMany`):
+ * the stamp still to check. `uncertain` marks a tagged entry whose tag tokens could not be read
+ * (spec 3.2 step 4): a miss that is loaded without writing.
+ */
+export type Lookup =
+  | { found: true; value: unknown; stale: boolean; tags?: TagStamp }
+  | { found: false; uncertain?: true };
+
+/** Checks the stamp of a read entry against the current tag tokens (`EngineTags.verify`). */
+export type VerifyStamp = (stamp: TagStamp) => Promise<TagCheck>;
+
+/** Whether `lookup` is a miss because its tag tokens could not be read: load, do not write. */
+export function uncertain(lookup: Lookup): boolean {
+  return !lookup.found && lookup.uncertain === true;
+}
 
 /** How a value is written: with a strategy and ttl, or not at all (`empty`: uncached null). */
 export type WritePlan = { strategy: ExpiryStrategy; ttl: number } | 'skip' | 'empty';
@@ -69,6 +90,8 @@ export function isEmpty(value: unknown): value is null | undefined {
 /**
  * Classifies a raw string read from `key`. `touched` tells whether the read reset the
  * entry's TTL; `reSetTtl` is set when a touching read had to use `get` and must re-set.
+ * A tagged entry is checked with `verify` before any re-set; without `verify` its stamp is
+ * returned in `tags` for the caller to check. An untagged entry adds no await (the 0.6 path).
  */
 export async function decode(
   ctx: EnvelopeContext,
@@ -78,6 +101,7 @@ export async function decode(
   strategy: ExpiryStrategy,
   touched: boolean,
   reSetTtl: number | undefined,
+  verify?: VerifyStamp,
 ): Promise<Lookup> {
   if (raw === undefined) return { found: false };
   let envelope: CacheEnvelope;
@@ -115,6 +139,14 @@ export async function decode(
     }
     return { found: false };
   }
+  const { tags } = envelope;
+  const deferred = hasTags(tags) && verify === undefined ? tags : undefined;
+  if (hasTags(tags) && verify !== undefined) {
+    const check = await verify(tags);
+    // A tag miss leaves the entry in the store: the next write replaces it (spec 3.2).
+    if (check === 'uncertain') return { found: false, uncertain: true };
+    if (check === 'invalid') return { found: false };
+  }
   // Only a touching reader re-sets, and only a fresh entry: an expired one returned above, so
   // maxTtl still bounds a sliding entry, and a stale one is reloaded (getOrSet) or only read
   // (get) by a reader that is not swr. Not atomic.
@@ -125,7 +157,9 @@ export async function decode(
       ctx.reportError(name, 'set', error);
     }
   }
-  return { found: true, value: unwrap(envelope), stale: state === 'stale' };
+  const lookup: Lookup = { found: true, value: unwrap(envelope), stale: state === 'stale' };
+  if (deferred !== undefined) lookup.tags = deferred;
+  return lookup;
 }
 
 /**
