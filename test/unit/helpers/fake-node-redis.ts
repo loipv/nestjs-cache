@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import type {
   NodeRedisClusterLike,
   NodeRedisLike,
+  NodeRedisSentinelLike,
 } from '../../../src/stores/node-redis.adapter.js';
 
 type Listener = (message: string, channel: string) => void;
@@ -96,6 +97,41 @@ export class FakeNodeRedisCluster extends FakeNodeRedis {
   asCluster(): NodeRedisClusterLike {
     // `duplicate` is typed for the single-node fake, though here it returns a cluster fake.
     return this as unknown as NodeRedisClusterLike;
+  }
+}
+
+/**
+ * Stand-in for a node-redis v5 Sentinel client (`createSentinel`). It has no `duplicate`: it
+ * subscribes on itself, through its pub/sub proxy that follows the master. `publish` reaches its
+ * own subscriptions, as PUBLISH through the sentinel reaches its own proxy. `unsubscribe` removes
+ * one listener of a channel, as node-redis does when a listener is given.
+ */
+export class FakeNodeRedisSentinel extends FakeNodeRedis {
+  getSentinelNode = vi.fn(() => ({ host: '127.0.0.1', port: 26379 }));
+  getMasterNode = vi.fn(() => ({ host: '127.0.0.1', port: 6379 }));
+  unsubscribe = vi.fn((channel: string, listener: Listener) => {
+    const listeners = this.channels.get(channel);
+    listeners?.delete(listener);
+    if (listeners?.size === 0) this.channels.delete(channel);
+    return Promise.resolve();
+  });
+
+  constructor() {
+    super();
+    Reflect.deleteProperty(this, 'duplicate');
+    this.publish = vi.fn((channel: string, message: string) => {
+      this.publishRemote(channel, message);
+      return Promise.resolve(1);
+    });
+  }
+
+  /** What the sentinel emits once it has moved its clients to a new master. */
+  masterChange(): void {
+    this.emit('topology-change', { type: 'MASTER_CHANGE', node: { host: '10.0.0.3', port: 6379 } });
+  }
+
+  asSentinel(): NodeRedisSentinelLike {
+    return this;
   }
 }
 

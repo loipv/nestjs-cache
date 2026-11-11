@@ -8,7 +8,11 @@ import {
 import { RELEASE_SCRIPT } from '../../../src/stores/redis-client.adapter.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
 import { redisStore } from '../../../src/stores/redis.store.js';
-import { FakeNodeRedis, FakeNodeRedisCluster } from '../helpers/fake-node-redis.js';
+import {
+  FakeNodeRedis,
+  FakeNodeRedisCluster,
+  FakeNodeRedisSentinel,
+} from '../helpers/fake-node-redis.js';
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
@@ -300,6 +304,224 @@ describe('nodeRedisAdapter cluster mode', () => {
     }
     await flush();
     expect(onReconnect).not.toHaveBeenCalled();
+  });
+});
+
+describe('nodeRedisAdapter sentinel mode', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /* T1-A: a client whose getSentinelNode is a function is a Sentinel. Every data command goes to
+     the sentinel object (which routes it to the master), as on a single client. */
+  it('sentinel: data commands go to the sentinel object', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    sentinel.get.mockResolvedValueOnce('v').mockResolvedValueOnce(null);
+    sentinel.set.mockResolvedValue('OK');
+    sentinel.getEx.mockResolvedValue('v');
+    sentinel.eval.mockResolvedValue(1);
+    sentinel.unlink.mockResolvedValue(2);
+    sentinel.mGet.mockResolvedValue(['a', null]);
+    sentinel.scan.mockResolvedValue({ cursor: '0', keys: ['p:1'] });
+    const adapter = nodeRedisAdapter(sentinel.asSentinel());
+
+    expect(await adapter.get('k')).toBe('v');
+    expect(await adapter.get('missing')).toBeUndefined();
+    await adapter.set('k', 'v', 1500.2);
+    expect(sentinel.set).toHaveBeenCalledWith('k', 'v', {
+      expiration: { type: 'PX', value: 1501 },
+    });
+    expect(await adapter.getex('k', 100)).toBe('v');
+    expect(sentinel.getEx).toHaveBeenCalledWith('k', { type: 'PX', value: 100 });
+    expect(await adapter.setIfAbsent?.('k', 'v', 5_000)).toBe(true);
+    expect(sentinel.set).toHaveBeenLastCalledWith('k', 'v', {
+      expiration: { type: 'PX', value: 5_000 },
+      condition: 'NX',
+    });
+    expect(await adapter.deleteIfEquals?.('k', 't')).toBe(true);
+    expect(sentinel.eval).toHaveBeenCalledWith(RELEASE_SCRIPT, { keys: ['k'], arguments: ['t'] });
+    await adapter.unlink(['a', 'b']);
+    expect(sentinel.unlink).toHaveBeenCalledWith(['a', 'b']);
+    expect(await adapter.mget?.(['a', 'b'])).toEqual(['a', undefined]);
+    expect(await adapter.scan('0', 'p:*', 100)).toEqual({ cursor: '0', keys: ['p:1'] });
+    expect(sentinel.scan).toHaveBeenCalledWith('0', { MATCH: 'p:*', COUNT: 100 });
+    await adapter.publish('ch', 'm');
+    expect(sentinel.publish).toHaveBeenCalledWith('ch', 'm');
+    await adapter.ping?.();
+    expect(sentinel.ping).toHaveBeenCalledTimes(1);
+    expect(sentinel.connect).not.toHaveBeenCalled();
+
+    const store = redisStore({ client: adapter });
+    expect(store.lock).toBeDefined();
+    expect(store.ping).toBeDefined();
+  });
+
+  /* A Sentinel has no duplicate: the subscriber subscribes on the sentinel object itself, whose
+     pub/sub proxy follows the master. It never connects (the sentinel is connected already), and
+     a message published through the sentinel reaches only its channel's handler. */
+  it('sentinel: the subscriber subscribes on the sentinel object without connecting', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const adapter = nodeRedisAdapter(sentinel.asSentinel());
+    const subscriber = adapter.createSubscriber();
+    const onA = vi.fn();
+    const onB = vi.fn();
+    await Promise.all([subscriber.subscribe('a', onA), subscriber.subscribe('b', onB)]);
+    await subscriber.subscribe('a', onA);
+    expect(sentinel.subscribe.mock.calls).toEqual([
+      ['a', expect.any(Function)],
+      ['b', expect.any(Function)],
+    ]);
+    expect(sentinel.connect).not.toHaveBeenCalled();
+
+    await adapter.publish('a', 'm1');
+    expect(onA).toHaveBeenCalledWith('m1');
+    expect(onB).not.toHaveBeenCalled();
+  });
+
+  /* Only a function counts: a single client that happens to carry a non-function getSentinelNode
+     property is still duplicated for its subscriber. */
+  it('sentinel: detection needs getSentinelNode to be a function', () => {
+    const client = new FakeNodeRedis();
+    Object.assign(client, { getSentinelNode: 'not a function' });
+    nodeRedisAdapter(client.asNodeRedis()).createSubscriber();
+    expect(client.duplicate).toHaveBeenCalledTimes(1);
+  });
+
+  /* T1-A: close only unsubscribes the subscriber's own channels with its own listener. The user's
+     sentinel is never closed or destroyed, a listener the user added on the same channel keeps
+     receiving, and the sentinel still serves commands. A later subscribe rejects; a second close
+     is a no-op. */
+  it('sentinel: close only unsubscribes its channels and never closes the client', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const adapter = nodeRedisAdapter(sentinel.asSentinel());
+    const subscriber = adapter.createSubscriber();
+    const onMessage = vi.fn();
+    await subscriber.subscribe('a', onMessage);
+    await subscriber.subscribe('b', onMessage);
+    const userListener = vi.fn();
+    await sentinel.subscribe('a', userListener);
+    const [, listener] = sentinel.subscribe.mock.calls[0]!;
+
+    await expect(subscriber.close()).resolves.toBeUndefined();
+    await subscriber.close();
+    expect(sentinel.unsubscribe.mock.calls).toEqual([
+      ['a', listener],
+      ['b', listener],
+    ]);
+    expect(sentinel.close).not.toHaveBeenCalled();
+    expect(sentinel.destroy).not.toHaveBeenCalled();
+
+    await adapter.publish('a', 'after');
+    expect(userListener).toHaveBeenCalledWith('after', 'a');
+    expect(onMessage).not.toHaveBeenCalled();
+    sentinel.get.mockResolvedValue('v');
+    expect(await adapter.get('k')).toBe('v');
+    await expect(subscriber.subscribe('c', vi.fn())).rejects.toThrow('subscriber is closed');
+    expect(sentinel.subscribe).toHaveBeenCalledTimes(3);
+  });
+
+  /* Two stores share one sentinel, so they get two subscribers on the same object. Closing one
+     leaves the other's subscription in place. */
+  it('sentinel: closing one subscriber keeps another subscriber on the same sentinel', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const adapter = nodeRedisAdapter(sentinel.asSentinel());
+    const first = adapter.createSubscriber();
+    const second = adapter.createSubscriber();
+    const onFirst = vi.fn();
+    const onSecond = vi.fn();
+    await first.subscribe('ch', onFirst);
+    await second.subscribe('ch', onSecond);
+    await first.close();
+    await adapter.publish('ch', 'm');
+    expect(onFirst).not.toHaveBeenCalled();
+    expect(onSecond).toHaveBeenCalledWith('m');
+  });
+
+  /* close never rejects: an UNSUBSCRIBE that rejects or throws is swallowed and does not stop the
+     other channels' UNSUBSCRIBE, and one that hangs is abandoned after 1 s. Nothing is closed or
+     destroyed, and the timer is cleared. */
+  it('sentinel: close never rejects and gives up on a hanging unsubscribe after 1 s', async () => {
+    const rejecting = new FakeNodeRedisSentinel();
+    const rejectingSub = nodeRedisAdapter(rejecting.asSentinel()).createSubscriber();
+    await rejectingSub.subscribe('a', vi.fn());
+    await rejectingSub.subscribe('b', vi.fn());
+    await rejectingSub.subscribe('c', vi.fn());
+    rejecting.unsubscribe
+      .mockRejectedValueOnce(new Error('The client is closed'))
+      .mockImplementationOnce(() => {
+        throw new Error('sync failure');
+      });
+    await expect(rejectingSub.close()).resolves.toBeUndefined();
+    expect(rejecting.unsubscribe.mock.calls.map(([channel]) => channel)).toEqual(['a', 'b', 'c']);
+
+    vi.useFakeTimers();
+    const hanging = new FakeNodeRedisSentinel();
+    const hangingSub = nodeRedisAdapter(hanging.asSentinel()).createSubscriber();
+    await hangingSub.subscribe('a', vi.fn());
+    hanging.unsubscribe.mockImplementation(() => new Promise<void>(() => undefined));
+    let done = false;
+    const closing = hangingSub.close().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await closing;
+    expect(done).toBe(true);
+    expect(hanging.close).not.toHaveBeenCalled();
+    expect(hanging.destroy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  /* The sentinel's 'error' events (its pub/sub proxy and node clients re-emit through it) reach
+     every onError handler; a throwing handler reaches neither the next one nor the emitter. After
+     close the subscriber's listeners are removed from the user's sentinel. */
+  it('sentinel: error events reach onError until close', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const subscriber = nodeRedisAdapter(sentinel.asSentinel()).createSubscriber();
+    expect(sentinel.listenerCount('error')).toBe(1);
+    const failing = vi.fn(() => {
+      throw new Error('handler failed');
+    });
+    const onError = vi.fn();
+    subscriber.onError?.(failing);
+    subscriber.onError?.(onError);
+    const error = new Error('Connection timeout');
+    expect(() => sentinel.emit('error', error)).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(error);
+    expect(failing).toHaveBeenCalledTimes(1);
+
+    await subscriber.close();
+    expect(sentinel.listenerCount('error')).toBe(0);
+    expect(sentinel.listenerCount('topology-change')).toBe(0);
+  });
+
+  /* The sentinel never emits 'ready'. A MASTER_CHANGE topology event means the pub/sub proxy
+     moved to a new master and messages may have been missed: onReconnect fires, and a SUBSCRIBE
+     that had rejected is sent again. Other topology events fire nothing. */
+  it('sentinel: a master change fires onReconnect and resends a failed subscribe', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const subscriber = nodeRedisAdapter(sentinel.asSentinel()).createSubscriber();
+    const onReconnect = vi.fn();
+    subscriber.onReconnect(onReconnect);
+    sentinel.subscribe.mockRejectedValueOnce(new Error('Connection timeout'));
+    const onMessage = vi.fn();
+    await expect(subscriber.subscribe('ch', onMessage)).rejects.toThrow('Connection timeout');
+
+    sentinel.emit('topology-change', { type: 'REPLICA_ADD', node: { host: 'r', port: 6379 } });
+    sentinel.emit('topology-change', { type: 'SENTINEL_CHANGE', node: { host: 's', port: 1 } });
+    sentinel.emit('topology-change', undefined);
+    await flush();
+    expect(onReconnect).not.toHaveBeenCalled();
+    expect(sentinel.subscribe).toHaveBeenCalledTimes(1);
+
+    sentinel.masterChange();
+    await flush();
+    expect(sentinel.subscribe).toHaveBeenCalledTimes(2);
+    // once for the master change, once for the channel that recovered
+    expect(onReconnect).toHaveBeenCalledTimes(2);
+    await sentinel.publish('ch', 'm');
+    expect(onMessage).toHaveBeenCalledWith('m');
   });
 });
 

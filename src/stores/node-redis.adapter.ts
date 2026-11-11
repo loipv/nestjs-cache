@@ -57,6 +57,29 @@ export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'dupl
 }
 
 /**
+ * Structural subset of a node-redis v5 Sentinel client (`createSentinel()` from `redis`). Declared
+ * by hand so the library never imports `redis`. `nodeRedisAdapter` runs in Sentinel mode when
+ * `getSentinelNode` is a function. Data commands go to the sentinel, which sends them to the
+ * current master. It has no `duplicate`: the subscriber subscribes on the sentinel itself, whose
+ * pub/sub connection follows the master, and closing the subscriber only unsubscribes its own
+ * channels; the sentinel is never closed. Like a single client, it must be connected before it is
+ * passed in.
+ */
+export interface NodeRedisSentinelLike extends Omit<NodeRedisLike, 'duplicate'> {
+  /** Marks a Sentinel client; never called. */
+  getSentinelNode(): unknown;
+  /**
+   * Removes one listener of `channel`; the channel's other listeners keep it subscribed. node-redis
+   * types the listener for string and buffer mode alike.
+   */
+  unsubscribe(channel: string, listener: AnyModePubSubListener): Promise<unknown>;
+  off(event: string, listener: (arg: unknown) => void): unknown;
+}
+
+/** A pub/sub listener as node-redis types it for either mode: string or buffer messages. */
+type AnyModePubSubListener = (message: string | Uint8Array, channel: string | Uint8Array) => void;
+
+/**
  * The connection the subscriber drives: a single client, or a cluster (sharded mode), which also
  * has `sSubscribe`.
  */
@@ -68,11 +91,14 @@ type SubscriberConnection = Pick<
 };
 
 /**
- * Adapts a connected node-redis v5 client or cluster to the cache's `RedisClientAdapter`. A
- * cluster (spec 3.4) splits `mget`/`unlink` per slot, scans every master through `scanIterator`,
- * and publishes and subscribes with sharded pub/sub.
+ * Adapts a connected node-redis v5 client, cluster or Sentinel to the cache's
+ * `RedisClientAdapter`. A cluster (spec 3.4) splits `mget`/`unlink` per slot, scans every master
+ * through `scanIterator`, and publishes and subscribes with sharded pub/sub. A Sentinel subscribes
+ * on itself (see `NodeRedisSentinelLike`).
  */
-export function nodeRedisAdapter(client: NodeRedisLike | NodeRedisClusterLike): RedisClientAdapter {
+export function nodeRedisAdapter(
+  client: NodeRedisLike | NodeRedisClusterLike | NodeRedisSentinelLike,
+): RedisClientAdapter {
   const adapter: RedisClientAdapter = {
     async get(key) {
       return (await client.get(key)) ?? undefined;
@@ -93,7 +119,7 @@ export function nodeRedisAdapter(client: NodeRedisLike | NodeRedisClusterLike): 
     async deleteIfEquals(key, value) {
       return (await client.eval(RELEASE_SCRIPT, { keys: [key], arguments: [value] })) === 1;
     },
-    ...('masters' in client ? clusterCommands(client) : singleNodeCommands(client)),
+    ...keyspaceCommands(client),
   };
   // Optional members exist only when the client has them, so `'ping' in adapter` is truthful.
   if (typeof client.ping === 'function') {
@@ -119,7 +145,27 @@ async function mgetValues(
   return keys.map((_, index) => values[index] ?? undefined);
 }
 
-function singleNodeCommands(client: NodeRedisLike): KeyspaceCommands {
+function isSentinel(
+  client: NodeRedisLike | NodeRedisClusterLike | NodeRedisSentinelLike,
+): client is NodeRedisSentinelLike {
+  return typeof (client as Partial<NodeRedisSentinelLike>).getSentinelNode === 'function';
+}
+
+function keyspaceCommands(
+  client: NodeRedisLike | NodeRedisClusterLike | NodeRedisSentinelLike,
+): KeyspaceCommands {
+  if (isSentinel(client)) {
+    return singleNodeCommands(client, () => createNodeRedisSentinelSubscriber(client));
+  }
+  if ('masters' in client) return clusterCommands(client);
+  return singleNodeCommands(client, () => createNodeRedisSubscriber(client.duplicate(), false));
+}
+
+/** A single client's or a Sentinel's commands; they differ only in their subscriber. */
+function singleNodeCommands(
+  client: Omit<NodeRedisLike, 'duplicate'>,
+  createSubscriber: () => RedisSubscriberAdapter,
+): KeyspaceCommands {
   return {
     async unlink(keys) {
       if (keys.length === 0) return;
@@ -135,9 +181,7 @@ function singleNodeCommands(client: NodeRedisLike): KeyspaceCommands {
     async publish(channel, message) {
       await client.publish(channel, message);
     },
-    createSubscriber() {
-      return createNodeRedisSubscriber(client.duplicate(), false);
-    },
+    createSubscriber,
   };
 }
 
@@ -266,5 +310,67 @@ export function createNodeRedisSubscriber(
   connection.on('ready', () => {
     tracker.ready();
   });
+  return tracker.subscriber;
+}
+
+/**
+ * The subscriber over a connected node-redis Sentinel (ruling T1-A). It subscribes on the sentinel
+ * itself, never connects it, and `close` only unsubscribes its own listener from its channels and
+ * removes its event listeners: the sentinel stays open for the user and for other subscribers.
+ * The sentinel never emits 'ready'; a MASTER_CHANGE topology event, after which its pub/sub
+ * connection moves to the new master, counts as a reconnect, so `onReconnect` fires and failed
+ * SUBSCRIBEs are sent again.
+ */
+function createNodeRedisSentinelSubscriber(
+  sentinel: NodeRedisSentinelLike,
+): RedisSubscriberAdapter {
+  let closed = false;
+  /** Every channel a SUBSCRIBE was sent for, so close removes the listener from each. */
+  const channels = new Set<string>();
+
+  // One listener for every channel; the tracker swallows a throwing handler. It subscribes in
+  // string mode, so both arguments are strings; the wider type is what `unsubscribe` takes.
+  const deliver: AnyModePubSubListener = (message, channel) => {
+    tracker.deliver(String(channel), String(message));
+  };
+  const onError = (error: unknown): void => {
+    tracker.error(error);
+  };
+  const onTopologyChange = (event: unknown): void => {
+    if ((event as { type?: unknown } | undefined)?.type === 'MASTER_CHANGE') tracker.ready();
+  };
+
+  const tracker = createSubscriptionTracker({
+    subscribe: (channel) => {
+      if (closed) return Promise.reject(new Error(SUBSCRIBER_CLOSED));
+      channels.add(channel);
+      return sentinel.subscribe(channel, deliver);
+    },
+    close: () => {
+      closed = true;
+      sentinel.off('error', onError);
+      sentinel.off('topology-change', onTopologyChange);
+      // Nothing to destroy: the sentinel is the user's, so a hanging UNSUBSCRIBE is abandoned.
+      return closeWithTimeout(
+        () =>
+          // Each channel on its own: one that fails or throws does not keep the others subscribed.
+          Promise.allSettled(
+            [...channels].map(
+              (channel) =>
+                new Promise((resolve) => {
+                  resolve(sentinel.unsubscribe(channel, deliver));
+                }),
+            ),
+          ),
+        () => undefined,
+      );
+    },
+  });
+
+  // The sentinel re-emits its pub/sub and node clients' errors as 'error'.
+  sentinel.on('error', onError);
+  sentinel.on('topology-change', onTopologyChange);
+  // The sentinel is connected already: this is the first 'ready', so the next one is a reconnect.
+  tracker.ready();
   return tracker.subscriber;
 }
