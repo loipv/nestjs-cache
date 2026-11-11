@@ -118,6 +118,15 @@ describe('ioredisAdapter subscriber', () => {
       expect(connection.subscribe).toHaveBeenCalledTimes(1);
     });
 
+    it("a throwing message handler does not escape the ioredis 'message' listener", async () => {
+      /* F-2: the tracker swallows a throwing handler, so ioredis's listener never throws. */
+      const { subscriber, connection } = setup();
+      await subscriber.subscribe('ch', () => {
+        throw new Error('handler failed');
+      });
+      expect(() => connection.emit('message', 'ch', 'm')).not.toThrow();
+    });
+
     it('never throws out of the ready listener when a reconnect handler throws', () => {
       const { subscriber, connection } = setup();
       const after = vi.fn();

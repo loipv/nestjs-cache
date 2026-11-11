@@ -57,7 +57,7 @@ export interface SubscriberTransport {
 /** The shared subscriber state; the adapter wires its connection's events to it. */
 export interface SubscriptionTracker {
   readonly subscriber: RedisSubscriberAdapter;
-  /** Hands a message to the channel's handler. A throwing handler is not caught here. */
+  /** Hands a message to the channel's handler. A throwing handler is swallowed, so client listeners never throw. */
   deliver(channel: string, message: string): void;
   /** For each 'ready' event of the connection. */
   ready(): void;
@@ -124,7 +124,11 @@ export function createSubscriptionTracker(transport: SubscriberTransport): Subsc
       },
     },
     deliver(channel, message) {
-      handlers.get(channel)?.(message);
+      try {
+        handlers.get(channel)?.(message);
+      } catch {
+        // swallowed: a throwing handler must not reach the client's listener
+      }
     },
     ready() {
       readyCount += 1;

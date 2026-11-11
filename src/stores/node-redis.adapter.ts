@@ -209,6 +209,7 @@ export function createNodeRedisSubscriber(
   let closed = false;
 
   const connect = (): Promise<unknown> => {
+    if (closed) return Promise.reject(new Error('nodeRedisAdapter: the subscriber is closed'));
     // The executor turns a synchronous throw into a rejection.
     connecting ??= new Promise((resolve) => {
       resolve(connection.connect());
@@ -219,13 +220,9 @@ export function createNodeRedisSubscriber(
     return connecting;
   };
 
-  // One listener for every channel; it runs inside node-redis's reply parser, so it never throws.
+  // One listener for every channel; the tracker swallows a throwing handler.
   const deliver: PubSubListener = (message, channel) => {
-    try {
-      tracker.deliver(channel, message);
-    } catch {
-      // swallowed: a throwing handler must not reach node-redis
-    }
+    tracker.deliver(channel, message);
   };
 
   const subscribeCommand = (channel: string): Promise<unknown> => {

@@ -407,6 +407,14 @@ describe('nodeRedisAdapter subscriber', () => {
     await expect(subscriber.close()).resolves.toBeUndefined();
   });
 
+  /* F-2: after close, a subscribe rejects before it opens a connection. */
+  it('subscribe after close rejects without connecting', async () => {
+    const { subscriber, connection } = setup();
+    await subscriber.close();
+    await expect(subscriber.subscribe('ch', vi.fn())).rejects.toThrow('subscriber is closed');
+    expect(connection.connect).not.toHaveBeenCalled();
+  });
+
   /* A SUBSCRIBE that rejected (its reply was lost with the socket) is not restored by node-redis.
      The next 'ready' sends it again, and onReconnect fires because messages may have been missed. */
   it('subscriber: a failed SUBSCRIBE is sent again on the next ready', async () => {
