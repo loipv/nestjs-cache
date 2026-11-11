@@ -16,6 +16,7 @@ import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
+import { VersionTokens } from './version-tokens.js';
 
 export type { KeyRef, PutOptions } from './engine-io.js';
 export type { BatchLoader, BatchScope } from './engine-batch.js';
@@ -96,10 +97,13 @@ export class CacheEngine {
   ) {
     this.logLevel = options.logging.level;
     this.escapeKeyArgs = options.escapeKeyArgs;
+    // One token store for namespaces and tags; the facade serves the namespace calls.
+    const tokens = new VersionTokens(options.prefix, options.versionCacheTtl);
     const versions = new NamespaceVersions(
       options.prefix,
       options.versionedNamespaces,
       options.versionCacheTtl,
+      tokens,
     );
     this.io = new EngineIO(options, events, versions);
     this.load = new EngineLoad(this.io, options.defaults.lock);
