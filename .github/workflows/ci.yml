@@ -69,6 +69,7 @@ jobs:
           - { ioredis: 6, adapters: 'ioredis,ioredis-cluster' }
           - { ioredis: 6, adapters: 'node-redis,node-redis-cluster' }
           - { ioredis: 6, adapters: 'ioredis-sentinel,node-redis-sentinel' }
+          - { ioredis: 6, adapters: 'node-redis,node-redis-cluster,node-redis-sentinel', redis: 5 }
     env:
       CACHE_IT_ADAPTERS: ${{ matrix.adapters }}
     steps:
@@ -79,6 +80,9 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm install --no-save --ignore-scripts ioredis@${{ matrix.ioredis }}
+      - name: Install redis 5
+        if: matrix.redis == 5
+        run: npm install --no-save --ignore-scripts redis@5
       - run: npm run test:integration
 
   # Installs the packed tarball into a Nest 11 CommonJS app and a Nest 12 ESM app, on the oldest

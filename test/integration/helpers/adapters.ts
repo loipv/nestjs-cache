@@ -26,14 +26,14 @@ const ALL_ADAPTERS: readonly AdapterName[] = [
 
 /**
  * Why pub/sub cases skip an adapter, or undefined when the host can test its pub/sub. Ruling
- * T1-B: node-redis applies `nodeAddressMap` to a Sentinel's data clients but not to its pub/sub
- * proxy, which connects to the master's container-network address; from the host (through Docker's
+ * T1-B: redis (node-redis) v5 applies `nodeAddressMap` to a Sentinel's data clients but not to its
+ * pub/sub proxy (v6.3.1 fixes that, so this skip applies to v5 only), which connects to the master's container-network address; from the host (through Docker's
  * port mapping) that SUBSCRIBE never connects. Unit tests cover node-redis Sentinel pub/sub against
  * a fake.
  */
 export function pubSubSkipReason(name: AdapterName): string | undefined {
   return name === 'node-redis-sentinel'
-    ? "node-redis Sentinel's pub/sub ignores nodeAddressMap, so the host cannot reach it (ruling T1-B)"
+    ? "redis v5 Sentinel's pub/sub ignores nodeAddressMap, so the host cannot reach it (ruling T1-B)"
     : undefined;
 }
 
@@ -204,7 +204,10 @@ async function scanIoredis(client: Redis, pattern: string): Promise<string[]> {
   return found;
 }
 
-type NodeRedisClient = ReturnType<typeof createClient>;
+// Not `ReturnType<typeof createClient>`: that is not the type of `createClient()` once the default RESP
+// version differs (redis v5 uses 2, v6 uses 3).
+const newNodeRedisClient = (url: string) => createClient({ url });
+type NodeRedisClient = ReturnType<typeof newNodeRedisClient>;
 
 async function scanNodeRedis(
   client: Pick<NodeRedisLike, 'scan'>,
@@ -222,7 +225,7 @@ async function scanNodeRedis(
 
 async function startNodeRedis(): Promise<StartedAdapter> {
   const redis = await startRedis();
-  const client = createClient({ url: redis.url });
+  const client = newNodeRedisClient(redis.url);
   // Without an 'error' listener, an error node-redis emits (a dropped socket) would crash the run.
   client.on('error', () => undefined);
   try {
@@ -330,7 +333,7 @@ async function startNodeRedisSentinel(): Promise<StartedAdapter> {
     name: handle.name,
     sentinelRootNodes: handle.sentinels,
     // node-redis's nodeAddressMap has the shape of ioredis's natMap (an object keyed by
-    // "host:port"); it is not applied to the Sentinel's pub/sub, see pubSubSkipReason.
+    // "host:port"); redis v5 does not apply it to the Sentinel's pub/sub, see pubSubSkipReason.
     nodeAddressMap: handle.natMap,
   });
   // As in startNodeRedis.

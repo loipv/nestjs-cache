@@ -11,8 +11,15 @@ import { tieredStore } from '../../src/stores/tiered.store.js';
 import { startRedisCluster, type RedisClusterHandle } from './helpers/redis-cluster.js';
 import { startRedis } from './helpers/redis.js';
 
-type NodeRedisClient = ReturnType<typeof createClient>;
-type NodeRedisCluster = ReturnType<typeof createCluster>;
+// Derived from the factory calls the tests make: `ReturnType<typeof createClient>` is not the type of
+// `createClient(...)` once the default RESP version differs (redis v5 uses 2, v6 uses 3).
+const newClient = (url: string) => createClient({ url });
+const newCluster = (
+  startupNodes: { host: string; port: number }[],
+  nodeAddressMap: Record<string, { host: string; port: number }>,
+) => createCluster({ rootNodes: startupNodes.map((socket) => ({ socket })), nodeAddressMap });
+type NodeRedisClient = ReturnType<typeof newClient>;
+type NodeRedisCluster = ReturnType<typeof newCluster>;
 
 /** Runs every step in order; each later step runs in a `finally`, so one failure leaks nothing. */
 async function closeAll(steps: readonly (() => Promise<unknown>)[]): Promise<void> {
@@ -48,7 +55,7 @@ describe('nodeRedisAdapter (integration)', () => {
   let client: NodeRedisClient;
 
   async function connect(): Promise<NodeRedisClient> {
-    const own = createClient({ url: redis.url });
+    const own = newClient(redis.url);
     // Without an 'error' listener, an error node-redis emits (a dropped socket) would crash the run.
     own.on('error', () => undefined);
     await own.connect();
@@ -192,11 +199,8 @@ describe('nodeRedisAdapter (integration)', () => {
     let cluster: NodeRedisCluster;
 
     async function connectCluster(): Promise<NodeRedisCluster> {
-      const own = createCluster({
-        rootNodes: redisCluster.startupNodes.map((socket) => ({ socket })),
-        // node-redis's nodeAddressMap has the shape of ioredis's natMap.
-        nodeAddressMap: redisCluster.natMap,
-      });
+      // node-redis's nodeAddressMap has the shape of ioredis's natMap.
+      const own = newCluster(redisCluster.startupNodes, redisCluster.natMap);
       // As for the single client.
       own.on('error', () => undefined);
       await own.connect();
