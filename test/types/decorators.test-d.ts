@@ -6,6 +6,7 @@ import {
   HttpCache,
   type CacheService,
   type HttpCacheRequest,
+  type HttpCacheTags,
   type TagSpec,
 } from '../../src/index.js';
 
@@ -15,6 +16,11 @@ interface User {
 interface SearchQuery {
   term: string;
 }
+
+/* 0.7-T6: HttpCacheTags is exported, so a tags callback can be declared on its own. */
+const pathTags: HttpCacheTags = (_body, req) => [req.path];
+expectTypeOf(pathTags).parameters.toEqualTypeOf<[unknown, HttpCacheRequest]>();
+expectTypeOf(pathTags).returns.toEqualTypeOf<readonly string[]>();
 
 export class Accepted {
   @Cacheable({ namespace: 'users', key: 'user:{0}', ttl: 60_000 })
@@ -214,6 +220,9 @@ export class AcceptedTags {
 
   @HttpCache({ tags: ['items'] })
   g(): void {}
+
+  @HttpCache({ tags: pathTags })
+  h(): void {}
 }
 
 export class RejectedTags {
