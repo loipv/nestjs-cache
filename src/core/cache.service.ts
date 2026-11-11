@@ -116,8 +116,9 @@ function loadManyOptionsOf<T>(options: GetOrSetManyOptions<T>): BatchLoadOptions
 
 /**
  * The programmatic cache API, injected from `CacheModule`. Cache failures (store, serializer,
- * key, lock) are reported as `error` events and do not reject a call; invalid arguments reject
- * with `CacheConfigError`, and so does `invalidateTags` when a tag version write fails.
+ * key, lock) are reported as `error` events and do not reject a call, with one exception:
+ * `invalidateTags` rejects with the store's error when a tag version write fails, so the caller
+ * knows the invalidation did not happen. Invalid arguments reject with `CacheConfigError`.
  */
 export class CacheService {
   /** Created by `CacheModule`; do not construct it, inject it. */
