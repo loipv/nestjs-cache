@@ -164,41 +164,44 @@ async function* scanMasters(
   match: string,
   count: number,
 ): AsyncIterable<string[]> {
-  const masters = client.nodes('master');
-  if (masters.length === 0) {
-    throw new Error(
-      'ioredisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
-    );
-  }
-  yield* scanNodes(masters, async (node, cursor) => {
-    const [next, keys] = await node.scan(cursor, 'MATCH', match, 'COUNT', count);
-    return { cursor: next, keys };
-  });
+  yield* scanNodes(
+    client.nodes('master'),
+    async (node, cursor) => {
+      const [next, keys] = await node.scan(cursor, 'MATCH', match, 'COUNT', count);
+      return { cursor: next, keys };
+    },
+    'ioredisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
+  );
 }
 
 /**
- * The subscriber over a dedicated connection. With `sharded` (a Cluster), it sends SSUBSCRIBE and
- * listens to 'smessage'; otherwise SUBSCRIBE and 'message'. Retries, reconnects and close follow
- * the shared `createSubscriptionTracker`.
+ * The subscriber over a dedicated connection. With `sharded` and a Cluster connection, it sends
+ * SSUBSCRIBE and listens to 'smessage'; otherwise SUBSCRIBE and 'message'. One flag decides both,
+ * so the command and the listened event always match. Retries, reconnects and close follow the
+ * shared `createSubscriptionTracker`.
  */
 function createSubscriber(
   connection: IoredisLike | IoredisClusterLike,
   sharded: boolean,
 ): RedisSubscriberAdapter {
+  const shardedConnection = sharded && isClusterClient(connection) ? connection : undefined;
   const tracker = createSubscriptionTracker({
     subscribe: (channel) =>
-      sharded && isClusterClient(connection)
-        ? connection.ssubscribe(channel)
-        : connection.subscribe(channel),
+      shardedConnection === undefined
+        ? connection.subscribe(channel)
+        : shardedConnection.ssubscribe(channel),
     close: () => closeConnection(connection),
   });
   // Without an 'error' listener ioredis prints "Unhandled error event" on every failed reconnect.
   connection.on('error', (error: unknown) => {
     tracker.error(error);
   });
-  connection.on(sharded ? 'smessage' : 'message', (channel: string, message: string) => {
-    tracker.deliver(channel, message);
-  });
+  connection.on(
+    shardedConnection === undefined ? 'message' : 'smessage',
+    (channel: string, message: string) => {
+      tracker.deliver(channel, message);
+    },
+  );
   connection.on('ready', () => {
     tracker.ready();
   });

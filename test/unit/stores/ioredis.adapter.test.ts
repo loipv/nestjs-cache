@@ -396,6 +396,22 @@ describe('ioredisAdapter cluster mode', () => {
     expect(connection.quit).toHaveBeenCalledTimes(1);
   });
 
+  /* 0.5-T4-1: a hand-written cluster whose duplicate() is not a cluster. The subscriber decides
+     once: it sends SUBSCRIBE and listens to 'message', never SUBSCRIBE paired with 'smessage'. */
+  it('a cluster whose duplicate is not a cluster subscribes with subscribe on message', async () => {
+    const cluster = new FakeCluster();
+    const plain = new FakeConnection();
+    cluster.duplicate = () => plain.asIoredis();
+    const subscriber = ioredisAdapter(cluster.asCluster()).createSubscriber();
+    const onMessage = vi.fn();
+    await subscriber.subscribe('ch', onMessage);
+    expect(plain.subscribe).toHaveBeenCalledWith('ch');
+    plain.publishRemote('ch', 'm');
+    expect(onMessage).toHaveBeenCalledWith('m');
+    plain.emit('smessage', 'ch', 'sharded');
+    expect(onMessage).toHaveBeenCalledTimes(1);
+  });
+
   /* A failed SSUBSCRIBE is sent again on 'ready', as for the unsharded subscriber. */
   it('retries a failed ssubscribe on ready in cluster mode', async () => {
     const cluster = new FakeCluster();

@@ -447,6 +447,29 @@ describe('nodeRedisAdapter subscriber', () => {
     expect(onError).toHaveBeenCalledWith(new Error('retry failed'));
   });
 
+  /* 0.5-FW-2: closed before connect and closed during connect reject with one message. */
+  it('subscriber: both closed paths reject with the same message', async () => {
+    const message = 'nodeRedisAdapter: the subscriber is closed';
+    const before = setup();
+    await before.subscriber.close();
+    await expect(before.subscriber.subscribe('ch', vi.fn())).rejects.toThrow(message);
+
+    const during = setup();
+    let connected: () => void = () => undefined;
+    during.connection.connect.mockImplementationOnce(
+      () =>
+        new Promise<FakeNodeRedis>((resolve) => {
+          connected = () => {
+            resolve(during.connection);
+          };
+        }),
+    );
+    const subscribing = during.subscriber.subscribe('ch', vi.fn());
+    await during.subscriber.close();
+    connected();
+    await expect(subscribing).rejects.toThrow(message);
+  });
+
   /* Closing while connect is still pending: subscribe rejects and SUBSCRIBE is never sent; a
      'ready' after close sends nothing either. */
   it('subscriber: close during connect stops the subscribe', async () => {

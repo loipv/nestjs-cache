@@ -39,11 +39,17 @@ export async function unlinkBySlot(
   }
 }
 
-/** Scans each node to cursor '0' in order and yields the non-empty pages. */
+/**
+ * Scans each node to cursor '0' in order and yields the non-empty pages. With `emptyMessage`,
+ * zero nodes reject with it on the first iteration: a cluster `clear` that scanned no master
+ * would succeed without deleting anything.
+ */
 export async function* scanNodes<N>(
   nodes: readonly N[],
   scan: (node: N, cursor: string) => Promise<{ cursor: string; keys: string[] }>,
+  emptyMessage?: string,
 ): AsyncIterable<string[]> {
+  if (nodes.length === 0 && emptyMessage !== undefined) throw new Error(emptyMessage);
   for (const node of nodes) {
     let cursor = '0';
     do {

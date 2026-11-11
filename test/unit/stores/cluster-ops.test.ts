@@ -81,4 +81,18 @@ describe('scanNodes', () => {
     expect(out).toEqual([['a'], ['b'], ['c']]);
     expect(calls).toEqual(['n1:0', 'n1:5', 'n2:0', 'n2:7']);
   });
+
+  /* 0.5-T6-1: with an emptyMessage, zero nodes reject on the first iteration (a clear must not
+     succeed while scanning nothing); without one, zero nodes yield nothing. */
+  it('scanNodes rejects zero nodes with emptyMessage and yields nothing without it', async () => {
+    const scan = vi.fn(() => Promise.resolve({ cursor: '0', keys: ['x'] }));
+    const pages: string[][] = [];
+    const iterating = (async () => {
+      for await (const page of scanNodes([], scan, 'no node known')) pages.push(page);
+    })();
+    await expect(iterating).rejects.toThrow('no node known');
+    for await (const page of scanNodes([], scan)) pages.push(page);
+    expect(pages).toEqual([]);
+    expect(scan).not.toHaveBeenCalled();
+  });
 });

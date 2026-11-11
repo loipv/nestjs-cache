@@ -181,18 +181,19 @@ async function* scanMasters(
   match: string,
   count: number,
 ): AsyncIterable<string[]> {
-  const masters = [...client.masters];
-  if (masters.length === 0) {
-    throw new Error(
-      'nodeRedisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
-    );
-  }
-  yield* scanNodes(masters, async (master, cursor) => {
-    const node = await client.nodeClient(master);
-    const reply = await node.scan(cursor, { MATCH: match, COUNT: count });
-    return { cursor: reply.cursor, keys: reply.keys };
-  });
+  yield* scanNodes(
+    [...client.masters],
+    async (master, cursor) => {
+      const node = await client.nodeClient(master);
+      const reply = await node.scan(cursor, { MATCH: match, COUNT: count });
+      return { cursor: reply.cursor, keys: reply.keys };
+    },
+    'nodeRedisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
+  );
 }
+
+/** The rejection of a subscribe after close, whether close came before or during connect. */
+const SUBSCRIBER_CLOSED = 'nodeRedisAdapter: the subscriber is closed';
 
 /**
  * The subscriber over a dedicated, not yet connected node-redis connection. The first `subscribe`
@@ -209,7 +210,7 @@ export function createNodeRedisSubscriber(
   let closed = false;
 
   const connect = (): Promise<unknown> => {
-    if (closed) return Promise.reject(new Error('nodeRedisAdapter: the subscriber is closed'));
+    if (closed) return Promise.reject(new Error(SUBSCRIBER_CLOSED));
     // The executor turns a synchronous throw into a rejection.
     connecting ??= new Promise((resolve) => {
       resolve(connection.connect());
@@ -226,9 +227,7 @@ export function createNodeRedisSubscriber(
   };
 
   const subscribeCommand = (channel: string): Promise<unknown> => {
-    if (closed) {
-      return Promise.reject(new Error('nodeRedisAdapter: the subscriber was closed'));
-    }
+    if (closed) return Promise.reject(new Error(SUBSCRIBER_CLOSED));
     if (!sharded) return connection.subscribe(channel, deliver);
     if (connection.sSubscribe === undefined) {
       return Promise.reject(
