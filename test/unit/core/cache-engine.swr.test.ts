@@ -700,3 +700,34 @@ describe('CacheEngine swr softTimeout', () => {
     },
   );
 });
+
+describe('CacheEngine softTimeout needs swr (F-3)', () => {
+  it.each([
+    ['fixed', 'fixed', { ttl: 100, strategy: 'fixed', softTimeout: 50 }],
+    ['no strategy', 'fixed', { ttl: 100, softTimeout: 50 }],
+    ['sliding', 'sliding', { ttl: 100, strategy: 'sliding', softTimeout: 50 }],
+  ] as const)(
+    'getOrSet and getOrSetMany reject softTimeout under %s before any store call',
+    async (_title, strategy, options) => {
+      /* 0.9 F-3: only a stale swr hit waits for its refresh, so a softTimeout under 'fixed'
+         (also the default, no strategy) or 'sliding' did nothing. A JavaScript caller passing one
+         now gets a CacheConfigError per call, before the store or the loader is called. */
+      const { engine, store } = makeEngine();
+      const loader = vi.fn(async () => 1);
+      const batchLoader = vi.fn(async () => new Map<string, number>());
+      const message = `Invalid softTimeout: 50. softTimeout needs the 'swr' strategy, but the strategy is '${strategy}'.`;
+      const typed = options as unknown as typeof SWR;
+      await expect(engine.getOrSet({ key: 'k' }, loader, typed)).rejects.toThrow(
+        new CacheConfigError(message),
+      );
+      await expect(engine.getOrSetMany({}, ['k'], batchLoader, typed)).rejects.toThrow(
+        new CacheConfigError(message),
+      );
+      expect(loader).not.toHaveBeenCalled();
+      expect(batchLoader).not.toHaveBeenCalled();
+      expect(store.calls).toEqual([]);
+      const without = { ...options, softTimeout: undefined } as unknown as typeof SWR;
+      await expect(engine.getOrSet({ key: 'k' }, loader, without)).resolves.toBe(1);
+    },
+  );
+});

@@ -149,3 +149,24 @@ describe('@HttpCache', () => {
     expect(typeof fn.tags).toBe('function');
   });
 });
+
+describe('@HttpCache softTimeout needs swr (F-3)', () => {
+  it.each([
+    ['fixed', 'fixed', { strategy: 'fixed', softTimeout: 50 }],
+    ['no strategy', 'fixed', { softTimeout: 50 }],
+    ['sliding', 'sliding', { strategy: 'sliding', softTimeout: 50 }],
+  ] as const)(
+    'rejects softTimeout under %s on a method and a class',
+    (_title, strategy, options) => {
+      /* 0.9 F-3: a cached route loads, but only a stale swr hit waits for the refresh; softTimeout
+       under 'fixed' (the default) or 'sliding' was ignored and is now a CacheConfigError. */
+      const message = `softTimeout needs strategy 'swr', got '${strategy}'`;
+      expect(() => {
+        onMethod(options);
+      }).toThrow(new CacheConfigError(`C.m: ${message}`));
+      expect(() => {
+        onClass(options);
+      }).toThrow(new CacheConfigError(`C: ${message}`));
+    },
+  );
+});

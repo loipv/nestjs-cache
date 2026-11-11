@@ -32,6 +32,10 @@ Changed:
   `@CachePut` throws `CacheConfigError` at class definition, and on `get`, `getMany`, `set` or `setMany` the call
   rejects with `CacheConfigError`. Migration: remove `softTimeout` from those calls, where it never had an effect.
   Use `LoadStrategyOptions` where you typed strategy options that carry `softTimeout`.
+- On the load calls, `softTimeout` needs `strategy: 'swr'`. From JavaScript (the types already allow it with `'swr'`
+  only), `softTimeout` with `'fixed'`, `'sliding'` or no strategy on `@Cacheable` or `@HttpCache` throws
+  `CacheConfigError` at class definition, and on `getOrSet` or `getOrSetMany` the call rejects with it. Before, it was
+  ignored. Migration: remove `softTimeout` there, or use `strategy: 'swr'`.
 - `GetOrSetOptions` and `GetOrSetManyOptions` are no longer `WriteOptions & …` / `WriteManyOptions & …`. They have the
   same fields, with `LoadStrategyOptions`. Migration: a value typed `GetOrSetOptions` that sets `softTimeout` is no
   longer assignable to `WriteOptions`. Drop `softTimeout` before passing it to `set`.

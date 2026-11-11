@@ -129,6 +129,8 @@ nothing is written and the stale entry stays, so the call returns the stale valu
 the empty value is written and returned. A batch shares one window per call. The calls that never load (`@CachePut`,
 `set`, `setMany`, `get` and `getMany`) do not accept it: their option types (`StrategyOptions`) reject it at compile
 time, and a JavaScript caller gets `CacheConfigError`. The load calls take `LoadStrategyOptions`, which adds it.
+On a load call it needs `strategy: 'swr'`: the types allow it only there, and from JavaScript another strategy is a
+`CacheConfigError`.
 
 Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh until then, and then expired.
 `CacheService.get` returns a stale entry (with `hit.stale: true`) but never refreshes, as it has no loader.

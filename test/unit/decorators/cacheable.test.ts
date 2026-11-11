@@ -761,3 +761,25 @@ describe('@Cacheable option types (JavaScript callers)', () => {
     }).not.toThrow();
   });
 });
+
+describe('@Cacheable softTimeout needs swr (F-3)', () => {
+  it.each([
+    ['fixed', 'fixed', { strategy: 'fixed', softTimeout: 50 }],
+    ['no strategy', 'fixed', { softTimeout: 50 }],
+    ['sliding', 'sliding', { strategy: 'sliding', softTimeout: 50 }],
+  ] as const)('rejects softTimeout under %s at class definition', (_title, strategy, options) => {
+    /* 0.9 F-3: the types allow softTimeout with 'swr' only; a JavaScript caller that set it under
+       'fixed' (the default) or 'sliding' had it ignored. It is now a CacheConfigError when the
+       decorator runs, naming the method. */
+    const define = (): unknown => {
+      class S {
+        @Cacheable(options as unknown as { strategy: 'fixed' }) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    };
+    expect(define).toThrow(CacheConfigError);
+    expect(define).toThrow(`S.a: softTimeout needs strategy 'swr', got '${strategy}'`);
+  });
+});

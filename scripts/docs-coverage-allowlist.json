@@ -18,5 +18,13 @@
   {
     "fragment": "```ts CacheModule.forRoot({ stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) }, defaults: { lock:",
     "reason": "Moved to docs/resilience.md. The decorated method stood outside a class (not valid TypeScript); it now sits in a `ReportService` class and loads through a declared `buildReport`, and the imports and stubs were added so the block type-checks."
+  },
+  {
+    "fragment": "| Class definition (decorators) | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, `softTimeout`,",
+    "reason": "Moved to docs/resilience.md. 0.9 rejects `softTimeout` without `strategy: 'swr'` on `@Cacheable` and `@HttpCache` (final review M-8), so the row lists it."
+  },
+  {
+    "fragment": "| `CacheService` call (rejects) | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl`, `maxTtl` or `softTimeout`",
+    "reason": "Moved to docs/resilience.md. 0.9 rejects `softTimeout` without `strategy: 'swr'` on `getOrSet` and `getOrSetMany` (final review M-8), so the row lists it."
   }
 ]

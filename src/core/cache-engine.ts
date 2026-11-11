@@ -88,7 +88,8 @@ function checkBoolean(option: string, value: boolean | undefined): void {
  * entry is written with; it is omitted by `get`, which writes nothing. `preset` is a strategy
  * already built from these same options; every check still runs, in the same order.
  * `noSoftTimeout` names a call that does not load (`get`, `set`, ...): any defined
- * `softTimeout` is then rejected.
+ * `softTimeout` is then rejected. On a load call, `softTimeout` needs the `swr` strategy: only a
+ * stale `swr` hit waits for its refresh.
  */
 function strategyOf(
   options: LoadStrategyOptions,
@@ -106,6 +107,11 @@ function strategyOf(
   checkDuration('maxTtl', maxTtl);
   checkDuration('softTimeout', options.softTimeout);
   const strategy = preset ?? createStrategy(options);
+  if (options.softTimeout !== undefined && strategy.kind !== 'swr') {
+    throw new CacheConfigError(
+      `Invalid softTimeout: ${String(options.softTimeout)}. softTimeout needs the 'swr' strategy, but the strategy is '${strategy.kind}'.`,
+    );
+  }
   if (strategy.kind === 'swr' && staleTtl === undefined) {
     throw new CacheConfigError(
       "Invalid staleTtl: undefined. The 'swr' strategy requires staleTtl.",
