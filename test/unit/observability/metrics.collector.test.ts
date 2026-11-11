@@ -135,7 +135,10 @@ describe.each(clients)('CacheMetricsCollector with %s', (_name, client) => {
     await expect(rejection).rejects.toThrow(
       'Metric "cache_requests_total" is already registered; use a different prefix or registry',
     );
-    await second.close();
+    // Nest 11's close() awaits the failed init first and rethrows its error; Nest 12 resolves.
+    await second.close().catch((error: unknown) => {
+      expect(error).toBeInstanceOf(CacheConfigError);
+    });
     // the failed app must not have removed the first app's metrics
     expect(registry.getSingleMetric('cache_requests_total')).toBeDefined();
     await first.close();
