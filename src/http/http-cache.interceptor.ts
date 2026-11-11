@@ -6,6 +6,7 @@ import {
   type ExecutionContext,
   type NestInterceptor,
 } from '@nestjs/common';
+import { SSE_METADATA } from '@nestjs/common/constants.js';
 import { HttpAdapterHost, Reflector } from '@nestjs/core';
 import { from, lastValueFrom, type Observable } from 'rxjs';
 import type { CacheEngine, LoadOptions } from '../core/cache-engine.js';
@@ -70,6 +71,10 @@ export class HttpCacheInterceptor implements NestInterceptor {
       [context.getHandler(), context.getClass()],
     );
     if (metadata === undefined) return next.handle();
+    // A server-sent event route streams many values; caching would buffer it down to the last one.
+    if (this.reflector.get<boolean | undefined>(SSE_METADATA, context.getHandler()) === true) {
+      return next.handle();
+    }
     const req: unknown = context.switchToHttp().getRequest();
     if (isObject(req) && loading.has(req)) return next.handle();
     const adapter = this.adapterHost.httpAdapter;

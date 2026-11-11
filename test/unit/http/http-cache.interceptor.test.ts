@@ -1,9 +1,18 @@
 import 'reflect-metadata';
 import { Readable } from 'node:stream';
-import { StreamableFile, type CallHandler, type ExecutionContext } from '@nestjs/common';
+import { Sse, StreamableFile, type CallHandler, type ExecutionContext } from '@nestjs/common';
 import { HttpAdapterHost, Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { defer, from, isObservable, lastValueFrom, of, throwError, type Observable } from 'rxjs';
+import {
+  defer,
+  from,
+  isObservable,
+  lastValueFrom,
+  of,
+  throwError,
+  toArray,
+  type Observable,
+} from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import type { CacheEngine } from '../../../src/core/cache-engine.js';
 import { HttpCache, type HttpCacheOptions } from '../../../src/http/http-cache.decorator.js';
@@ -402,6 +411,25 @@ describe('HttpCacheInterceptor', () => {
       }
     },
   );
+
+  it('passes an @Sse() route through untouched and stores nothing', async () => {
+    /* F-2: a class-level @HttpCache must not buffer a server-sent event stream down to its last event */
+    const t = setup();
+    @HttpCache()
+    class Events {
+      @Sse('events')
+      stream(): void {}
+    }
+    const target = { handler: Events.prototype.stream, cls: Events };
+    const next = t.nextOf(() => of({ data: 1 }, { data: 2 }, { data: 3 }));
+    const events = await lastValueFrom(
+      t.interceptor.intercept(t.context(target, get('/events')), next).pipe(toArray()),
+    );
+    expect(events).toEqual([{ data: 1 }, { data: 2 }, { data: 3 }]);
+    expect(next.calls).toBe(1);
+    expect(t.gets()).toBe(0);
+    expect(t.store.data.size).toBe(0);
+  });
 
   it('is exported and resolves through CacheModule', async () => {
     /* D1: CACHE_ENGINE, Reflector and HttpAdapterHost are injected by Nest */
