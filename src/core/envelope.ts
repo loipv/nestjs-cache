@@ -5,6 +5,8 @@ export interface CacheEnvelope {
   expiresAt?: number;
   staleAt?: number;
   nil?: 'null' | 'undefined';
+  /** The tag versions the entry was written with, tag to token; absent on an untagged entry. */
+  tags?: Readonly<Record<string, string>>;
 }
 
 export function wrap(value: unknown, storedAt: number, ttlMs: number): CacheEnvelope {
@@ -31,5 +33,12 @@ export function isEnvelope(candidate: unknown): candidate is CacheEnvelope {
     if (t !== undefined && (typeof t !== 'number' || !Number.isFinite(t))) return false;
   }
   const nil = c['nil'];
-  return nil === undefined || nil === 'null' || nil === 'undefined';
+  if (nil !== undefined && nil !== 'null' && nil !== 'undefined') return false;
+  return c['tags'] === undefined || isTagStamp(c['tags']);
+}
+
+/** A plain object whose own values are all strings; `{}` included. */
+function isTagStamp(tags: unknown): boolean {
+  if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) return false;
+  return Object.values(tags).every((token) => typeof token === 'string');
 }

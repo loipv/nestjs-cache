@@ -1,0 +1,158 @@
+import type { Target } from './engine-keys.js';
+import type { ReportError } from './events.js';
+import type { VersionTokens } from './version-tokens.js';
+
+/** The most tags one entry carries, counted after de-duplication (spec 2.5). */
+export const MAX_TAGS = 32;
+
+/** The tag versions an entry was written with: each tag mapped to its token. */
+export type TagStamp = Readonly<Record<string, string>>;
+
+/**
+ * The engine-level tags of a single write (D2). An array is known before the load, so its tokens
+ * are taken before the loader runs; a function gets the value once the write is decided.
+ */
+export type TagOption<T> = readonly string[] | ((value: T) => readonly string[]);
+
+/** The tags of a batch write (D2): an array for every entry, or a function of each entry. */
+export type BatchTagOption<T> = readonly string[] | ((value: T, key: string) => readonly string[]);
+
+/**
+ * How a write is stamped: a stamp (empty means the untagged 0.6 envelope), or `'skip'` after a
+ * reported failure, and the entry is then not written.
+ */
+export type Stamping = TagStamp | 'skip';
+
+/**
+ * `raw` as a tag list: an array of non-empty strings, de-duplicated (first occurrence kept), at
+ * most `MAX_TAGS` long. Always a new array. Throws a `TypeError` naming the broken rule.
+ */
+export function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    throw new TypeError(`Invalid tags: ${String(raw)}. Tags must be an array of strings.`);
+  }
+  const unique = new Set<string>();
+  for (const tag of raw as readonly unknown[]) {
+    if (typeof tag !== 'string') {
+      throw new TypeError(`Invalid tag: ${String(tag)}. Every tag must be a string.`);
+    }
+    if (tag === '') throw new TypeError('Invalid tag: a tag must not be an empty string.');
+    unique.add(tag);
+  }
+  if (unique.size > MAX_TAGS) {
+    throw new TypeError(
+      `Too many tags: ${String(unique.size)}. An entry carries at most ${String(MAX_TAGS)} tags.`,
+    );
+  }
+  return [...unique];
+}
+
+/** The stamp of `names` from `tokens`; built with own keys, so `__proto__` is a plain tag. */
+function stampOf(names: readonly string[], tokens: ReadonlyMap<string, string>): TagStamp {
+  return Object.fromEntries(
+    names.flatMap((name) => {
+      const token = tokens.get(name);
+      return token === undefined ? [] : [[name, token] as const];
+    }),
+  );
+}
+
+/** Whether `stamp` adds a `tags` field: an absent or empty stamp does not. */
+export function hasTags(stamp: TagStamp | undefined): stamp is TagStamp {
+  return stamp !== undefined && Object.keys(stamp).length > 0;
+}
+
+/**
+ * Whether the tags are known before the load: anything set that is not a function (an array, or
+ * an invalid value that `normalizeTags` then reports). Their tokens are taken before the loader.
+ */
+export function knownTags<O>(option: O | undefined): option is Exclude<O, CallableFunction> {
+  return option !== undefined && typeof option !== 'function';
+}
+
+/** `items` with their stamps (same order); a skipped item is left out. */
+export function applyStamps<I>(
+  items: readonly I[],
+  stamps: readonly Stamping[],
+): (I & { tags: TagStamp })[] {
+  return items.flatMap((item, i) => {
+    const stamp = stamps[i];
+    return stamp === undefined || stamp === 'skip' ? [] : [{ ...item, tags: stamp }];
+  });
+}
+
+/**
+ * Tag stamps for writes (spec 3.3). An invalid tag list (a throwing callback included) is one
+ * `tag` error per call; a failure to take the tokens is one `version` error. Either way the
+ * affected entries are skipped, never the caller's call.
+ */
+export class EngineTags {
+  constructor(
+    private readonly tokens: VersionTokens,
+    private readonly reportError: ReportError,
+  ) {}
+
+  /** The stamp of one write; `produce` returns the raw tags (a list, or a callback's result). */
+  async stamp(target: Target, produce: () => unknown): Promise<Stamping> {
+    const [stamping] = await this.stampEach(target, [produce]);
+    return stamping ?? 'skip';
+  }
+
+  /**
+   * The stamp of `option` for `value`: an array as is, a function called with the value. Used
+   * where the value is known (set, put, the write after a load with a tag function).
+   */
+  stampFor<T>(target: Target, option: TagOption<T>, value: T): Promise<Stamping> {
+    return this.stamp(target, () => (typeof option === 'function' ? option(value) : option));
+  }
+
+  /**
+   * The stamps of several writes, in input order, with one `ensureMany` for all their tags.
+   * One `tag` error covers every invalid list; one `version` error every failed token.
+   */
+  async stampEach(target: Target, produce: readonly (() => unknown)[]): Promise<Stamping[]> {
+    const lists: (string[] | undefined)[] = [];
+    let invalid: { error: unknown } | undefined;
+    for (const tags of produce) {
+      try {
+        lists.push(normalizeTags(tags()));
+      } catch (error) {
+        invalid ??= { error };
+        lists.push(undefined);
+      }
+    }
+    if (invalid !== undefined) this.reportError(target.name, 'tag', invalid.error);
+    const names = [...new Set(lists.flatMap((list) => list ?? []))];
+    let tokens: ReadonlyMap<string, string> = new Map();
+    if (names.length > 0) {
+      try {
+        tokens = await this.tokens.ensureMany(target, 'tag', names);
+      } catch (error) {
+        this.reportError(target.name, 'version', error);
+        return lists.map((list) => (list?.length === 0 ? {} : 'skip'));
+      }
+    }
+    return lists.map((list) => (list === undefined ? 'skip' : stampOf(list, tokens)));
+  }
+
+  /**
+   * The stamps of batch entries for `option`: an array is stamped once for all of them, a
+   * function is called with each entry's value and key.
+   */
+  async stampBatch<T>(
+    target: Target,
+    option: BatchTagOption<T>,
+    entries: readonly { readonly value: T; readonly key: string }[],
+  ): Promise<Stamping[]> {
+    if (typeof option !== 'function') {
+      const stamping = await this.stamp(target, () => option);
+      return entries.map(() => stamping);
+    }
+    const produce = entries.map(
+      ({ value, key }) =>
+        () =>
+          option(value, key),
+    );
+    return this.stampEach(target, produce);
+  }
+}

@@ -2,6 +2,7 @@ import type { StrategyOptions } from '../decorators/options.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { jsonSerializer } from '../serializers/json.serializer.js';
 import type { Target } from './engine-keys.js';
+import { hasTags, type BatchTagOption, type TagOption, type TagStamp } from './engine-tags.js';
 import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { ReportError } from './events.js';
 import {
@@ -10,12 +11,19 @@ import {
   type ExpiryStrategy,
 } from './strategies/expiry-strategy.js';
 
-export type PutOptions<T> = {
+/** The write policy a loaded or put value is checked against (`writePlan`). */
+export interface WritePolicy<T> {
   ttl?: number;
   cacheNull?: boolean;
   nullTtl?: number;
   unless?: (result: T) => boolean;
-} & StrategyOptions;
+}
+
+/** `tags` per D2: an array is known before the load, a function gets the value. */
+export type PutOptions<T> = WritePolicy<T> & { tags?: TagOption<T> } & StrategyOptions;
+
+/** `PutOptions` of a batch load: a tag function also gets each entry's key (D2). */
+export type BatchPutOptions<T> = WritePolicy<T> & { tags?: BatchTagOption<T> } & StrategyOptions;
 
 export type Lookup = { found: true; value: unknown; stale: boolean } | { found: false };
 
@@ -141,12 +149,17 @@ function ownEnvelope(
   }
 }
 
+/** `envelope` with the `tags` field of `stamp`; an absent or empty stamp adds nothing. */
+export function stamped(envelope: CacheEnvelope, stamp: TagStamp | undefined): CacheEnvelope {
+  return hasTags(stamp) ? { ...envelope, tags: stamp } : envelope;
+}
+
 /** The `unless`/`cacheNull` policy of a value; a throwing `unless` is a `set` error. */
 export function writePlan<T>(
   ctx: EnvelopeContext,
   target: Target,
   value: T,
-  options: PutOptions<T>,
+  options: WritePolicy<T>,
   strategy: ExpiryStrategy,
 ): WritePlan {
   try {

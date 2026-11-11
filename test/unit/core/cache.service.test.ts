@@ -345,4 +345,46 @@ describe('CacheService', () => {
       expect(await service.getOrSetMany([], loader)).toEqual([]);
     });
   });
+
+  describe('tags', () => {
+    function stampOf(store: FakeStore, key: string): unknown {
+      const raw = store.data.get(key)?.value;
+      return raw === undefined ? undefined : (JSON.parse(raw) as { tags?: unknown }).tags;
+    }
+
+    it('set, getOrSet, setMany and getOrSetMany forward tags to the engine', async () => {
+      /* Each write method passes its `tags` (an array, or a function of the value, plus the key
+         on batch methods) through; the stored envelopes carry the tag tokens. */
+      const { engine, store } = makeEngine();
+      const service = new CacheService(engine);
+      const target = { name: 'default', store };
+      const token = (tag: string) => engine.tokens.cached(target, 'tag', tag);
+      const set = vi.spyOn(engine, 'set');
+      const getOrSet = vi.spyOn(engine, 'getOrSet');
+      const setMany = vi.spyOn(engine, 'setMany');
+      const getOrSetMany = vi.spyOn(engine, 'getOrSetMany');
+
+      await service.set('a', { id: 1 }, { tags: ['s'] });
+      const valueTags = vi.fn((value: { id: number }) => [`u:${String(value.id)}`]);
+      await service.getOrSet('b', async () => ({ id: 2 }), { tags: valueTags });
+      const keyTags = vi.fn((value: number, key: string) => [`k:${key}`, `v:${String(value)}`]);
+      await service.setMany([['c', 3]], { tags: keyTags });
+      const loader = async (missing: string[]) => new Map(missing.map((k) => [k, 4]));
+      await service.getOrSetMany(['d'], loader, { tags: keyTags, ttl: 50 });
+
+      expect(set.mock.calls[0]?.[2]).toStrictEqual({ tags: ['s'] });
+      expect(getOrSet.mock.calls[0]?.[2]).toStrictEqual({ tags: valueTags });
+      expect(setMany.mock.calls[0]?.[2]).toStrictEqual({ tags: keyTags });
+      expect(getOrSetMany.mock.calls[0]?.[3]).toStrictEqual({ tags: keyTags, ttl: 50 });
+      expect(valueTags).toHaveBeenCalledExactlyOnceWith({ id: 2 });
+      expect(keyTags.mock.calls).toEqual([
+        [3, 'c'],
+        [4, 'd'],
+      ]);
+      expect(stampOf(store, 'a')).toEqual({ s: token('s') });
+      expect(stampOf(store, 'b')).toEqual({ 'u:2': token('u:2') });
+      expect(stampOf(store, 'c')).toEqual({ 'k:c': token('k:c'), 'v:3': token('v:3') });
+      expect(stampOf(store, 'd')).toEqual({ 'k:d': token('k:d'), 'v:4': token('v:4') });
+    });
+  });
 });

@@ -48,7 +48,13 @@ export { CacheHealthIndicator } from './health/cache-health.indicator.js';
 export type { CacheHealthResult } from './health/cache-health.indicator.js';
 export { CacheModule } from './module/cache.module.js';
 export { CacheService } from './core/cache.service.js';
-export type { GetOrSetOptions, KeyOptions, WriteOptions } from './core/cache.service.js';
+export type {
+  GetOrSetManyOptions,
+  GetOrSetOptions,
+  KeyOptions,
+  WriteManyOptions,
+  WriteOptions,
+} from './core/cache.service.js';
 export { RedisStore, redisStore } from './stores/redis.store.js';
 export { redisInvalidationBus } from './stores/redis-invalidation-bus.js';
 export type { RedisStoreOptions } from './stores/redis-invalidation-bus.js';

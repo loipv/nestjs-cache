@@ -4,16 +4,20 @@ import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type { CacheEventMap, CacheEvents, CacheOperation, ReportError } from './events.js';
 import {
   decode,
+  stamped,
   toIntegerMs,
   writePlan,
+  type BatchPutOptions,
   type EnvelopeContext,
   type Lookup,
   type PutOptions,
 } from './engine-envelope.js';
 import { EngineKeys, type ResolvedKey, type Target } from './engine-keys.js';
+import { applyStamps, EngineTags, type Stamping, type TagStamp } from './engine-tags.js';
 import { fullKey, namespacePrefix } from './key-builder.js';
 import type { NamespaceVersions } from './namespace-versions.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
+import type { VersionTokens } from './version-tokens.js';
 
 export interface KeyRef {
   store?: string;
@@ -21,7 +25,7 @@ export interface KeyRef {
   key: string;
 }
 
-export type { Lookup, PutOptions } from './engine-envelope.js';
+export type { BatchPutOptions, Lookup, PutOptions } from './engine-envelope.js';
 export { EMPTY_STRATEGY, isEmpty, servable, toIntegerMs } from './engine-envelope.js';
 export type { ResolvedKey, Target } from './engine-keys.js';
 
@@ -36,6 +40,8 @@ export interface WriteItem extends BatchItem {
   value: unknown;
   strategy: ExpiryStrategy;
   ttl: number;
+  /** The entry's tag stamp; absent (or empty) for an untagged entry. */
+  tags?: TagStamp;
 }
 
 /**
@@ -45,16 +51,20 @@ export interface WriteItem extends BatchItem {
 export class EngineIO {
   private readonly resolver: EngineKeys;
   private readonly envelope: EnvelopeContext;
+  /** Tag stamps for writes; their failures are reported through `reportError`. */
+  readonly tags: EngineTags;
 
   constructor(
     private readonly options: ResolvedCacheOptions,
     private readonly events: CacheEvents,
     private readonly versions: NamespaceVersions,
+    tokens: VersionTokens,
   ) {
     const reportError: ReportError = (store, operation, error) => {
       this.reportError(store, operation, error);
     };
     this.resolver = new EngineKeys(options, versions, reportError);
+    this.tags = new EngineTags(tokens, reportError);
     this.envelope = {
       options,
       reportError,
@@ -178,7 +188,11 @@ export class EngineIO {
     return settled.map((result) => (result.status === 'fulfilled' ? result.value : undefined));
   }
 
-  /** Applies the `unless`/`cacheNull` policy, then writes with the matching strategy. */
+  /**
+   * Applies the `unless`/`cacheNull` policy, then writes with the matching strategy. `taken` is
+   * the stamp of tags known before a load; without it, `options.tags` is stamped only once the
+   * write is decided (a tag function gets the value). An entry without tags adds no await.
+   */
   async store<T>(
     target: Target,
     ref: KeyRef,
@@ -187,6 +201,7 @@ export class EngineIO {
     options: PutOptions<T>,
     strategy: ExpiryStrategy,
     deleteWhenEmpty: boolean,
+    taken?: Stamping,
   ): Promise<void> {
     const plan = writePlan(this.envelope, target, value, options, strategy);
     if (plan === 'skip') return;
@@ -197,25 +212,44 @@ export class EngineIO {
       }
       return;
     }
-    await this.write(target, ref, key, value, plan.strategy, plan.ttl);
+    const { tags } = options;
+    const stamping =
+      taken ?? (tags === undefined ? undefined : await this.tags.stampFor(target, tags, value));
+    if (stamping === 'skip') return;
+    await this.write(target, ref, key, value, plan.strategy, plan.ttl, stamping);
   }
 
-  /** `store` for loaded batch values, written with one `writeMany`; it never deletes. */
+  /**
+   * `store` for loaded batch values, written with one `writeMany`; it never deletes. `taken` is
+   * as for `store`; without it, the entries to write are stamped together (one token call).
+   */
   async storeMany<T>(
     target: Target,
     items: readonly (BatchItem & { value: T })[],
-    options: PutOptions<T>,
+    options: BatchPutOptions<T>,
     strategy: ExpiryStrategy,
+    taken?: Stamping,
   ): Promise<void> {
-    const writes: WriteItem[] = [];
+    const planned: (WriteItem & { value: T })[] = [];
     for (const item of items) {
       const plan = writePlan(this.envelope, target, item.value, options, strategy);
-      if (typeof plan === 'object') writes.push({ ...item, ...plan });
+      if (typeof plan === 'object') planned.push({ ...item, ...plan });
+    }
+    const { tags } = options;
+    let writes: readonly WriteItem[] = planned;
+    if (taken !== undefined) {
+      writes = taken === 'skip' ? [] : planned.map((write) => ({ ...write, tags: taken }));
+    } else if (tags !== undefined && planned.length > 0) {
+      const entries = planned.map(({ value, ref }) => ({ value, key: ref.key }));
+      writes = applyStamps(planned, await this.tags.stampBatch(target, tags, entries));
     }
     await this.writeMany(target, writes);
   }
 
-  /** `ttl` is an integer >= 1, already jittered when the strategy asks for it. */
+  /**
+   * `ttl` is an integer >= 1, already jittered when the strategy asks for it. `tags` is the
+   * entry's stamp, written as the envelope's `tags` unless absent or empty.
+   */
   async write(
     { name, store }: Target,
     ref: KeyRef,
@@ -223,12 +257,14 @@ export class EngineIO {
     value: unknown,
     strategy: ExpiryStrategy,
     ttl: number,
+    tags?: TagStamp,
   ): Promise<void> {
     let storeTtl: number;
     try {
       const wrapped = strategy.wrap(value, Date.now(), ttl);
       storeTtl = wrapped.storeTtl;
-      await store.set(key, this.options.serializer.serialize(wrapped.envelope), storeTtl);
+      const envelope = stamped(wrapped.envelope, tags);
+      await store.set(key, this.options.serializer.serialize(envelope), storeTtl);
     } catch (error) {
       this.reportError(name, 'set', error);
       return;
@@ -244,10 +280,10 @@ export class EngineIO {
   async writeMany({ name, store }: Target, items: readonly WriteItem[]): Promise<void> {
     const entries: { key: string; value: string; ttlMs: number }[] = [];
     const written: { ref: KeyRef; ttl: number }[] = [];
-    for (const { ref, key, value, strategy, ttl } of items) {
+    for (const { ref, key, value, strategy, ttl, tags } of items) {
       try {
         const wrapped = strategy.wrap(value, Date.now(), ttl);
-        const serialized = this.options.serializer.serialize(wrapped.envelope);
+        const serialized = this.options.serializer.serialize(stamped(wrapped.envelope, tags));
         entries.push({ key: key.full, value: serialized, ttlMs: wrapped.storeTtl });
         written.push({ ref, ttl: wrapped.storeTtl });
       } catch (error) {

@@ -1,7 +1,8 @@
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
-import { EMPTY_STRATEGY, isEmpty, servable, type PutOptions } from './engine-envelope.js';
-import type { BatchItem, EngineIO } from './engine-io.js';
+import { EMPTY_STRATEGY, isEmpty, servable, type BatchPutOptions } from './engine-envelope.js';
+import type { BatchItem, EngineIO, WriteItem } from './engine-io.js';
 import type { Target } from './engine-keys.js';
+import { applyStamps, type BatchTagOption } from './engine-tags.js';
 import type { BatchPlan, EngineLoad } from './engine-load.js';
 import { emptyKeyError, isEmptyKey } from './key-builder.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -53,27 +54,34 @@ export class EngineBatch {
     return keys.map((key) => values.get(key) as T | undefined);
   }
 
-  /** `CacheEngine.setMany` after validation; `ttl` is the effective ttl. */
-  async setMany(
+  /**
+   * `CacheEngine.setMany` after validation; `ttl` is the effective ttl. With `tags`, the entries
+   * are stamped together (one token call); an entry whose tags fail is not written.
+   */
+  async setMany<T>(
     target: Target,
     scope: BatchScope,
-    entries: readonly (readonly [key: string, value: unknown])[],
+    entries: readonly (readonly [key: string, value: T])[],
     requested: ExpiryStrategy,
     ttl: number,
+    tags?: BatchTagOption<T>,
   ): Promise<void> {
-    const values = new Map<string, unknown>();
+    const values = new Map<string, T>();
     for (const [key, value] of entries) values.set(key, value);
     const items = await this.batchItems(target, scope, this.uniqueKeys(target, [...values.keys()]));
     if (items === undefined) return;
-    await this.io.writeMany(
-      target,
-      items.map((item) => {
-        const value = values.get(item.ref.key);
-        // As `set`: an empty value keeps the 0.1 ttl, but always as `fixed`.
-        const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
-        return { ...item, value, strategy, ttl: this.io.ttlFor(strategy, ttl) };
-      }),
-    );
+    const writes = items.map((item) => {
+      const value = values.get(item.ref.key) as T;
+      // As `set`: an empty value keeps the 0.1 ttl, but always as `fixed`.
+      const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
+      return { ...item, value, strategy, ttl: this.io.ttlFor(strategy, ttl) };
+    });
+    let stamped: readonly WriteItem[] = writes;
+    if (tags !== undefined && writes.length > 0) {
+      const tagged = writes.map(({ value, ref }) => ({ value, key: ref.key }));
+      stamped = applyStamps(writes, await this.io.tags.stampBatch(target, tags, tagged));
+    }
+    await this.io.writeMany(target, stamped);
   }
 
   /** `CacheEngine.getOrSetMany` after validation; `ttl` is the effective ttl. */
@@ -82,7 +90,7 @@ export class EngineBatch {
     scope: BatchScope,
     keys: readonly string[],
     loader: BatchLoader<T>,
-    options: PutOptions<T>,
+    options: BatchPutOptions<T>,
     strategy: ExpiryStrategy,
     ttl: number,
   ): Promise<(T | undefined)[]> {

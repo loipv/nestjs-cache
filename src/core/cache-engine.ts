@@ -6,25 +6,36 @@ import {
   EngineIO,
   isEmpty,
   servable,
+  type BatchPutOptions,
   type KeyRef,
   type PutOptions,
   type Target,
 } from './engine-io.js';
 import { EngineBatch, type BatchLoader, type BatchScope } from './engine-batch.js';
 import { EngineLoad } from './engine-load.js';
+import type { BatchTagOption, TagOption } from './engine-tags.js';
 import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
 import { VersionTokens } from './version-tokens.js';
 
-export type { KeyRef, PutOptions } from './engine-io.js';
+export type { BatchPutOptions, KeyRef, PutOptions } from './engine-io.js';
 export type { BatchLoader, BatchScope } from './engine-batch.js';
 
 /** `lock` overrides `defaults.lock.enabled`; it has no effect on a store without `lock`. */
 export type LoadOptions<T> = PutOptions<T> & { lock?: boolean };
 
-export type SetOptions = { ttl?: number } & StrategyOptions;
+/** `getOrSetMany` options: batch tags (D2); `lock: true` is rejected. */
+export type BatchLoadOptions<T> = BatchPutOptions<T> & { lock?: boolean };
+
+export type SetOptions<T = unknown> = { ttl?: number; tags?: TagOption<T> } & StrategyOptions;
+
+/** `setMany` options: a tag function also gets each entry's key (D2). */
+export type BatchSetOptions<T = unknown> = {
+  ttl?: number;
+  tags?: BatchTagOption<T>;
+} & StrategyOptions;
 
 function checkDuration(option: string, value: number | undefined): void {
   if (value === undefined) return;
@@ -91,6 +102,9 @@ export class CacheEngine {
   /** The module's `escapeKeyArgs`; decorators pass it to template key rendering at call time. */
   readonly escapeKeyArgs: boolean;
 
+  /** Internal: the version tokens of namespaces and tags, one set per engine. */
+  readonly tokens: VersionTokens;
+
   constructor(
     private readonly options: ResolvedCacheOptions,
     events: CacheEvents,
@@ -99,13 +113,14 @@ export class CacheEngine {
     this.escapeKeyArgs = options.escapeKeyArgs;
     // One token store for namespaces and tags; the facade serves the namespace calls.
     const tokens = new VersionTokens(options.prefix, options.versionCacheTtl);
+    this.tokens = tokens;
     const versions = new NamespaceVersions(
       options.prefix,
       options.versionedNamespaces,
       options.versionCacheTtl,
       tokens,
     );
-    this.io = new EngineIO(options, events, versions);
+    this.io = new EngineIO(options, events, versions, tokens);
     this.load = new EngineLoad(this.io, options.defaults.lock);
     this.batch = new EngineBatch(options, this.io, this.load);
   }
@@ -178,7 +193,8 @@ export class CacheEngine {
     return this.load.onMiss(plan);
   }
 
-  async set(ref: KeyRef, value: unknown, options: SetOptions = {}): Promise<void> {
+  /** With `tags`, the entry is stamped with their tokens; an invalid list skips the write. */
+  async set<T>(ref: KeyRef, value: T, options: SetOptions<T> = {}): Promise<void> {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
@@ -190,7 +206,11 @@ export class CacheEngine {
     if (key === undefined) return;
     // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
     const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
-    await this.io.write(target, ref, key, value, strategy, this.io.ttlFor(strategy, ttl));
+    const { tags } = options;
+    const stamping =
+      tags === undefined ? undefined : await this.io.tags.stampFor(target, tags, value);
+    if (stamping === 'skip') return;
+    await this.io.write(target, ref, key, value, strategy, this.io.ttlFor(strategy, ttl), stamping);
   }
 
   /** @param preset Internal: as for `getOrSet`. */
@@ -233,10 +253,10 @@ export class CacheEngine {
    * `set` for several entries, written with one store call. A repeated key is written once,
    * with its last value; empty keys are dropped and reported once as a key error.
    */
-  async setMany(
+  async setMany<T>(
     scope: BatchScope,
-    entries: readonly (readonly [key: string, value: unknown])[],
-    options: SetOptions = {},
+    entries: readonly (readonly [key: string, value: NoInfer<T>])[],
+    options: BatchSetOptions<T> = {},
   ): Promise<void> {
     const target = this.io.resolve(scope.store);
     this.checkNamespace(scope.namespace);
@@ -244,7 +264,7 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl);
     checkEntries(entries);
-    await this.batch.setMany(target, scope, entries, requested, ttl);
+    await this.batch.setMany(target, scope, entries, requested, ttl, options.tags);
   }
 
   /**
@@ -258,7 +278,7 @@ export class CacheEngine {
     scope: BatchScope,
     keys: readonly string[],
     loader: BatchLoader<T>,
-    options: LoadOptions<T> = {},
+    options: BatchLoadOptions<T> = {},
   ): Promise<(T | undefined)[]> {
     const target = this.io.resolve(scope.store);
     this.checkNamespace(scope.namespace);

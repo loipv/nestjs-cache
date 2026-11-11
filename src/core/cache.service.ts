@@ -1,5 +1,12 @@
 import type { StrategyOptions } from '../decorators/options.js';
-import type { BatchScope, CacheEngine, LoadOptions, SetOptions } from './cache-engine.js';
+import type {
+  BatchLoadOptions,
+  BatchScope,
+  BatchSetOptions,
+  CacheEngine,
+  LoadOptions,
+  SetOptions,
+} from './cache-engine.js';
 import { strategyOptionsOf } from './strategies/expiry-strategy.js';
 
 export interface KeyOptions {
@@ -7,14 +14,36 @@ export interface KeyOptions {
   store?: string;
 }
 
-export type WriteOptions = KeyOptions & { ttl?: number } & StrategyOptions;
+/**
+ * `tags`: fixed tag strings (not templates), or a function of the value. The entry is stamped
+ * with each tag's version, so `invalidateTags` turns it into a miss. On `getOrSet` an array's
+ * versions are taken before the loader runs; a function runs after it, and only when the entry
+ * is written, so an invalidation during that load can be missed until the entry expires. An
+ * invalid list (an empty tag, more than 32 tags, a throwing function) is an `error` event with
+ * operation `'tag'`: the entry is not written and the call still resolves.
+ */
+export type WriteOptions<T = unknown> = KeyOptions & {
+  ttl?: number;
+  tags?: readonly string[] | ((value: T) => readonly string[]);
+} & StrategyOptions;
 
-export type GetOrSetOptions<T> = WriteOptions & {
+/** The options of the batch writes: a tag function also gets each entry's key. */
+export type WriteManyOptions<T = unknown> = KeyOptions & {
+  ttl?: number;
+  tags?: readonly string[] | ((value: T, key: string) => readonly string[]);
+} & StrategyOptions;
+
+interface LoadPolicy<T> {
   cacheNull?: boolean;
   nullTtl?: number;
   unless?: (result: T) => boolean;
   lock?: boolean;
-};
+}
+
+export type GetOrSetOptions<T> = WriteOptions<T> & LoadPolicy<T>;
+
+/** `getOrSetMany` options; `lock: true` is not supported. */
+export type GetOrSetManyOptions<T> = WriteManyOptions<T> & LoadPolicy<T>;
 
 function refOf(
   key: string,
@@ -33,20 +62,37 @@ function scopeOf(options: KeyOptions): BatchScope {
   return scope;
 }
 
-function writeOptionsOf(options: WriteOptions): SetOptions {
-  const write: SetOptions = strategyOptionsOf(options);
+/** Only the defined options are forwarded. */
+function writeOptionsOf<T>(options: WriteOptions<T>): SetOptions<T> {
+  const write: SetOptions<T> = strategyOptionsOf(options);
   if (options.ttl !== undefined) write.ttl = options.ttl;
+  if (options.tags !== undefined) write.tags = options.tags;
   return write;
 }
 
-function loadOptionsOf<T>(options: GetOrSetOptions<T>): LoadOptions<T> {
+function writeManyOptionsOf<T>(options: WriteManyOptions<T>): BatchSetOptions<T> {
+  const write: BatchSetOptions<T> = strategyOptionsOf(options);
+  if (options.ttl !== undefined) write.ttl = options.ttl;
+  if (options.tags !== undefined) write.tags = options.tags;
+  return write;
+}
+
+/** Copies the defined `LoadPolicy` options of `options` onto `load`. */
+function withLoadPolicy<O extends LoadPolicy<T>, T>(load: O, options: LoadPolicy<T>): O {
   const { cacheNull, nullTtl, unless, lock } = options;
-  const load: LoadOptions<T> = writeOptionsOf(options);
   if (cacheNull !== undefined) load.cacheNull = cacheNull;
   if (nullTtl !== undefined) load.nullTtl = nullTtl;
   if (unless !== undefined) load.unless = unless;
   if (lock !== undefined) load.lock = lock;
   return load;
+}
+
+function loadOptionsOf<T>(options: GetOrSetOptions<T>): LoadOptions<T> {
+  return withLoadPolicy<LoadOptions<T>, T>(writeOptionsOf(options), options);
+}
+
+function loadManyOptionsOf<T>(options: GetOrSetManyOptions<T>): BatchLoadOptions<T> {
+  return withLoadPolicy<BatchLoadOptions<T>, T>(writeManyOptionsOf(options), options);
 }
 
 export class CacheService {
@@ -65,8 +111,7 @@ export class CacheService {
     return this.engine.get<T>(refOf(key, options), strategyOptionsOf(options));
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- public API (spec 5.3)
-  set<T>(key: string, value: T, options: WriteOptions = {}): Promise<void> {
+  set<T>(key: string, value: T, options: WriteOptions<T> = {}): Promise<void> {
     return this.engine.set(refOf(key, options), value, writeOptionsOf(options));
   }
 
@@ -95,12 +140,11 @@ export class CacheService {
   }
 
   /** Writes several entries, each as `set` would, with one store call when the store allows. */
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- public API (spec 0.4 2.2)
   setMany<T>(
     entries: readonly (readonly [key: string, value: T])[],
-    options: WriteOptions = {},
+    options: WriteManyOptions<T> = {},
   ): Promise<void> {
-    return this.engine.setMany(scopeOf(options), entries, writeOptionsOf(options));
+    return this.engine.setMany(scopeOf(options), entries, writeManyOptionsOf(options));
   }
 
   /**
@@ -111,8 +155,8 @@ export class CacheService {
   getOrSetMany<T>(
     keys: readonly string[],
     loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>,
-    options: GetOrSetOptions<T> = {},
+    options: GetOrSetManyOptions<T> = {},
   ): Promise<(T | undefined)[]> {
-    return this.engine.getOrSetMany(scopeOf(options), keys, loader, loadOptionsOf(options));
+    return this.engine.getOrSetMany(scopeOf(options), keys, loader, loadManyOptionsOf(options));
   }
 }

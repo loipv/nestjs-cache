@@ -15,6 +15,8 @@ export type CacheOperation =
   | 'refresh'
   | 'lock'
   | 'version'
+  /** An invalid tag list (a throwing tag callback included); the entry is not written. */
+  | 'tag'
   /** Only used in logs, for a failing metrics update; an `error` event never carries it. */
   | 'metrics';
 

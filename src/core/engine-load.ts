@@ -4,12 +4,14 @@ import {
   servable,
   toIntegerMs,
   type BatchItem,
+  type BatchPutOptions,
   type EngineIO,
   type KeyRef,
   type PutOptions,
   type ResolvedKey,
   type Target,
 } from './engine-io.js';
+import { knownTags } from './engine-tags.js';
 import { loadWithLock, refreshWithLock, type LockHooks, type LockSettings } from './lock-runner.js';
 import { SingleFlight } from './single-flight.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -34,7 +36,7 @@ export interface BatchPlan<T> {
   target: Target;
   namespace: string | undefined;
   loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>;
-  options: PutOptions<T>;
+  options: BatchPutOptions<T>;
   strategy: ExpiryStrategy;
 }
 
@@ -139,12 +141,17 @@ export class EngineLoad {
     );
   }
 
-  /** Runs the loader for `items` and stores what it returned for them; other keys are ignored. */
+  /**
+   * Runs the loader for `items` and stores what it returned for them; other keys are ignored.
+   * Tags known up front have their tokens taken before the loader runs, as in `loadAndStore`.
+   */
   private async loadMany<T>(
     plan: BatchPlan<T>,
     items: readonly BatchItem[],
     refreshing: boolean,
   ): Promise<ReadonlyMap<string, T>> {
+    const { tags } = plan.options;
+    const taken = knownTags(tags) ? await this.io.tags.stamp(plan.target, () => tags) : undefined;
     const loaded = await this.runLoader(
       plan,
       items.map((item) => item.ref.key),
@@ -152,7 +159,7 @@ export class EngineLoad {
     );
     // An omitted key is stored as if the loader had returned `undefined` for it.
     const values = items.map((item) => ({ ...item, value: loaded.get(item.ref.key) as T }));
-    await this.io.storeMany(plan.target, values, plan.options, plan.strategy);
+    await this.io.storeMany(plan.target, values, plan.options, plan.strategy, taken);
     return loaded;
   }
 
@@ -246,9 +253,16 @@ export class EngineLoad {
     };
   }
 
-  /** A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. */
+  /**
+   * A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. Tags
+   * known up front (an array) have their tokens taken before the loader runs, and the write uses
+   * exactly those, so an invalidation during the load is not lost (spec 3.3).
+   */
   private async loadAndStore<T>(plan: LoadPlan<T>, refreshing: boolean): Promise<T> {
     const { target, ref, key, loader, options, strategy } = plan;
+    // Awaited only with tags known up front: an untagged load keeps the 0.6 ticks.
+    const { tags } = options;
+    const taken = knownTags(tags) ? await this.io.tags.stamp(target, () => tags) : undefined;
     const started = Date.now();
     let value: T;
     try {
@@ -259,7 +273,7 @@ export class EngineLoad {
       throw error;
     }
     this.io.emitLoad(target.name, ref, started, true);
-    await this.io.store(target, ref, key, value, options, strategy, false);
+    await this.io.store(target, ref, key, value, options, strategy, false, taken);
     return value;
   }
 }
