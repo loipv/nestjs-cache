@@ -23,6 +23,7 @@ export interface RedisSentinelHandle {
 /** How long `startRedisSentinel` waits for the topology, and `failover` for a new master. */
 const WAIT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 200;
+const EXEC_TIMEOUT_MS = 5_000;
 
 /**
  * Starts a Redis 7 master, one replica and one sentinel (quorum 1) on their own Docker network.
@@ -32,9 +33,16 @@ const POLL_INTERVAL_MS = 200;
 export async function startRedisSentinel(): Promise<RedisSentinelHandle> {
   const network = await new Network().start();
   const started: StartedTestContainer[] = [];
+  // Stops everything even if one stop throws, then reports the first failure. `started` is not
+  // mutated, so a second call is harmless.
   const stop = async (): Promise<void> => {
-    for (const container of started.reverse()) await container.stop();
-    await network.stop();
+    // The network goes last: it cannot be removed while containers are attached.
+    const results: PromiseSettledResult<unknown>[] = await Promise.allSettled(
+      [...started].reverse().map((container) => container.stop()),
+    );
+    results.push(...(await Promise.allSettled([network.stop()])));
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed !== undefined) throw failed.reason;
   };
   try {
     const networkName = network.getName();
@@ -109,7 +117,8 @@ export async function startRedisSentinel(): Promise<RedisSentinelHandle> {
       stop,
     };
   } catch (error) {
-    await stop();
+    // A cleanup failure must not hide the start error.
+    await stop().catch(() => undefined);
     throw error;
   }
 }
@@ -119,15 +128,39 @@ async function redisCli(
   port: number,
   args: string[],
 ): Promise<string> {
-  const { output } = await container.exec(['redis-cli', '-p', String(port), ...args]);
-  return output;
+  // Bounded, so a hung exec cannot outlast the readiness deadline of `waitFor`.
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(`redis-cli ${args.join(' ')} timed out after ${String(EXEC_TIMEOUT_MS)} ms`),
+      );
+    }, EXEC_TIMEOUT_MS);
+  });
+  try {
+    const { output } = await Promise.race([
+      container.exec(['redis-cli', '-p', String(port), ...args]),
+      timeout,
+    ]);
+    return output;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function waitFor(what: string, done: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  let lastError: unknown;
   while (Date.now() < deadline) {
-    if (await done()) return;
+    try {
+      if (await done()) return;
+    } catch (error) {
+      lastError = error; // a timed-out or failed exec is retried until the deadline
+    }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
-  throw new Error(`Timed out after ${String(WAIT_TIMEOUT_MS / 1_000)} s waiting for ${what}`);
+  const detail = lastError instanceof Error ? ` (last error: ${lastError.message})` : '';
+  throw new Error(
+    `Timed out after ${String(WAIT_TIMEOUT_MS / 1_000)} s waiting for ${what}${detail}`,
+  );
 }
