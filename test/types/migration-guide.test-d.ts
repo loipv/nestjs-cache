@@ -78,7 +78,7 @@ export class CatalogController {
 
   // Authenticated requests skip the cache; anonymous ones share an entry.
   @Get('featured')
-  @HttpCache({ key: (req) => (req.headers.authorization ? undefined : req.url) })
+  @HttpCache({ key: (req) => (req.headers.authorization ? undefined : req.defaultKey) })
   featured(): string[] {
     return [];
   }

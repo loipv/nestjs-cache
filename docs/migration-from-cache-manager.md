@@ -205,7 +205,8 @@ Before:
 import { Controller, Get, UseInterceptors } from '@nestjs/common';
 import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 
-// Registered globally in the module: { provide: APP_INTERCEPTOR, useClass: CacheInterceptor }
+// Registered per controller here. The alternative is one global registration in the module:
+// { provide: APP_INTERCEPTOR, useClass: CacheInterceptor } (then drop @UseInterceptors).
 @Controller('articles')
 @UseInterceptors(CacheInterceptor)
 export class ArticlesController {
@@ -254,7 +255,7 @@ export class CatalogController {
 
   // Authenticated requests skip the cache; anonymous ones share an entry.
   @Get('featured')
-  @HttpCache({ key: (req) => (req.headers.authorization ? undefined : req.url) })
+  @HttpCache({ key: (req) => (req.headers.authorization ? undefined : req.defaultKey) })
   featured(): string[] {
     return [];
   }
@@ -268,13 +269,24 @@ export class CatalogController {
 }
 ```
 
+`req.defaultKey` is the key `@HttpCache` uses when `key` is not set (the normalised URL above).
+
 Behaviour to check against what you rely on today:
 
 - Only `GET` and `HEAD` are cached (`HEAD` shares the `GET` entry). Other methods pass through.
+- The default key varies only on the path and the query, not on the host (for example `@Controller({ host })`
+  multi-tenant routes), headers such as `Accept`, `Accept-Language` or a version header, or cookies. Anything else that
+  changes the body must go into a key callback, or the route must not be cached.
+- Callback keys are not escaped: with `escapeKeyArgs: true`, `@CacheEvict({ key: 'user:{0}' })` escapes `:` and `%`
+  in the id but ``(req) => `user:${req.params.id}` `` does not, so build both keys the same way, for example
+  ``@CacheEvict({ key: (id: string) => `user:${id}` })``.
 - Only the handler's return value (the body) is cached. `StreamableFile`, `Buffer`, `Uint8Array` and streams are
   never cached, and a handler that returns `undefined` is not cached, so routes that use `@Res()` are not supported.
+- Do not put `@HttpCache` on routes that return `StreamableFile` or streams: they are never stored, but concurrent
+  requests coalesced by single-flight would share one stream instance.
 - `@HttpCode` and `@Header` still apply on a hit. The library adds no response headers and ignores the request
-  `Cache-Control`; it is a server-side cache.
+  `Cache-Control`; it is a server-side cache. cache-manager's `X-Cache: HIT` / `MISS` response header is not set, so
+  anything that reads it (tests, dashboards) needs another signal, such as the `hit` and `miss` events.
 - Errors from the handler, including `HttpException`, reach your exception filters and are not cached. Cache and
   store errors never reach the client: they emit an `error` event and the handler runs.
 - Express and Fastify are both supported.
