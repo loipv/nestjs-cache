@@ -317,6 +317,8 @@ export function createNodeRedisSubscriber(
  * The subscriber over a connected node-redis Sentinel (ruling T1-A). It subscribes on the sentinel
  * itself, never connects it, and `close` only unsubscribes its own listener from its channels and
  * removes its event listeners: the sentinel stays open for the user and for other subscribers.
+ * A SUBSCRIBE that completes after close is unsubscribed at once, and nothing is delivered after
+ * close.
  * The sentinel never emits 'ready'; a MASTER_CHANGE topology event, after which its pub/sub
  * connection moves to the new master, counts as a reconnect, so `onReconnect` fires and failed
  * SUBSCRIBEs are sent again.
@@ -331,6 +333,7 @@ function createNodeRedisSentinelSubscriber(
   // One listener for every channel; the tracker swallows a throwing handler. It subscribes in
   // string mode, so both arguments are strings; the wider type is what `unsubscribe` takes.
   const deliver: AnyModePubSubListener = (message, channel) => {
+    if (closed) return;
     tracker.deliver(String(channel), String(message));
   };
   const onError = (error: unknown): void => {
@@ -344,7 +347,14 @@ function createNodeRedisSentinelSubscriber(
     subscribe: (channel) => {
       if (closed) return Promise.reject(new Error(SUBSCRIBER_CLOSED));
       channels.add(channel);
-      return sentinel.subscribe(channel, deliver);
+      return sentinel.subscribe(channel, deliver).then((reply) => {
+        if (!closed) return reply;
+        // T5-B: it completed after close, whose UNSUBSCRIBE came too early: remove it now.
+        void Promise.resolve()
+          .then(() => sentinel.unsubscribe(channel, deliver))
+          .catch(() => undefined);
+        throw new Error(SUBSCRIBER_CLOSED);
+      });
     },
     close: () => {
       closed = true;

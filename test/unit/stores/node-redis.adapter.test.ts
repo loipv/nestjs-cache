@@ -496,6 +496,59 @@ describe('nodeRedisAdapter sentinel mode', () => {
     expect(sentinel.listenerCount('topology-change')).toBe(0);
   });
 
+  /* T5-B: SUBSCRIBE is still pending when close runs (its connection hangs) and completes
+     afterwards, registering the listener on the user's sentinel. The subscriber removes it at
+     once: the subscribe rejects as closed, the listener is unsubscribed, and a later message
+     reaches no handler. */
+  it('a SUBSCRIBE that completes after close is unsubscribed and delivers nothing', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const adapter = nodeRedisAdapter(sentinel.asSentinel());
+    const subscriber = adapter.createSubscriber();
+    let complete: () => void = () => undefined;
+    sentinel.subscribe.mockImplementationOnce(
+      (channel: string, listener: (message: string, channel: string) => void) =>
+        new Promise<void>((resolve) => {
+          complete = () => {
+            const listeners = sentinel.channels.get(channel) ?? new Set();
+            listeners.add(listener);
+            sentinel.channels.set(channel, listeners);
+            resolve();
+          };
+        }),
+    );
+    const onMessage = vi.fn();
+    const subscribing = subscriber.subscribe('ch', onMessage);
+    await subscriber.close();
+    complete();
+    await expect(subscribing).rejects.toThrow('subscriber is closed');
+    await flush();
+    const [, listener] = sentinel.subscribe.mock.calls[0]!;
+    expect(sentinel.unsubscribe).toHaveBeenLastCalledWith('ch', listener);
+    expect(sentinel.channels.has('ch')).toBe(false);
+    await adapter.publish('ch', 'late');
+    listener('late', 'ch');
+    expect(onMessage).not.toHaveBeenCalled();
+
+    /* That late UNSUBSCRIBE failing is swallowed: no unhandled rejection. */
+    const failing = new FakeNodeRedisSentinel();
+    const failingSub = nodeRedisAdapter(failing.asSentinel()).createSubscriber();
+    let completeFailing: () => void = () => undefined;
+    failing.subscribe.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          completeFailing = resolve;
+        }),
+    );
+    const pending = failingSub.subscribe('ch', vi.fn());
+    await failingSub.close();
+    failing.unsubscribe.mockRejectedValueOnce(new Error('The client is closed'));
+    completeFailing();
+    await expect(pending).rejects.toThrow('subscriber is closed');
+    await flush();
+    // once from close (too early), once when the SUBSCRIBE completed (rejected, swallowed)
+    expect(failing.unsubscribe).toHaveBeenCalledTimes(2);
+  });
+
   /* The sentinel never emits 'ready'. A MASTER_CHANGE topology event means the pub/sub proxy
      moved to a new master and messages may have been missed: onReconnect fires, and a SUBSCRIBE
      that had rejected is sent again. Other topology events fire nothing. */
