@@ -24,6 +24,11 @@ function supportsLock(adapter: RedisClientAdapter): adapter is RedisClientAdapte
   return typeof adapter.setIfAbsent === 'function' && typeof adapter.deleteIfEquals === 'function';
 }
 
+/**
+ * A Redis store over an ioredis client or Cluster, or any `RedisClientAdapter` (node-redis via
+ * `nodeRedisAdapter`). It brings a pub/sub invalidation bus on `channel`, and a lock when the
+ * adapter can `setIfAbsent` and `deleteIfEquals`. The caller's client is never closed.
+ */
 export class RedisStore implements CacheStore {
   readonly invalidation: InvalidationBus;
   /** Present only when the adapter implements `setIfAbsent` and `deleteIfEquals`. */
@@ -90,6 +95,7 @@ export class RedisStore implements CacheStore {
   }
 }
 
+/** Builds a `RedisStore`; requires Redis 6.2 or later (`GETEX`). */
 export function redisStore(options: RedisStoreOptions): RedisStore {
   return new RedisStore(options);
 }

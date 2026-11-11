@@ -15,6 +15,10 @@ import {
 } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CachePutOptions, KeySpec } from './options.js';
 
+/**
+ * Always runs the async method and writes its result to the cache (unless `condition` is false
+ * or `unless` is true). Invalid options throw `CacheConfigError` at class definition.
+ */
 export function CachePut<
   K extends unknown[] = never[],
   C extends unknown[] = never[],

@@ -1,9 +1,16 @@
+/** What the engine stores per entry; a `Serializer` turns it into the stored string. */
 export interface CacheEnvelope {
+  /** The envelope format version. */
   v: 1;
+  /** The cached value; `null` when `nil` is set. */
   value: unknown;
+  /** When the entry was written, in ms since the epoch. */
   storedAt: number;
+  /** When the entry expires (ms since the epoch); under `swr`, when its stale window ends. */
   expiresAt?: number;
+  /** `swr` only: when the entry turns stale (ms since the epoch); it is fresh before. */
   staleAt?: number;
+  /** Set on a stored empty value (`cacheNull`): which one it was, as `value` is `null`. */
   nil?: 'null' | 'undefined';
   /** The tag versions the entry was written with, tag to token; absent on an untagged entry. */
   tags?: Readonly<Record<string, string>>;

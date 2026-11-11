@@ -1,3 +1,4 @@
+/** The state of a `CircuitBreakerStore`, as `breaker` events report it. */
 export type BreakerState = 'closed' | 'open' | 'half-open';
 
 /** How much the library logs: nothing, errors and warnings (the default), or also one debug line per event. */
@@ -29,21 +30,43 @@ export type ReportError = (
   error: unknown,
 ) => void;
 
+/**
+ * The payload of each `CacheEvents` event. `store` is the store name; `key` and `keys` are the
+ * user keys, without the prefix, namespace or version token.
+ */
 export interface CacheEventMap {
+  /** A read found the entry; `stale` is an `swr` entry past its `ttl`. */
   hit: { store: string; namespace: string | undefined; key: string; stale: boolean };
   miss: { store: string; namespace: string | undefined; key: string };
-  set: { store: string; namespace: string | undefined; key: string; ttl: number };
-  delete: { store: string; namespace: string | undefined; keys: readonly string[] };
+  set: {
+    store: string;
+    namespace: string | undefined;
+    key: string;
+    /**
+     * The TTL the store was given, in ms: under `swr` it includes `staleTtl`, and it carries the
+     * `defaults.jitter` (not under `sliding`).
+     */
+    ttl: number;
+  };
+  delete: {
+    store: string;
+    namespace: string | undefined;
+    /** The user keys deleted, as passed (not the store keys). */
+    keys: readonly string[];
+  };
   clear: { store: string; namespace: string };
+  /** One loader call finished (`success: false` when it threw). */
   load: {
     store: string;
     namespace: string | undefined;
+    /** The loaded key; on a batch load, the first of `keys`. */
     key: string;
     /** Only on a batch load (`getOrSetMany`): every key passed to the loader; `key` is the first. */
     keys?: readonly string[];
     durationMs: number;
     success: boolean;
   };
+  /** A cache failure the call did not surface; see `CacheOperation`. */
   error: { store: string; operation: CacheOperation; error: unknown };
   lock: {
     store: string;
@@ -55,6 +78,10 @@ export interface CacheEventMap {
   breaker: { store: string; state: BreakerState };
 }
 
+/**
+ * What a store gets from `CacheStore.bind`: it reports its own failures (`error`) and breaker
+ * state changes (`breaker`) through it; the module adds the store name.
+ */
 export interface CacheEventSink {
   emit(event: 'error', payload: { operation: CacheOperation; error: unknown }): void;
   emit(event: 'breaker', payload: { state: BreakerState }): void;

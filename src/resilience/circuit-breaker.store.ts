@@ -7,6 +7,7 @@ import type {
   LockProvider,
 } from '../stores/cache-store.interface.js';
 
+/** Options of `circuitBreakerStore`. */
 export interface CircuitBreakerOptions {
   /** Consecutive failures that open the circuit. Integer >= 1; defaults to 5. */
   failureThreshold?: number;
@@ -66,7 +67,7 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
- * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `lock.acquire` and
+ * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
  * `LockHandle.release` are guarded: each races a timeout, and
  * `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.

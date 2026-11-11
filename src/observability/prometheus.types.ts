@@ -71,10 +71,15 @@ export interface PrometheusClientLike {
   register: RegistryLike;
 }
 
+/** Options of `CachePrometheusModule.forRoot`. */
 export interface CachePrometheusOptions {
+  /** The client module: `import * as client from 'prom-client'` or `'@prometheus-io/client'`. */
   client: PrometheusClientLike;
+  /** Where the metrics are registered. Default `client.register`. */
   registry?: RegistryLike;
+  /** Metric name prefix (not the cache key prefix). Default `'cache_'`. */
   prefix?: string;
+  /** Histogram buckets in seconds, strictly increasing. Default: the client's default buckets. */
   buckets?: readonly number[];
 }
 

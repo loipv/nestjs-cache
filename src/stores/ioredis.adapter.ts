@@ -65,6 +65,10 @@ function isClusterClient(client: IoredisLike | IoredisClusterLike): client is Io
   return (client as Partial<IoredisClusterLike>).isCluster === true;
 }
 
+/**
+ * Adapts an ioredis client or Cluster to `RedisClientAdapter`. `redisStore` does this itself;
+ * call it to wrap or decorate the adapter.
+ */
 export function ioredisAdapter(client: IoredisLike | IoredisClusterLike): RedisClientAdapter {
   const adapter: RedisClientAdapter = {
     async get(key) {

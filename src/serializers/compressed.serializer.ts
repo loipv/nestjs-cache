@@ -3,6 +3,7 @@ import { CacheConfigError } from '../errors.js';
 import { hasOwnVersion, type CacheEnvelope } from '../core/envelope.js';
 import { jsonSerializer, type Serializer } from './json.serializer.js';
 
+/** Options of `compressedSerializer`. */
 export interface CompressedSerializerOptions {
   /** Produces and reads the string that gets compressed. Default `jsonSerializer`. */
   inner?: Serializer;

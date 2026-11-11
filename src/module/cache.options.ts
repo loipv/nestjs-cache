@@ -6,25 +6,48 @@ import { jsonSerializer, type Serializer } from '../serializers/json.serializer.
 import type { CacheStore } from '../stores/cache-store.interface.js';
 import { memoryStore } from '../stores/memory.store.js';
 
+/** `defaults.lock`: the distributed lock taken on a miss, for stores that have one. */
 export interface CacheLockDefaults {
+  /**
+   * Whether `getOrSet`, `@Cacheable` and `@HttpCache` lock by default; a call's `lock` overrides
+   * it. Default `false`.
+   */
   enabled?: boolean;
+  /** How long a lock is held at most, in ms. Default 10 000. */
   ttl?: number;
+  /**
+   * How long a caller that did not get the lock waits for the holder's value, in ms; then it
+   * loads without the lock. Default 3 000.
+   */
   waitTimeout?: number;
+  /** Delay between two re-reads of the entry while waiting, in ms. Default 50. */
   retryDelay?: number;
 }
 
+/** `defaults`: what a call or decorator that does not set an option uses. */
 export interface CacheDefaults {
+  /** Entry TTL in ms. Default 60 000. */
   ttl?: number;
+  /** Random TTL spread: `ttl x (1 + r)`, `r` in `[-jitter, +jitter]`; in `[0, 1)`. Default 0. */
   jitter?: number;
+  /** Whether `null` and `undefined` results are stored. Default `false`. */
   cacheNull?: boolean;
+  /** TTL of a stored empty value, in ms. Default 30 000. */
   nullTtl?: number;
   lock?: CacheLockDefaults;
 }
 
+/** Options of `CacheModule.forRoot`, and the value `forRootAsync`'s `useFactory` resolves. */
 export interface CacheModuleOptions {
+  /** Prepended to every key as `<prefix>:`. Default none. */
   prefix?: string;
+  /**
+   * Named stores; `default` is required when `stores` is set. Default
+   * `{ default: memoryStore() }`.
+   */
   stores?: { default: CacheStore; [name: string]: CacheStore };
   defaults?: CacheDefaults;
+  /** Turns entry envelopes into the strings stores hold. Default `jsonSerializer`. */
   serializer?: Serializer;
   /** `level` defaults to `'error'`. */
   logging?: { level?: CacheLogLevel };
@@ -42,7 +65,9 @@ export interface CacheModuleOptions {
   versioning?: { cacheTtl?: number };
 }
 
+/** Options of `CacheModule.forRootAsync`: `useFactory` resolves the `CacheModuleOptions`. */
 export interface CacheModuleAsyncOptions {
+  /** Registers the module globally. Default `false`. */
   isGlobal?: boolean;
   imports?: ModuleMetadata['imports'];
   inject?: FactoryProvider['inject'];

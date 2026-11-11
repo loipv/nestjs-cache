@@ -10,8 +10,11 @@ import type {
   LockProvider,
 } from './cache-store.interface.js';
 
+/** Options of `tieredStore`. */
 export interface TieredStoreOptions {
+  /** The local tier, usually `memoryStore()`. */
   l1: CacheStore;
+  /** The shared tier, usually `redisStore(...)`; its bus is used unless `invalidation` is set. */
   l2: CacheStore;
   /** Upper bound on how long a value lives in L1. Defaults to 10_000 ms. */
   l1Ttl?: number;
@@ -387,6 +390,7 @@ async function quietly(fn: () => Promise<unknown> | undefined): Promise<void> {
   }
 }
 
+/** Builds a two-tier store (see `TieredStore`). */
 export function tieredStore(options: TieredStoreOptions): TieredStore {
   return new TieredStore(options);
 }

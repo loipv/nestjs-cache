@@ -1,3 +1,7 @@
+/**
+ * A cache key: a template rendered against the method arguments (`'user:{0}'`, `'{0.id}'`), or
+ * a callback of the arguments. Without one, the key is built from all the arguments.
+ */
 export type KeySpec<A extends unknown[]> = string | ((...args: A) => string);
 /**
  * The tags of a cached method (spec 2.1): templates with the key syntax (`'{0}'`, `'{0.id}'`),
@@ -38,6 +42,10 @@ interface WritePolicy<C extends unknown[], R> {
   condition?: (...args: C) => boolean;
   unless?: (result: R) => boolean;
 }
+/**
+ * Options of `@Cacheable`. `K`, `C` and `G` are the argument lists the `key`, `condition` and
+ * `tags` callbacks declare; `R` is the method's resolved result.
+ */
 export type CacheableOptions<
   K extends unknown[],
   C extends unknown[],
@@ -46,6 +54,7 @@ export type CacheableOptions<
 > = TargetOptions &
   LoadStrategyOptions &
   WritePolicy<C, R> & { key?: KeySpec<K>; lock?: boolean; tags?: TagSpec<G, R> };
+/** Options of `@CachePut`: those of `@Cacheable` without `lock` and `softTimeout`. */
 export type CachePutOptions<
   K extends unknown[],
   C extends unknown[],
@@ -54,6 +63,11 @@ export type CachePutOptions<
 > = TargetOptions &
   StrategyOptions &
   WritePolicy<C, R> & { key?: KeySpec<K>; tags?: TagSpec<G, R> };
+/**
+ * Options of `@CacheEvict`: evict `key` (one spec or several) and invalidate `tags`, or clear
+ * the whole `namespace` with `allEntries: true`. `beforeInvocation: true` evicts before the
+ * method runs; by default eviction follows a successful call.
+ */
 export type CacheEvictOptions<A extends unknown[], G extends unknown[] = never[]> =
   | (TargetOptions & {
       key?: KeySpec<A> | readonly KeySpec<A>[];

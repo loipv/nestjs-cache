@@ -33,6 +33,7 @@ export interface HttpCacheRequest {
   headers: Readonly<Record<string, string | readonly string[] | undefined>>;
 }
 
+/** Options of `@HttpCache`; the strategy options include `softTimeout` (a cached route loads). */
 export type HttpCacheOptions = LoadStrategyOptions & {
   ttl?: number;
   /** Defaults to 'http'. */

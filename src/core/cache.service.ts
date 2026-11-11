@@ -9,6 +9,7 @@ import type {
 } from './cache-engine.js';
 import { strategyOptionsOf } from './strategies/expiry-strategy.js';
 
+/** Where a key lives: its `namespace` (default none) and `store` name (default `'default'`). */
 export interface KeyOptions {
   namespace?: string;
   store?: string;
@@ -113,7 +114,13 @@ function loadManyOptionsOf<T>(options: GetOrSetManyOptions<T>): BatchLoadOptions
   return withLoadPolicy<BatchLoadOptions<T>, T>(writeManyOptionsOf(options), options);
 }
 
+/**
+ * The programmatic cache API, injected from `CacheModule`. Cache failures (store, serializer,
+ * key, lock) are reported as `error` events and do not reject a call; invalid arguments reject
+ * with `CacheConfigError`, and so does `invalidateTags` when a tag version write fails.
+ */
 export class CacheService {
+  /** Created by `CacheModule`; do not construct it, inject it. */
   constructor(private readonly engine: CacheEngine) {}
 
   /**
@@ -129,18 +136,33 @@ export class CacheService {
     return this.engine.get<T>(refOf(key, options), strategyOptionsOf(options));
   }
 
+  /**
+   * Writes a value with `options.ttl` (else `defaults.ttl`). An empty value (`null` or
+   * `undefined`) is written as is, under the `fixed` strategy.
+   */
   set<T>(key: string, value: T, options: WriteOptions<T> = {}): Promise<void> {
     return this.engine.set(refOf(key, options), value, writeOptionsOf(options));
   }
 
+  /** Deletes one key or several keys of one namespace and store, with one store call. */
   delete(key: string | readonly string[], options: KeyOptions = {}): Promise<void> {
     return this.engine.delete(scopeOf(options), typeof key === 'string' ? [key] : key);
   }
 
+  /**
+   * Deletes every entry of `namespace` in the store (`options.store`, else `default`): the
+   * store's `clear` of its key prefix, or one version token change for a versioned namespace.
+   * Rejects `CacheConfigError` for `''`.
+   */
   clear(namespace: string, options: { store?: string } = {}): Promise<void> {
     return this.engine.clear(namespace, options.store);
   }
 
+  /**
+   * Returns the cached value, or runs `loader` once per key across concurrent callers (and, with
+   * `lock`, across instances), stores its result and returns it. A loader error rejects the
+   * call; nothing is stored. Under `swr` a stale value is served while one refresh runs.
+   */
   getOrSet<T>(key: string, loader: () => Promise<T>, options: GetOrSetOptions<T> = {}): Promise<T> {
     return this.engine.getOrSet(refOf(key, options), loader, loadOptionsOf(options));
   }

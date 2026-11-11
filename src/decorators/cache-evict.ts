@@ -43,6 +43,11 @@ async function invalidate(engine: CacheEngine, store: string, tags: string[]): P
   }
 }
 
+/**
+ * Evicts cache entries around an async method: keys, tags or a whole namespace, after the
+ * method succeeds (or before it, with `beforeInvocation`). Eviction failures never reject the
+ * call. Invalid options throw `CacheConfigError` at class definition.
+ */
 export function CacheEvict<K extends unknown[] = never[], G extends unknown[] = never[]>(
   options?: CacheEvictOptions<K, G>,
 ): AsyncMethodDecorator<K, never[], unknown, G> {

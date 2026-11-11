@@ -6,7 +6,9 @@ interface Entry {
   expiresAt: number;
 }
 
+/** Options of `memoryStore`. */
 export interface MemoryStoreOptions {
+  /** Entries kept before the least recently used one is evicted; an integer >= 1. Default 1 000. */
   maxEntries?: number;
 }
 
@@ -104,6 +106,7 @@ export class MemoryStore implements CacheStore {
   }
 }
 
+/** An in-process LRU store; the default store when `CacheModule` gets no `stores`. */
 export function memoryStore(options?: MemoryStoreOptions): MemoryStore {
   return new MemoryStore(options);
 }

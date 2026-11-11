@@ -16,6 +16,11 @@ import {
 } from './method-wrapper.js';
 import type { AsyncMethodDecorator, CacheableOptions, KeySpec } from './options.js';
 
+/**
+ * Caches the result of an async method: a hit returns the cached value without running the
+ * method; a miss runs it and stores the result. Invalid options throw `CacheConfigError` at
+ * class definition.
+ */
 export function Cacheable<
   K extends unknown[] = never[],
   C extends unknown[] = never[],

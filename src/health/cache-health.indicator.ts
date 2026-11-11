@@ -15,6 +15,7 @@ const MAX_TIMEOUT = 2_147_483_647;
  * unknown store or an invalid timeout; a failing store is reported as `down`.
  */
 export class CacheHealthIndicator {
+  /** Created by `CacheModule`; do not construct it, inject it. */
   constructor(private readonly options: ResolvedCacheOptions) {}
 
   async check<K extends string>(

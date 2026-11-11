@@ -65,8 +65,13 @@ function sharedProviders(): Provider[] {
 
 const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE, CacheHealthIndicator, CACHE_LOGGER];
 
+/**
+ * The cache module: provides `CacheService`, `CacheEvents` and `CacheHealthIndicator`, and
+ * wires the cache decorators of every provider. Register it once, usually with `isGlobal`.
+ */
 @Module({})
 export class CacheModule {
+  /** Registers the module with options known up front. Invalid options throw `CacheConfigError`. */
   static forRoot(options: CacheModuleOptions & { isGlobal?: boolean } = {}): DynamicModule {
     const { isGlobal, ...moduleOptions } = options;
     const resolved = resolveOptions(moduleOptions);
@@ -79,6 +84,7 @@ export class CacheModule {
     };
   }
 
+  /** Registers the module with options built by `useFactory`, which can inject providers. */
   static forRootAsync(options: CacheModuleAsyncOptions): DynamicModule {
     return {
       module: CacheModule,

@@ -8,9 +8,9 @@ import { closeWithTimeout, createSubscriptionTracker } from './subscriber-suppor
 type PubSubListener = (message: string, channel: string) => void;
 
 /**
- * Structural subset of a node-redis v5 client (`createClient()` from `redis`). Declared by hand so
- * the library never imports `redis`. The client must be connected before it is passed to
- * `nodeRedisAdapter`; the library never connects it.
+ * Structural subset of a node-redis v5 or v6 client (`createClient()` from `redis`). Declared
+ * by hand so the library never imports `redis`. The client must be connected before it is
+ * passed to `nodeRedisAdapter`; the library never connects it.
  */
 export interface NodeRedisLike {
   get(key: string): Promise<string | null>;
@@ -41,9 +41,9 @@ export interface NodeRedisLike {
 }
 
 /**
- * Structural subset of a node-redis v5 cluster (`createCluster()` from `redis`). Declared by hand
- * so the library never imports `redis`. `nodeRedisAdapter` runs in cluster mode when the client
- * has `masters`. Like a single client, it must be connected before it is passed in.
+ * Structural subset of a node-redis v5 or v6 cluster (`createCluster()` from `redis`). Declared
+ * by hand so the library never imports `redis`. `nodeRedisAdapter` runs in cluster mode when the
+ * client has `masters`. Like a single client, it must be connected before it is passed in.
  */
 export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'duplicate'> {
   /** The master nodes, passed back to `nodeClient`; `scanIterator` scans each of them. */
@@ -57,13 +57,13 @@ export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'dupl
 }
 
 /**
- * Structural subset of a node-redis v5 Sentinel client (`createSentinel()` from `redis`). Declared
- * by hand so the library never imports `redis`. `nodeRedisAdapter` runs in Sentinel mode when
- * `getSentinelNode` is a function. Data commands go to the sentinel, which sends them to the
- * current master. It has no `duplicate`: the subscriber subscribes on the sentinel itself, whose
- * pub/sub connection follows the master, and closing the subscriber only unsubscribes its own
- * channels; the sentinel is never closed. Like a single client, it must be connected before it is
- * passed in.
+ * Structural subset of a node-redis v5 or v6 Sentinel client (`createSentinel()` from `redis`).
+ * Declared by hand so the library never imports `redis`. `nodeRedisAdapter` runs in Sentinel
+ * mode when `getSentinelNode` is a function. Data commands go to the sentinel, which sends them
+ * to the current master. It has no `duplicate`: the subscriber subscribes on the sentinel
+ * itself, whose pub/sub connection follows the master, and closing the subscriber only
+ * unsubscribes its own channels; the sentinel is never closed. Like a single client, it must be
+ * connected before it is passed in.
  */
 export interface NodeRedisSentinelLike extends Omit<NodeRedisLike, 'duplicate'> {
   /** Marks a Sentinel client; never called. */
@@ -91,7 +91,7 @@ type SubscriberConnection = Pick<
 };
 
 /**
- * Adapts a connected node-redis v5 client, cluster or Sentinel to the cache's
+ * Adapts a connected node-redis v5 or v6 client, cluster or Sentinel to the cache's
  * `RedisClientAdapter`. A cluster (spec 3.4) splits `mget`/`unlink` per slot, scans every master
  * through `scanIterator`, and publishes and subscribes with sharded pub/sub. A Sentinel subscribes
  * on itself (see `NodeRedisSentinelLike`).

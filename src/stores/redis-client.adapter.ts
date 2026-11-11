@@ -48,6 +48,7 @@ export interface RedisClientAdapter {
   createSubscriber(): RedisSubscriberAdapter;
 }
 
+/** The subscriber connection of a `RedisClientAdapter`, used by the invalidation bus. */
 export interface RedisSubscriberAdapter {
   /**
    * Subscribes to `channel`. If it rejects (for example Redis was unreachable), the adapter
