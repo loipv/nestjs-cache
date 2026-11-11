@@ -48,7 +48,8 @@ export class AppModule {}
 With memory only, the cache is private to each process: it is not shared between instances and is lost on restart.
 All durations are in milliseconds and must be finite numbers greater than 0.
 
-For Redis, Redis Cluster or Sentinel and the two-tier store, see [Stores](docs/stores.md).
+For Redis, Redis Cluster or Sentinel and the two-tier store, see [Stores](docs/stores.md). A runnable NestJS 12 app
+with tags, `@HttpCache`, optional Redis and Prometheus is in [`examples/basic`](examples/basic/src/app.module.ts).
 
 ## Documentation
 
@@ -95,7 +96,9 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.6 - HTTP caching (done):** `@HttpCache` and `HttpCacheInterceptor` for opt-in route caching on Express and Fastify, and a [migration guide](docs/migration-from-cache-manager.md) from `@nestjs/cache-manager`.
 - **0.7 - Tags (done):** `tags` on `@Cacheable`, `@CachePut`, `@HttpCache` and the `CacheService` writes, `CacheService.invalidateTags` and `@CacheEvict({ tags })`.
 - **0.8 - Compression, Sentinel and `softTimeout` (done):** `compressedSerializer` (gzip and brotli), swr `softTimeout`, Redis Sentinel (ioredis and node-redis), and the tag token re-read.
-- **0.9 - Planned:** replica reads and `redis` v6 support.
+- **0.9 - Redis v6, docs and example (done):** `redis` v6 support, the docs split into `docs/`, an [example app](examples/basic), and an API tidy-up (see the changelog for the breaking changes).
+- **1.0 - API freeze (planned):** the public API is frozen and follows semver from there.
+- **After 1.0 - Replica reads (planned):** reads from Redis replicas.
 
 ## Changelog and releasing
 
