@@ -2,9 +2,14 @@ import type { CacheStore, InvalidationBus, LockProvider } from './cache-store.in
 import { RedisLock } from './redis-lock.js';
 import type { RedisClientAdapter } from './redis-client.adapter.js';
 import { createRedisBus, DEFAULT_CHANNEL, toRedisAdapter } from './redis-invalidation-bus.js';
-import type { RedisStoreOptions } from './redis-invalidation-bus.js';
+import type { RedisInvalidationBusOptions } from './redis-invalidation-bus.js';
 
-export type { RedisStoreOptions } from './redis-invalidation-bus.js';
+/**
+ * Options of `redisStore`: the client and the invalidation channel, the same fields as
+ * `RedisInvalidationBusOptions`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- its own name, same fields as the bus options
+export interface RedisStoreOptions extends RedisInvalidationBusOptions {}
 
 const SCAN_COUNT = 100;
 

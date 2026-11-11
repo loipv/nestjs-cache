@@ -3,9 +3,11 @@ import { ioredisAdapter, isRedisClientAdapter } from './ioredis.adapter.js';
 import type { IoredisClusterLike, IoredisLike } from './ioredis.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 
-export interface RedisStoreOptions {
+/** Options of `redisInvalidationBus`. */
+export interface RedisInvalidationBusOptions {
+  /** An ioredis client or Cluster, or a `RedisClientAdapter` (e.g. `nodeRedisAdapter(client)`). */
   client: IoredisLike | IoredisClusterLike | RedisClientAdapter;
-  /** Defaults to 'nestjs-cache:invalidate'. */
+  /** The pub/sub channel of invalidation messages. Defaults to 'nestjs-cache:invalidate'. */
   channel?: string;
 }
 
@@ -100,6 +102,10 @@ export function createRedisBus(adapter: RedisClientAdapter, channel: string): In
   };
 }
 
-export function redisInvalidationBus(options: RedisStoreOptions): InvalidationBus {
+/**
+ * The Redis pub/sub `InvalidationBus` a `RedisStore` uses, on its own: for a custom store, or a
+ * `tieredStore` whose L2 is not Redis. Its subscriber is created on the first `subscribe`.
+ */
+export function redisInvalidationBus(options: RedisInvalidationBusOptions): InvalidationBus {
   return createRedisBus(toRedisAdapter(options.client), options.channel ?? DEFAULT_CHANNEL);
 }

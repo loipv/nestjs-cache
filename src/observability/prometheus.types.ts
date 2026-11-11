@@ -1,3 +1,5 @@
+import type { FactoryProvider, ModuleMetadata } from '@nestjs/common';
+
 /** Structural subset of a Prometheus registry; satisfied by prom-client and @prometheus-io/client. */
 export interface RegistryLike {
   getSingleMetric(name: string): unknown;
@@ -74,4 +76,11 @@ export interface CachePrometheusOptions {
   registry?: RegistryLike;
   prefix?: string;
   buckets?: readonly number[];
+}
+
+/** Options of `CachePrometheusModule.forRootAsync`: `useFactory` resolves the module options. */
+export interface CachePrometheusAsyncOptions {
+  imports?: ModuleMetadata['imports'];
+  inject?: FactoryProvider['inject'];
+  useFactory: (...args: never[]) => CachePrometheusOptions | Promise<CachePrometheusOptions>;
 }

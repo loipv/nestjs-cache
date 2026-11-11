@@ -59,7 +59,8 @@ export type {
 } from './core/cache.service.js';
 export { RedisStore, redisStore } from './stores/redis.store.js';
 export { redisInvalidationBus } from './stores/redis-invalidation-bus.js';
-export type { RedisStoreOptions } from './stores/redis-invalidation-bus.js';
+export type { RedisStoreOptions } from './stores/redis.store.js';
+export type { RedisInvalidationBusOptions } from './stores/redis-invalidation-bus.js';
 export { ioredisAdapter } from './stores/ioredis.adapter.js';
 export type { IoredisClusterLike, IoredisLike } from './stores/ioredis.adapter.js';
 export { nodeRedisAdapter } from './stores/node-redis.adapter.js';
@@ -78,6 +79,7 @@ export {
 } from './resilience/circuit-breaker.store.js';
 export type { CircuitBreakerOptions } from './resilience/circuit-breaker.store.js';
 export type {
+  CachePrometheusAsyncOptions,
   CachePrometheusOptions,
   PrometheusClientLike,
   RegistryLike,

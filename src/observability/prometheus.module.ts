@@ -1,4 +1,4 @@
-import type { DynamicModule, FactoryProvider, ModuleMetadata, Provider } from '@nestjs/common';
+import type { DynamicModule, Provider } from '@nestjs/common';
 import { Module } from '@nestjs/common';
 import { CacheEvents } from '../core/events.js';
 import type { CacheLogger } from '../module/cache.logger.js';
@@ -8,7 +8,7 @@ import {
   resolvePrometheusOptions,
   type ResolvedPrometheusOptions,
 } from './metrics.collector.js';
-import type { CachePrometheusOptions } from './prometheus.types.js';
+import type { CachePrometheusAsyncOptions, CachePrometheusOptions } from './prometheus.types.js';
 
 function collectorProvider(): Provider {
   return {
@@ -33,11 +33,7 @@ export class CachePrometheusModule {
     };
   }
 
-  static forRootAsync(options: {
-    imports?: ModuleMetadata['imports'];
-    inject?: FactoryProvider['inject'];
-    useFactory: (...args: never[]) => CachePrometheusOptions | Promise<CachePrometheusOptions>;
-  }): DynamicModule {
+  static forRootAsync(options: CachePrometheusAsyncOptions): DynamicModule {
     return {
       module: CachePrometheusModule,
       imports: options.imports ?? [],

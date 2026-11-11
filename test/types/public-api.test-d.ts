@@ -72,3 +72,21 @@ expectTypeOf<lib.CacheEventMap['error']['operation']>().toEqualTypeOf<lib.CacheO
 /* 0.9-T6 G-08: the breaker factory is circuitBreakerStore, paired with CircuitBreakerStore. */
 expectTypeOf(lib.circuitBreakerStore).returns.toEqualTypeOf<lib.CircuitBreakerStore>();
 expectTypeOf<Index>().not.toHaveProperty('circuitBreaker');
+
+/* 0.9-T6 G-04: the bus factory takes RedisInvalidationBusOptions; RedisStoreOptions extends it
+   with the same fields, so one options object serves both factories. */
+expectTypeOf(lib.redisInvalidationBus)
+  .parameter(0)
+  .toEqualTypeOf<lib.RedisInvalidationBusOptions>();
+expectTypeOf<lib.RedisStoreOptions>().toExtend<lib.RedisInvalidationBusOptions>();
+expectTypeOf<lib.RedisInvalidationBusOptions>().toExtend<lib.RedisStoreOptions>();
+
+/* 0.9-T6 L-01: CachePrometheusModule.forRootAsync takes the exported
+   CachePrometheusAsyncOptions, as CacheModule.forRootAsync takes CacheModuleAsyncOptions. */
+expectTypeOf(lib.CachePrometheusModule.forRootAsync)
+  .parameter(0)
+  .toEqualTypeOf<lib.CachePrometheusAsyncOptions>();
+export const promAsync: lib.CachePrometheusAsyncOptions = {
+  inject: [],
+  useFactory: () => ({ client: {} as lib.PrometheusClientLike }),
+};
