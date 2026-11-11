@@ -81,7 +81,7 @@ function validate(
 
 /** Caches the HTTP response body of a route (method) or of every route of a controller (class). */
 export function HttpCache(options?: HttpCacheOptions): MethodDecorator & ClassDecorator {
-  return ((target: object, propertyKey?: string | symbol, descriptor?: PropertyDescriptor) => {
+  return (target: object, propertyKey?: string | symbol, descriptor?: PropertyDescriptor) => {
     const isClass = propertyKey === undefined;
     const holder = isClass ? (target as { prototype: object }).prototype : target;
     const method = isClass ? '*' : propertyKey;
@@ -107,5 +107,5 @@ export function HttpCache(options?: HttpCacheOptions): MethodDecorator & ClassDe
     );
     if (isClass) (decorate as ClassDecorator)(target as never);
     else (decorate as MethodDecorator)(target, propertyKey, descriptor as PropertyDescriptor);
-  });
+  };
 }
