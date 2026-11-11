@@ -48,6 +48,9 @@ Changed:
   the message.
 - Foreign-version envelopes are now cleaned up under `compressedSerializer(jsonSerializer)`, as they already were
   under the plain `jsonSerializer`.
-- With `strategy: 'swr'` and `softTimeout`, a call returns the stale value when the refresh produced an empty value
-  that was not actually written. That also covers `cacheNull`, when `unless`, a skipped tag stamp or a store write
-  failure prevented the write.
+- With `strategy: 'swr'` and `softTimeout`, a call now returns the stale value when the refresh produced an empty
+  value that was not actually written. Before, with `cacheNull` on, when `unless` (returning true or throwing), a tag
+  stamp of `'skip'` or a failed store write prevented that write, the empty value was returned to the caller while the
+  stale entry stayed in the cache. An empty value that is written is still returned, and so are non-empty values that
+  were not written. Migration: none needed; code that relied on getting the empty value in these cases now gets the
+  stale value.
