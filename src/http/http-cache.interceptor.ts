@@ -34,6 +34,15 @@ function isUncacheable(body: unknown): boolean {
   );
 }
 
+/**
+ * Requests whose `@HttpCache` load is running. Nest does not de-duplicate interceptors: a class-level
+ * and a method-level `@HttpCache`, or an `APP_INTERCEPTOR` plus a route's `@HttpCache`, run this
+ * interceptor twice per request. The inner run is invoked from the outer run's load and must pass
+ * through, or its `getOrSet` would join the outer flight and wait for itself. Module-level because
+ * the global and the route-level interceptors are different instances.
+ */
+const loading = new WeakSet<object>();
+
 /** The route's load options with the built-in `unless` first, then the user's. */
 function withBuiltInUnless(options: LoadOptions<unknown>): LoadOptions<unknown> {
   const user = options.unless;
@@ -62,6 +71,7 @@ export class HttpCacheInterceptor implements NestInterceptor {
     );
     if (metadata === undefined) return next.handle();
     const req: unknown = context.switchToHttp().getRequest();
+    if (isObject(req) && loading.has(req)) return next.handle();
     const adapter = this.adapterHost.httpAdapter;
     const method = adapter.getRequestMethod(req) as string;
     if (method !== 'GET' && method !== 'HEAD') return next.handle();
@@ -80,7 +90,7 @@ export class HttpCacheInterceptor implements NestInterceptor {
     return from(
       this.engine.getOrSet(
         { store, namespace, key },
-        () => lastValueFrom(next.handle(), { defaultValue: undefined }),
+        () => load(req, next),
         this.loadOptionsOf(metadata),
         strategy,
       ),
@@ -113,6 +123,21 @@ export class HttpCacheInterceptor implements NestInterceptor {
       this.loadOptions.set(metadata, options);
     }
     return options;
+  }
+}
+
+function isObject(value: unknown): value is object {
+  return (typeof value === 'object' && value !== null) || typeof value === 'function';
+}
+
+/** Runs the rest of the chain with `req` marked as loading, so a nested run of this interceptor passes through. */
+async function load(req: unknown, next: CallHandler): Promise<unknown> {
+  if (!isObject(req)) return lastValueFrom(next.handle(), { defaultValue: undefined });
+  loading.add(req);
+  try {
+    return await lastValueFrom(next.handle(), { defaultValue: undefined });
+  } finally {
+    loading.delete(req);
   }
 }
 

@@ -13,7 +13,7 @@ import {
   Put,
   type INestApplication,
 } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { APP_INTERCEPTOR, NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,7 +21,9 @@ import {
   CacheConfigError,
   CacheEvict,
   CacheModule,
+  CacheService,
   HttpCache,
+  HttpCacheInterceptor,
   type HttpCacheRequest,
 } from '../../../src/index.js';
 
@@ -130,15 +132,50 @@ class ClassController {
   }
 }
 
+/** Class-level and method-level @HttpCache: Nest applies the interceptor twice to `both`. */
+@HttpCache({ namespace: 'klass', ttl: 60_000 })
+@Controller('twice')
+class TwiceController {
+  constructor(@Inject(Counter) private readonly counter: Counter) {}
+
+  @Get('both')
+  @HttpCache({ namespace: 'method', ttl: 60_000 })
+  both(): { n: number } {
+    return { n: this.counter.next() };
+  }
+}
+
+@Controller('global')
+class GlobalController {
+  constructor(@Inject(Counter) private readonly counter: Counter) {}
+
+  @Get('route')
+  @HttpCache({ ttl: 60_000 })
+  route(): { n: number } {
+    return { n: this.counter.next() };
+  }
+}
+
 /** A fresh module per app: forRoot builds its memory store once, so a shared one would leak entries. */
 function makeAppModule(): new () => object {
   @Module({
     imports: [CacheModule.forRoot({ isGlobal: true, namespaces: { users: { versioned: true } } })],
-    controllers: [ItemsController, ClassController],
+    controllers: [ItemsController, ClassController, TwiceController],
     providers: [Counter],
   })
   class AppModule {}
   return AppModule;
+}
+
+/** HttpCacheInterceptor registered globally as well as by the route's @HttpCache. */
+function makeGlobalInterceptorModule(): new () => object {
+  @Module({
+    imports: [CacheModule.forRoot({ isGlobal: true })],
+    controllers: [GlobalController],
+    providers: [Counter, { provide: APP_INTERCEPTOR, useClass: HttpCacheInterceptor }],
+  })
+  class GlobalInterceptorModule {}
+  return GlobalInterceptorModule;
 }
 
 describe.each(['express', 'fastify'] as const)('HttpCache end to end on %s', (kind) => {
@@ -153,13 +190,15 @@ describe.each(['express', 'fastify'] as const)('HttpCache end to end on %s', (ki
     return kind === 'express' ? new ExpressAdapter() : new FastifyAdapter();
   }
 
-  async function start(): Promise<{ base: string; counter: Counter }> {
-    const created = await NestFactory.create(makeAppModule(), adapter(), { logger: false });
+  async function start(
+    module: new () => object = makeAppModule(),
+  ): Promise<{ base: string; counter: Counter; cache: CacheService }> {
+    const created = await NestFactory.create(module, adapter(), { logger: false });
     app = created;
     await created.init();
     await created.listen(0, '127.0.0.1');
     const base = (await created.getUrl()).replace('[::1]', '127.0.0.1');
-    return { base, counter: created.get(Counter) };
+    return { base, counter: created.get(Counter), cache: created.get(CacheService) };
   }
 
   async function json(url: string, init?: RequestInit): Promise<{ n: number; id?: string }> {
@@ -290,6 +329,28 @@ describe.each(['express', 'fastify'] as const)('HttpCache end to end on %s', (ki
     await json(`${base}/private`);
     await json(`${base}/private`);
     expect(counter.calls).toBe(3);
+  });
+
+  it('class-level and method-level @HttpCache on one route run the cache once', async () => {
+    /* F-1: the interceptor runs twice; the nested run passes through instead of joining its own flight (no hang) */
+    const { base, counter, cache } = await start();
+    const first = await json(`${base}/twice/both`, { signal: AbortSignal.timeout(2_000) });
+    const second = await json(`${base}/twice/both`, { signal: AbortSignal.timeout(2_000) });
+    expect(first).toEqual({ n: 1 });
+    expect(second).toEqual(first);
+    expect(counter.calls).toBe(1);
+    await expect(cache.get('/twice/both', { namespace: 'method' })).resolves.toEqual({ n: 1 });
+    await expect(cache.get('/twice/both', { namespace: 'klass' })).resolves.toBeUndefined();
+  });
+
+  it('APP_INTERCEPTOR HttpCacheInterceptor plus @HttpCache on a route run the cache once', async () => {
+    /* F-1: the global and the route-level instances both run; only the outer one caches */
+    const { base, counter } = await start(makeGlobalInterceptorModule());
+    const first = await json(`${base}/global/route`, { signal: AbortSignal.timeout(2_000) });
+    const second = await json(`${base}/global/route`, { signal: AbortSignal.timeout(2_000) });
+    expect(first).toEqual({ n: 1 });
+    expect(second).toEqual(first);
+    expect(counter.calls).toBe(1);
   });
 
   it('an unknown store fails app.init() with CacheConfigError naming @HttpCache', async () => {

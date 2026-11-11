@@ -9,7 +9,10 @@ import type { CacheEngine } from '../../../src/core/cache-engine.js';
 import { HttpCache, type HttpCacheOptions } from '../../../src/http/http-cache.decorator.js';
 import { HttpCacheInterceptor } from '../../../src/http/http-cache.interceptor.js';
 import { CacheModule, HttpCacheInterceptor as Exported } from '../../../src/index.js';
+import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
+import type { LockHandle } from '../../../src/stores/cache-store.interface.js';
 import { makeEngine } from '../helpers/engine.js';
+import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 interface FakeRequest {
@@ -41,8 +44,8 @@ function plainRoute(): Route {
   return { handler: Plain.prototype.m, cls: Plain };
 }
 
-function setup() {
-  const made = makeEngine();
+function setup(options?: CacheModuleOptions) {
+  const made = makeEngine(options);
   const adapter = {
     getRequestMethod: vi.fn((req: FakeRequest) => req.method),
     getRequestUrl: vi.fn((req: FakeRequest) => req.url),
@@ -86,7 +89,7 @@ function setup() {
     });
   }
 
-  return { ...made, adapter, interceptor, errors, gets, nextOf, run };
+  return { ...made, adapter, interceptor, errors, gets, context, nextOf, run };
 }
 
 const get = (url: string, extra: Partial<FakeRequest> = {}): FakeRequest => ({
@@ -333,6 +336,72 @@ describe('HttpCacheInterceptor', () => {
     );
     expect([...t.store.data.keys()].sort()).toEqual(['cls:/a', 'method:/b']);
   });
+
+  it('a nested run for the same request passes through', { timeout: 2_000 }, async () => {
+    /* F-1: the interceptor applied twice (class + method, or APP_INTERCEPTOR + route): the inner run must not join the outer flight */
+    const t = setup();
+    const target = route();
+    const req = get('/items');
+    const handler = t.nextOf(() => ({ a: 1 }));
+    const outer: CallHandler = {
+      handle: () => t.interceptor.intercept(t.context(target, req), handler),
+    };
+    await expect(t.run(target, req, outer)).resolves.toEqual({ a: 1 });
+    expect(handler.calls).toBe(1);
+    expect([...t.store.data.keys()]).toEqual(['http:/items']);
+    expect(t.gets()).toBe(1);
+    // The mark is cleared once the load settled: the same request object is cached normally again.
+    await expect(t.run(target, req, outer)).resolves.toEqual({ a: 1 });
+    expect(handler.calls).toBe(1);
+    expect(t.gets()).toBe(2);
+  });
+
+  it(
+    'a nested run during a background refresh passes through and stores the fresh body',
+    { timeout: 2_000 },
+    async () => {
+      /* F-1: a locked swr refresh calls the outer loader after the response settled; the inner run must not answer with the stale entry */
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        // A lock that answers after a macrotask, like a Redis round trip: the refresh load starts after the response settled.
+        class SlowLock extends FakeLock {
+          override async acquire(key: string, ttlMs: number): Promise<LockHandle | undefined> {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return super.acquire(key, ttlMs);
+          }
+        }
+        const t = setup({
+          stores: { default: Object.assign(new FakeStore(), { lock: new SlowLock() }) },
+        });
+        const target = route({ ttl: 1_000, strategy: 'swr', staleTtl: 60_000, lock: true });
+        const req = get('/items');
+        let n = 0;
+        const handler = t.nextOf(() => ({ n: ++n }));
+        const outer: CallHandler = {
+          handle: () => t.interceptor.intercept(t.context(target, req), handler),
+        };
+        await expect(t.run(target, req, outer)).resolves.toEqual({ n: 1 });
+        vi.setSystemTime(Date.now() + 2_000);
+        await expect(t.run(target, req, outer)).resolves.toEqual({ n: 1 });
+        await vi.waitFor(() => {
+          expect(handler.calls).toBe(2);
+        });
+        await vi.waitFor(async () => {
+          await expect(
+            t.run(
+              target,
+              get('/items'),
+              t.nextOf(() => 'unused'),
+            ),
+          ).resolves.toEqual({
+            n: 2,
+          });
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('is exported and resolves through CacheModule', async () => {
     /* D1: CACHE_ENGINE, Reflector and HttpAdapterHost are injected by Nest */
