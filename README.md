@@ -95,7 +95,7 @@ Module options:
 | `serializer`          | `Serializer`                                          | JSON                         | Envelope serializer                                                  |
 | `isGlobal`            | `boolean`                                             | `false`                      | Register the module globally                                         |
 
-`redisStore({ client, channel? })` accepts an ioredis instance (or a `RedisClientAdapter`). The default
+`redisStore({ client, channel? })` (`RedisStoreOptions`) accepts an ioredis instance (or a `RedisClientAdapter`). The default
 Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (the store uses `GETEX`).
 
 `memoryStore({ maxEntries? })` is an LRU store (`MemoryStoreOptions`); `maxEntries` defaults to `1_000`.
@@ -389,7 +389,7 @@ The full key is `<prefix>:<namespace>:<key>`; missing parts are dropped together
 ```ts
 class CacheService {
   get<T>(key: string, options?: KeyOptions & StrategyOptions): Promise<T | undefined>;
-  set<T>(key: string, value: T, options?: WriteOptions): Promise<void>;
+  set<T>(key: string, value: T, options?: WriteOptions<T>): Promise<void>;
   delete(key: string | readonly string[], options?: KeyOptions): Promise<void>;
   clear(namespace: string, options?: { store?: string }): Promise<void>;
   invalidateTags(tags: readonly string[], options?: { store?: string }): Promise<void>;
@@ -400,12 +400,12 @@ class CacheService {
   ): Promise<(T | undefined)[]>;
   setMany<T>(
     entries: readonly (readonly [key: string, value: T])[],
-    options?: WriteOptions,
+    options?: WriteManyOptions<T>,
   ): Promise<void>;
   getOrSetMany<T>(
     keys: readonly string[],
     loader: (missing: string[]) => Promise<ReadonlyMap<string, T>>,
-    options?: GetOrSetOptions<T>,
+    options?: GetOrSetManyOptions<T>,
   ): Promise<(T | undefined)[]>;
 }
 ```
@@ -418,8 +418,10 @@ const user = await cache.getOrSet('user:1', () => repo.find('1'), {
 });
 ```
 
-`KeyOptions` is `{ namespace?, store? }`, `WriteOptions` adds `ttl` and the strategy options, and `GetOrSetOptions`
-adds `cacheNull`, `nullTtl`, `unless` and `lock`. `get` returns `undefined` on a miss. `clear` needs a non-empty namespace and rejects
+`KeyOptions` is `{ namespace?, store? }`. `WriteOptions` adds `ttl`, `tags` and the strategy options
+(`StrategyOptions`); `WriteManyOptions` is the same with a `(value, key)` tags callback. `GetOrSetOptions` and
+`GetOrSetManyOptions` take the load strategy options (`LoadStrategyOptions`, which add `softTimeout`) and add `cacheNull`,
+`nullTtl`, `unless` and `lock` (`false` only for `getOrSetMany`). `get` returns `undefined` on a miss. `clear` needs a non-empty namespace and rejects
 `''` with `CacheConfigError`. A `namespace` that starts with `__` is reserved and also rejects with `CacheConfigError`. `T` is your assertion; the library does not
 validate stored data at runtime.
 
@@ -623,8 +625,8 @@ const users = await cache.getOrSetMany<User>(
 
 - Results are in input order. A key read twice in one call is read and loaded once. An empty key gives `undefined`
   and one `error` event with `operation: 'key'`. `[]` makes no store call.
-- The loader receives only the misses and returns a `Map`. A requested key missing from the `Map` is treated as a
-  `null` result and follows `cacheNull`. Keys in the `Map` that were not requested are ignored: not cached, not
+- The loader receives only the misses and returns a `Map`. A requested key missing from the `Map` is treated as an
+  `undefined` result and follows `cacheNull` (a stored marker reads back as `undefined`). Keys in the `Map` that were not requested are ignored: not cached, not
   returned. An error from the loader, or a return value that is not a `Map`, reaches the caller.
 - Loading is single-flight per key and shared with `getOrSet` in the same process: concurrent `getOrSetMany(['a', 'b'])`
   and `getOrSetMany(['b', 'c'])` call their loaders with `['a', 'b']` and `['c']`.
@@ -844,8 +846,10 @@ const store = tieredStore({
   `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
   otherwise `circuitBreakerStore` throws `CacheConfigError`. `circuitBreakerStore(...)` returns a `CircuitBreakerStore`, its options are
   typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
-- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `lock.acquire` and `lock.release`. `invalidation`, `bind`
-  and `close` are passed through. The breaker has `getAndTouch` and `lock` only if the wrapped store does.
+- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`,
+  `lock.acquire` and `lock.release`. `invalidation`, `bind` and `close` are passed through. The breaker has the
+  optional ones (`getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping` and `lock`) only if the wrapped
+  store does.
 - `clear` is guarded by the breaker `timeout`. For big namespaces (Redis `SCAN`/`UNLINK` loops) use a larger `timeout`, otherwise `@CacheEvict({ allEntries: true })` can trip the breaker.
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
   state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
@@ -897,8 +901,9 @@ uses `options.invalidation` if given, otherwise `l2.invalidation`.
 The bus only affects L1 freshness. Data in L2 is always correct, and a single-instance app is not affected by a missing bus.
 Without a bus, `tieredStore` still works and logs a warning at startup. When the Pub/Sub connection is
 re-established, L1 is cleared because messages may have been missed. If Redis is unreachable when the app starts,
-the subscription is retried once the connection is ready. This automatic re-subscribe after a failure happens only with
-ioredis clients (through `ioredisAdapter`); custom adapters and buses must retry themselves. A bus may implement the optional `onError(handler)`;
+the subscription is retried once the connection is ready. This automatic re-subscribe after a failure happens with
+ioredis clients (through `ioredisAdapter`) and node-redis clients (through `nodeRedisAdapter`); custom adapters and buses
+must retry themselves. A bus may implement the optional `onError(handler)`;
 `tieredStore` reports those errors as `error` events with `operation: 'subscribe'` (the Redis bus reports
 errors of its subscriber connection this way).
 
@@ -999,7 +1004,8 @@ import * as client from 'prom-client';
 export class MetricsAppModule {}
 ```
 
-There is also `forRootAsync({ imports, inject, useFactory })`, where `useFactory` returns the same options.
+There is also `forRootAsync({ imports, inject, useFactory })` (`CachePrometheusAsyncOptions`), where `useFactory`
+returns the same options (`CachePrometheusOptions`).
 
 The module does not open an endpoint. Expose the registry yourself, for example with a controller:
 
@@ -1132,7 +1138,9 @@ p95, lock wait p95 and breaker state.
 
 ## Error behaviour
 
-Cache failures never reach the caller. The only exception is `CacheConfigError`.
+Cache failures never reach the caller. There are two exceptions: `CacheConfigError`, and `CacheService.invalidateTags`,
+which rejects when a tag version write fails (so the caller knows the invalidation did not happen; `@CacheEvict({ tags })`
+does not reject).
 
 | Situation                                                                  | Behaviour                                                                                                                                                                                                                                                                                                 |
 | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
