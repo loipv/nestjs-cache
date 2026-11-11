@@ -99,6 +99,16 @@ export interface CacheStore {
    */
   setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>;
   /**
+   * Optional. Like `get`, but rejects instead of degrading when the durable tier cannot be read.
+   * Stores whose `get` already rejects on failure (memory, Redis) need not implement it.
+   */
+  getStrict?(key: string): Promise<string | undefined>;
+  /**
+   * Optional. Like `set`, but rejects unless the durable tier stored the value.
+   * Stores whose `set` already rejects on failure need not implement it.
+   */
+  setStrict?(key: string, value: string, ttlMs: number): Promise<void>;
+  /**
    * Optional. Distributed lock backed by this store. Absent when the store cannot lock; the
    * engine then falls back to a per-process lock.
    */

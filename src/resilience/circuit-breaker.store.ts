@@ -66,7 +66,8 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
- * `getAndTouch`, `getMany`, `setMany`, `lock.acquire` and `LockHandle.release` are guarded: each races a timeout, and
+ * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `lock.acquire` and
+ * `LockHandle.release` are guarded: each races a timeout, and
  * `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.
  * `invalidation`, `bind` and `close` are forwarded unchanged.
@@ -80,6 +81,10 @@ export class CircuitBreakerStore implements CacheStore {
   declare readonly setMany?: (
     entries: readonly { key: string; value: string; ttlMs: number }[],
   ) => Promise<void>;
+  /** Present only when the inner store has `getStrict`. */
+  declare readonly getStrict?: (key: string) => Promise<string | undefined>;
+  /** Present only when the inner store has `setStrict`. */
+  declare readonly setStrict?: (key: string, value: string, ttlMs: number) => Promise<void>;
   /** Present only when the inner store has a lock; `acquire` and `release` are guarded. */
   declare readonly lock?: LockProvider;
   /** Present only when the inner store has `ping`; guarded like every other operation. */
@@ -121,6 +126,14 @@ export class CircuitBreakerStore implements CacheStore {
     if (inner.setMany !== undefined) {
       const setMany = inner.setMany.bind(inner);
       this.setMany = (entries) => this.guard(() => setMany(entries));
+    }
+    if (inner.getStrict !== undefined) {
+      const getStrict = inner.getStrict.bind(inner);
+      this.getStrict = (key) => this.guard(() => getStrict(key));
+    }
+    if (inner.setStrict !== undefined) {
+      const setStrict = inner.setStrict.bind(inner);
+      this.setStrict = (key, value, ttlMs) => this.guard(() => setStrict(key, value, ttlMs));
     }
     if (inner.lock !== undefined) {
       const lock = inner.lock;

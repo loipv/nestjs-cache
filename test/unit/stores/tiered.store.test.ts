@@ -737,6 +737,106 @@ describe('TieredStore', () => {
     });
   });
 
+  describe('getStrict and setStrict', () => {
+    /* The key is in L1: getStrict returns it and L2 is never read. */
+    it('getStrict returns an L1 hit without reading L2', async () => {
+      await l1.set('k', 'v', 5_000);
+      expect(await store.getStrict('k')).toBe('v');
+      expect(l2.calls.filter((c) => c.op === 'get')).toEqual([]);
+    });
+
+    /* L1 misses and L2 rejects: getStrict rejects with that same error and reports one get
+       error, instead of resolving undefined as get does. */
+    it('getStrict rejects with the L2 error and reports a get error when L1 misses', async () => {
+      const l2Error = new Error('l2 down');
+      l2.failNext('get', l2Error);
+      await expect(store.getStrict('k')).rejects.toBe(l2Error);
+      expect(sink.emit.mock.calls).toEqual([['error', { operation: 'get', error: l2Error }]]);
+      const pending = (store as unknown as { pending: Map<string, symbol> }).pending;
+      expect(pending.size).toBe(0);
+    });
+
+    /* L2 is an open circuit breaker: getStrict rejects with CircuitOpenError, which is not
+       reported (an open circuit is an absent store, not a broken one). */
+    it('getStrict rejects with CircuitOpenError from a breaker-wrapped L2', async () => {
+      const inner = new FakeStore();
+      const t = tieredStore({
+        l1: memoryStore(),
+        l2: circuitBreaker(inner, { failureThreshold: 1 }),
+        invalidation: bus,
+      });
+      t.bind(sink);
+      inner.failNext('get', new Error('down'));
+      expect(await t.get('a')).toBeUndefined();
+      sink.emit.mockClear();
+      await expect(t.getStrict('k')).rejects.toBeInstanceOf(CircuitOpenError);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    /* An L2 hit is backfilled into L1 with l1Ttl, as get does; an L2 miss is a real miss and
+       resolves undefined without any error. */
+    it('getStrict backfills L1 on an L2 hit and resolves undefined on an L2 miss', async () => {
+      l2.data.set('k', { value: 'v', ttlMs: 60_000 });
+      expect(await store.getStrict('k')).toBe('v');
+      vi.advanceTimersByTime(9_999);
+      expect(await l1.get('k')).toBe('v');
+      vi.advanceTimersByTime(1);
+      expect(await l1.get('k')).toBeUndefined();
+      await expect(store.getStrict('missing')).resolves.toBeUndefined();
+      expect(await l1.get('missing')).toBeUndefined();
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    /* L1 throws on read: reported as a get error and treated as a miss, so L2 is read. */
+    it('getStrict treats an L1 read failure as a miss and reads L2', async () => {
+      l2.data.set('k', { value: 'v', ttlMs: 60_000 });
+      const boom = new Error('l1 down');
+      vi.spyOn(l1, 'get').mockRejectedValueOnce(boom);
+      expect(await store.getStrict('k')).toBe('v');
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'get', error: boom });
+    });
+
+    /* L2 rejects the write: setStrict reports a set error and rejects with it; L1 is not
+       written and nothing is published. An open circuit rejects the same way, unreported. */
+    it('setStrict rejects and neither writes L1 nor publishes when L2 fails', async () => {
+      const publish = vi.spyOn(bus, 'publish');
+      const l2Error = new Error('l2 down');
+      l2.failNext('set', l2Error);
+      await expect(store.setStrict('k', 'v', 60_000)).rejects.toBe(l2Error);
+      expect(await l1.get('k')).toBeUndefined();
+      expect(publish).not.toHaveBeenCalled();
+      expect(sink.emit.mock.calls).toEqual([['error', { operation: 'set', error: l2Error }]]);
+
+      sink.emit.mockClear();
+      l2.failNext('set', new CircuitOpenError());
+      await expect(store.setStrict('k', 'v', 60_000)).rejects.toBeInstanceOf(CircuitOpenError);
+      expect(await l1.get('k')).toBeUndefined();
+      expect(publish).not.toHaveBeenCalled();
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    /* L2 stores the value with the full TTL, then L1 with min(ttl, l1Ttl), then one message
+       is published, in that order. */
+    it('setStrict writes L2, then L1 with min(ttl, l1Ttl), then publishes', async () => {
+      const l2Set = vi.spyOn(l2, 'set');
+      const l1Set = vi.spyOn(l1, 'set');
+      const publish = vi.spyOn(bus, 'publish');
+      await store.setStrict('k', 'v', 60_000);
+      expect(l2Set).toHaveBeenCalledWith('k', 'v', 60_000);
+      expect(l1Set).toHaveBeenCalledWith('k', 'v', 10_000);
+      expect(publish).toHaveBeenCalledWith({ origin: anyString, keys: ['k'] });
+      const [l2Order] = l2Set.mock.invocationCallOrder;
+      const [l1Order] = l1Set.mock.invocationCallOrder;
+      const [publishOrder] = publish.mock.invocationCallOrder;
+      expect(l2Order).toBeLessThan(l1Order ?? 0);
+      expect(l1Order).toBeLessThan(publishOrder ?? 0);
+
+      await store.setStrict('short', 'v', 5_000);
+      expect(l1Set).toHaveBeenLastCalledWith('short', 'v', 5_000);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+  });
+
   describe('open circuit on L2', () => {
     it('L2 open circuit: L1 written, no publish, no sink error', async () => {
       l2.failNext('set', new CircuitOpenError());

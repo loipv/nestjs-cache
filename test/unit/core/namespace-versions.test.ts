@@ -215,6 +215,48 @@ describe('NamespaceVersions', () => {
     expect(store.calls.filter((c) => c.op === 'get')).toHaveLength(gets);
   });
 
+  it('reads and creates the version key through getStrict and setStrict when the store has them', async () => {
+    /* A store with strict members (a tiered store): the missing key is read, created and read
+       back through getStrict/setStrict, fresh and bump use them too, and get/set are never
+       called. */
+    const { store, versions } = setup();
+    const getStrict = vi.fn((key: string) => Promise.resolve(store.data.get(key)?.value));
+    const setStrict = vi.fn((key: string, value: string, ttlMs: number) => {
+      store.data.set(key, { value, ttlMs });
+      return Promise.resolve();
+    });
+    const strict = Object.assign(store, { getStrict, setStrict });
+    const target = { name: 'default', store: strict };
+    const token = await versions.current(target, 'users');
+    expect(token).toMatch(TOKEN);
+    expect(getStrict.mock.calls).toEqual([['app:__version__:users'], ['app:__version__:users']]);
+    expect(setStrict.mock.calls).toEqual([['app:__version__:users', token, VERSION_KEY_TTL]]);
+    expect(await versions.fresh(target, 'users')).toBe(token);
+    await versions.bump(target, 'users');
+    expect(getStrict).toHaveBeenCalledTimes(3);
+    expect(setStrict).toHaveBeenCalledTimes(2);
+    expect(store.calls).toEqual([]);
+  });
+
+  it('bump uses setStrict and keeps the old token when it rejects', async () => {
+    /* setStrict rejects (L2 down): bump rejects with that error, the cached token and the
+       bump count are unchanged, and the plain set is never tried. */
+    const { store, versions } = setup();
+    store.data.set('app:__version__:users', { value: 'abc12345', ttlMs: 1 });
+    const boom = new Error('l2 down');
+    const setStrict = vi.fn<(key: string, value: string, ttlMs: number) => Promise<void>>(() =>
+      Promise.reject(boom),
+    );
+    const target = { name: 'default', store: Object.assign(store, { setStrict }) };
+    expect(await versions.current(target, 'users')).toBe('abc12345');
+    await expect(versions.bump(target, 'users')).rejects.toBe(boom);
+    expect(setStrict).toHaveBeenCalledOnce();
+    expect(store.calls.filter((c) => c.op === 'set')).toEqual([]);
+    expect(versions.cached(target, 'users')).toBe('abc12345');
+    const bumps = (versions as unknown as { bumps: Map<string, number> }).bumps;
+    expect(bumps.get('default\u0000users')).toBeUndefined();
+  });
+
   it('a failing fresh read rejects and keeps the cached token', async () => {
     /* The store rejects: fresh rejects and the cache is left as it was. */
     const { store, versions } = setup();

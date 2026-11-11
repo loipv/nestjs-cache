@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { CacheStore } from '../stores/cache-store.interface.js';
 import type { Target } from './engine-io.js';
 import { fullKey } from './key-builder.js';
 
@@ -20,7 +21,11 @@ interface Cached {
   until: number;
 }
 
-/** Version tokens for opt-in versioned namespaces. Emits nothing; store failures reject. */
+/**
+ * Version tokens for opt-in versioned namespaces. Emits nothing; store failures reject. The
+ * version key is read with `getStrict` and written with `setStrict` when the store has them (a
+ * tiered store), so a token is never created or changed in L1 alone while L2 is down.
+ */
 export class NamespaceVersions {
   private readonly cache = new Map<string, Cached>();
   private readonly inflight = new Map<string, Promise<string>>();
@@ -85,7 +90,7 @@ export class NamespaceVersions {
 
   async bump(target: Target, namespace: string): Promise<void> {
     const token = newVersionToken();
-    await target.store.set(versionKey(this.prefix, namespace), token, VERSION_KEY_TTL);
+    await writeVersion(target.store, versionKey(this.prefix, namespace), token);
     const k = `${target.name}\u0000${namespace}`;
     this.bumps.set(k, (this.bumps.get(k) ?? 0) + 1);
     this.inflight.delete(k);
@@ -94,11 +99,21 @@ export class NamespaceVersions {
 
   private async read(target: Target, namespace: string): Promise<string> {
     const key = versionKey(this.prefix, namespace);
-    const existing = await target.store.get(key);
+    const existing = await readVersion(target.store, key);
     if (existing !== undefined && existing !== '') return existing;
     const created = newVersionToken();
-    await target.store.set(key, created, VERSION_KEY_TTL);
-    const stored = await target.store.get(key);
+    await writeVersion(target.store, key, created);
+    const stored = await readVersion(target.store, key);
     return stored === undefined || stored === '' ? created : stored;
   }
+}
+
+function readVersion(store: CacheStore, key: string): Promise<string | undefined> {
+  return store.getStrict === undefined ? store.get(key) : store.getStrict(key);
+}
+
+function writeVersion(store: CacheStore, key: string, token: string): Promise<void> {
+  return store.setStrict === undefined
+    ? store.set(key, token, VERSION_KEY_TTL)
+    : store.setStrict(key, token, VERSION_KEY_TTL);
 }

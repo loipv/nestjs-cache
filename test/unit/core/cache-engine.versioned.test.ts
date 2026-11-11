@@ -1,8 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
+import { CacheEngine } from '../../../src/core/cache-engine.js';
+import { CacheEvents } from '../../../src/core/events.js';
+import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
+import type { CacheStore } from '../../../src/stores/cache-store.interface.js';
+import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
+
+/** A FakeStore with strict members whose durable tier can be switched off (`down`). */
+class StrictStore extends FakeStore {
+  down = false;
+  readonly getStrict = vi.fn((key: string): Promise<string | undefined> =>
+    this.down ? Promise.reject(new Error('l2 down')) : Promise.resolve(this.data.get(key)?.value),
+  );
+  readonly setStrict = vi.fn((key: string, value: string, ttlMs: number): Promise<void> => {
+    if (this.down) return Promise.reject(new Error('l2 down'));
+    this.data.set(key, { value, ttlMs });
+    return Promise.resolve();
+  });
+}
 
 const OPTIONS = { prefix: 'app', namespaces: { users: { versioned: true } } } as const;
 const REF = { namespace: 'users', key: '1' } as const;
@@ -226,6 +243,80 @@ describe('CacheEngine versioned namespaces', () => {
     for (const { payload } of emitted) {
       expect(payload).toMatchObject({ store: 'default', operation: 'version' });
     }
+  });
+
+  it('a failed version read falls back to the last known token', async () => {
+    /* R5: the namespace was read once, then cacheTtl passes and the strict version read
+       rejects. getOrSet serves the entry under the last known token without the loader and
+       reports exactly one version error; the token is not re-cached, so the next call reads
+       the store again. */
+    const store = new StrictStore();
+    const { engine, emitted } = setup({ ...OPTIONS, stores: { default: store } });
+    const loader = vi.fn(async () => 'v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    vi.advanceTimersByTime(1_000);
+    store.down = true;
+    const reads = store.getStrict.mock.calls.length;
+    emitted.length = 0;
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(store.getStrict).toHaveBeenCalledTimes(reads + 1);
+    const errors = emitted.filter((e) => e.event === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.payload).toMatchObject({ store: 'default', operation: 'version' });
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(store.getStrict).toHaveBeenCalledTimes(reads + 2);
+  });
+
+  it('a failed version read with no known token loads without caching', async () => {
+    /* The very first version read fails: the loader runs, nothing is written (neither the
+       version key nor the entry), and one version error is reported. */
+    const store = new StrictStore();
+    store.down = true;
+    const { engine, emitted } = setup({ ...OPTIONS, stores: { default: store } });
+    const loader = vi.fn(async () => 'v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(store.calls.filter((c) => c.op === 'set')).toEqual([]);
+    expect(store.setStrict).not.toHaveBeenCalled();
+    expect(emitted.map((e) => e.event)).toEqual(['error']);
+    expect(emitted[0]?.payload).toMatchObject({ store: 'default', operation: 'version' });
+  });
+
+  it('a delete whose fresh version read fails deletes nothing, even with a known token', async () => {
+    /* R3 stays: a delete never uses the last known token, since a wrong token would miss the
+       live entry. One version error, no store delete, no delete event. */
+    const store = new StrictStore();
+    const { engine, emitted } = setup({ ...OPTIONS, stores: { default: store } });
+    await engine.set(REF, 'x');
+    store.down = true;
+    emitted.length = 0;
+    await engine.delete({ namespace: 'users' }, ['1']);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    expect(dataKeys(store)).toHaveLength(1);
+    expect(emitted.map((e) => e.event)).toEqual(['error']);
+    expect(emitted[0]?.payload).toMatchObject({ store: 'default', operation: 'version' });
+  });
+
+  it('a tiered store whose L2 is down before the first version read loads every time and writes nothing', async () => {
+    /* Review Focus 5: L2 rejects everything from the start. The strict version read rejects
+       instead of creating a token in L1 only, so each getOrSet runs the loader, and L1 holds
+       neither a version key nor an entry of the namespace. */
+    const l1 = new FakeStore();
+    const down = (): Promise<never> => Promise.reject(new Error('l2 down'));
+    const l2: CacheStore = { get: down, set: down, delete: down, clear: down };
+    const tiered = tieredStore({ l1, l2 });
+    const engine = new CacheEngine(
+      resolveOptions({ ...OPTIONS, stores: { default: tiered } }),
+      new CacheEvents(),
+    );
+    const loader = vi.fn(async () => 'v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(
+      [...l1.data.keys()].filter((key) => key.includes('__version__') || key.includes('users')),
+    ).toEqual([]);
   });
 
   it('a failing bump reports a version error and no clear event', async () => {

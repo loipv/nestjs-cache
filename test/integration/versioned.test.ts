@@ -20,6 +20,7 @@ function pause(ms: number): Promise<void> {
 async function startApp(
   store: CacheStore,
   versioning?: { cacheTtl: number },
+  logging?: { level: 'off' },
 ): Promise<{ ref: TestingModule; cache: CacheService }> {
   const ref = await Test.createTestingModule({
     imports: [
@@ -27,12 +28,24 @@ async function startApp(
         prefix: 'app',
         namespaces: NAMESPACES,
         ...(versioning === undefined ? {} : { versioning }),
+        ...(logging === undefined ? {} : { logging }),
         stores: { default: store },
       }),
     ],
   }).compile();
   await ref.init();
   return { ref, cache: ref.get(CacheService) };
+}
+
+async function scanKeys(client: Redis, pattern: string): Promise<string[]> {
+  const found: string[] = [];
+  let cursor = '0';
+  do {
+    const [next, batch] = await client.scan(cursor, 'MATCH', pattern);
+    cursor = next;
+    found.push(...batch);
+  } while (cursor !== '0');
+  return found;
 }
 
 /** Waits until `to` drops an L1 entry when `from` deletes it: pub/sub starts in the background. */
@@ -140,6 +153,37 @@ describe('versioned namespaces (integration)', () => {
       expect(await a.get('1', { namespace: 'users' })).toBeUndefined();
       await pause(250);
       expect(await b.get('1', { namespace: 'users' })).toBeUndefined();
+    });
+  });
+
+  describe('with a tiered store over a paused Redis', () => {
+    it('a tiered versioned namespace keeps its token while Redis is paused', async () => {
+      /* R5: the namespace was read once (token T). Once cacheTtl and l1Ttl have passed, Redis
+         is paused, so every command times out. getOrSet still resolves with the loader value,
+         and no new token is written: after the pause the version key is still T and it is the
+         only version key. */
+      const client = new Redis(redis.url, { commandTimeout: 100 });
+      client.on('error', () => undefined);
+      const store = tieredStore({ l1: memoryStore(), l2: redisStore({ client }), l1Ttl: 200 });
+      const app = await startApp(store, { cacheTtl: 50 }, { level: 'off' });
+      try {
+        const options = { namespace: 'users' };
+        expect(await app.cache.getOrSet('1', async () => 'warm', options)).toBe('warm');
+        const token = await admin.get('app:__version__:users');
+        expect(token).toMatch(/^[0-9a-z]{8}$/);
+        await pause(250);
+        await admin.call('CLIENT', 'PAUSE', '1500', 'ALL');
+        const resumesAt = Date.now() + 1_500;
+        await expect(app.cache.getOrSet('1', async () => 'during', options)).resolves.toBe(
+          'during',
+        );
+        await pause(Math.max(0, resumesAt - Date.now()) + 100);
+        expect(await admin.get('app:__version__:users')).toBe(token);
+        expect(await scanKeys(admin, '*__version__*')).toEqual(['app:__version__:users']);
+      } finally {
+        await app.ref.close();
+        await client.quit();
+      }
     });
   });
 });

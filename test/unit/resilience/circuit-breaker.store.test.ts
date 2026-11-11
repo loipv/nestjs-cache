@@ -851,6 +851,39 @@ describe('circuitBreaker batch', () => {
     expect(await b.getMany?.(['a', 'z'])).toEqual(['1', undefined]);
   });
 
+  /* An inner store with getStrict/setStrict: the breaker forwards both through the guard, so a
+     failure counts and an open circuit rejects both with CircuitOpenError without calling in. */
+  it('forwards getStrict and setStrict through the guard when the inner store has them', async () => {
+    const getStrict = vi.fn((key: string): Promise<string | undefined> =>
+      Promise.resolve(`${key}!`),
+    );
+    const setStrict = vi.fn<(key: string, value: string, ttlMs: number) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
+    const inner = Object.assign(new FakeStore(), { getStrict, setStrict });
+    const b = circuitBreaker(inner, { failureThreshold: 1 });
+    await expect(b.getStrict?.('k')).resolves.toBe('k!');
+    await expect(b.setStrict?.('k', 'v', 30)).resolves.toBeUndefined();
+    expect(setStrict).toHaveBeenCalledWith('k', 'v', 30);
+
+    getStrict.mockRejectedValueOnce(new Error('strict failed'));
+    await expect(b.getStrict?.('k')).rejects.toThrow('strict failed');
+    expect(b.state).toBe('open');
+    await expect(b.getStrict?.('k')).rejects.toBeInstanceOf(CircuitOpenError);
+    await expect(b.setStrict?.('k', 'v', 30)).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(getStrict).toHaveBeenCalledTimes(2);
+    expect(setStrict).toHaveBeenCalledTimes(1);
+  });
+
+  /* A plain inner store: the breaker has neither member, so `in` checks stay truthful. */
+  it('has no getStrict or setStrict when the inner store lacks them', () => {
+    const breaker = circuitBreaker(new FakeStore());
+    expect('getStrict' in breaker).toBe(false);
+    expect('setStrict' in breaker).toBe(false);
+    expect(breaker.getStrict).toBeUndefined();
+    expect(breaker.setStrict).toBeUndefined();
+  });
+
   /* An open circuit rejects both batch calls without reaching the store; one batch is one failure. */
   it('an open circuit rejects getMany with CircuitOpenError', async () => {
     const inner = memoryStore();

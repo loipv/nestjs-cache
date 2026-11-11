@@ -98,8 +98,9 @@ export class EngineIO {
   /**
    * The keys of `ref` in `target`. A namespace that is not versioned resolves synchronously, so
    * callers await only a promise and the 0.3 path gains no await. A versioned namespace reads
-   * its token; on a failure it reports one `version` error and resolves `undefined`, and the
-   * caller then skips the cache.
+   * its token; on a failure it reports one `version` error and falls back to the last token this
+   * process knew for the namespace, or resolves `undefined` when there is none, and the caller
+   * then skips the cache.
    */
   resolveKey(
     target: Target,
@@ -116,7 +117,8 @@ export class EngineIO {
 
   /**
    * The keys of every `keys` entry in one namespace, in input order. As `resolveKey`, but one
-   * version read serves the whole batch: `undefined` after one reported `version` error.
+   * version read serves the whole batch. A failed read reports one `version` error and falls back
+   * as `resolveKey` does, or resolves `undefined`.
    */
   resolveKeys(
     target: Target,
@@ -136,13 +138,18 @@ export class EngineIO {
     return { full: fullKey(prefix, namespace, key), lock: lockKey(prefix, namespace, key) };
   }
 
-  /** `<ns>@<v>`, or `undefined` after reporting a `version` error. Never rejects. */
+  /**
+   * `<ns>@<v>`. When the version read fails it reports one `version` error, then uses the last
+   * token this process knew (even past `cacheTtl`) for this call only, so the next call reads the
+   * store again; `undefined` when no token was ever known. Never rejects. Deletes do not use it.
+   */
   private async versionedNamespace(target: Target, namespace: string): Promise<string | undefined> {
     try {
       return `${namespace}@${await this.versions.current(target, namespace)}`;
     } catch (error) {
       this.reportError(target.name, 'version', error);
-      return undefined;
+      const known = this.versions.cached(target, namespace);
+      return known === undefined ? undefined : `${namespace}@${known}`;
     }
   }
 

@@ -23,8 +23,9 @@ const DEFAULT_L1_TTL = 10_000;
 
 /**
  * Two-tier store: a fast local L1 in front of a shared L2. Every write, delete and clear is
- * published on the invalidation bus so other instances drop their L1 copies. No method rejects;
- * failures are reported through the sink given to `bind`.
+ * published on the invalidation bus so other instances drop their L1 copies. Failures are reported
+ * through the sink given to `bind`; no method rejects except `getStrict` and `setStrict`, which
+ * reject when L2 cannot be read or written.
  */
 export class TieredStore implements CacheStore {
   /** The L2's lock, when it has one. */
@@ -105,15 +106,19 @@ export class TieredStore implements CacheStore {
   }
 
   async get(key: string): Promise<string | undefined> {
-    let local: string | undefined;
-    try {
-      local = await this.l1.get(key);
-    } catch (error) {
-      this.report('get', error);
-    }
+    const local = await this.readL1(key);
     if (local !== undefined) return local;
-
     return this.readL2(key, () => this.l2.get(key), this.l1Ttl);
+  }
+
+  /**
+   * Like `get`, but an L2 failure (including `CircuitOpenError`) is reported as `get` and then
+   * rejects with that error instead of counting as a miss. An L1 failure still counts as a miss.
+   */
+  async getStrict(key: string): Promise<string | undefined> {
+    const local = await this.readL1(key);
+    if (local !== undefined) return local;
+    return this.readL2(key, () => this.l2.get(key), this.l1Ttl, true);
   }
 
   /**
@@ -177,12 +182,7 @@ export class TieredStore implements CacheStore {
    * one, otherwise `l2.get`). L1 is read but never extended; a backfill lives `min(ttlMs, l1Ttl)`.
    */
   async getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
-    let local: string | undefined;
-    try {
-      local = await this.l1.get(key);
-    } catch (error) {
-      this.report('get', error);
-    }
+    const local = await this.readL1(key);
     if (local !== undefined) return local;
 
     const l2 = this.l2;
@@ -193,11 +193,25 @@ export class TieredStore implements CacheStore {
     );
   }
 
-  /** L2 read after an L1 miss, backfilling L1 unless the key was invalidated meanwhile. */
+  /** L1 read; a failure is reported as `get` and counts as a miss. */
+  private async readL1(key: string): Promise<string | undefined> {
+    try {
+      return await this.l1.get(key);
+    } catch (error) {
+      this.report('get', error);
+      return undefined;
+    }
+  }
+
+  /**
+   * L2 read after an L1 miss, backfilling L1 unless the key was invalidated meanwhile. A failure
+   * is reported as `get` and counts as a miss, or, when `strict`, rejects with the same error.
+   */
   private async readL2(
     key: string,
     read: () => Promise<string | undefined>,
     backfillTtl: number,
+    strict = false,
   ): Promise<string | undefined> {
     const token = Symbol(key);
     this.pending.set(key, token);
@@ -206,10 +220,13 @@ export class TieredStore implements CacheStore {
       remote = await read();
     } catch (error) {
       this.report('get', error);
+      if (strict) {
+        this.release(key, token);
+        throw error;
+      }
     }
     // Still ours: no invalidation of this key (and no newer read of it) happened meanwhile.
-    const current = this.pending.get(key) === token;
-    if (current) this.pending.delete(key);
+    const current = this.release(key, token);
     if (remote !== undefined && current) {
       const value = remote;
       await this.attempt('set', () => this.l1.set(key, value, backfillTtl));
@@ -219,10 +236,34 @@ export class TieredStore implements CacheStore {
 
   async set(key: string, value: string, ttlMs: number): Promise<void> {
     const refused = await this.attempt('set', () => this.l2.set(key, value, ttlMs));
+    await this.afterL2Set(key, value, ttlMs, !(refused instanceof CircuitOpenError));
+  }
+
+  /**
+   * Like `set`, but an L2 failure (including `CircuitOpenError`) is reported as `set` and then
+   * rejects with that error; L1 is not written and nothing is published. Once L2 stored the
+   * value, it continues as `set` does.
+   */
+  async setStrict(key: string, value: string, ttlMs: number): Promise<void> {
+    try {
+      await this.l2.set(key, value, ttlMs);
+    } catch (error) {
+      this.report('set', error);
+      throw error;
+    }
+    await this.afterL2Set(key, value, ttlMs, true);
+  }
+
+  /** The rest of a set once L2 was tried: L1 with `min(ttlMs, l1Ttl)`, then the publish. */
+  private async afterL2Set(
+    key: string,
+    value: string,
+    ttlMs: number,
+    publish: boolean,
+  ): Promise<void> {
     this.pending.delete(key);
     await this.attempt('set', () => this.l1.set(key, value, Math.min(ttlMs, this.l1Ttl)));
-    if (refused instanceof CircuitOpenError) return;
-    await this.publish({ origin: this.origin, keys: [key] });
+    if (publish) await this.publish({ origin: this.origin, keys: [key] });
   }
 
   async delete(keys: readonly string[]): Promise<void> {
@@ -274,6 +315,13 @@ export class TieredStore implements CacheStore {
   private readonly onBusError = (error: unknown): void => {
     this.report('subscribe', error);
   };
+
+  /** Drops the pending read token of `key` if it is still `token`; true when it was. */
+  private release(key: string, token: symbol): boolean {
+    const current = this.pending.get(key) === token;
+    if (current) this.pending.delete(key);
+    return current;
+  }
 
   private forgetKeys(keys: readonly string[]): void {
     for (const key of keys) this.pending.delete(key);
