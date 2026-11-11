@@ -9,6 +9,7 @@
 
 ```ts
 import type {
+  CacheService,
   GetOrSetManyOptions,
   GetOrSetOptions,
   KeyOptions,
@@ -17,7 +18,8 @@ import type {
   WriteOptions,
 } from '@loipv/nestjs-cache';
 
-declare class CacheService {
+/** The public methods of `CacheService`. */
+interface CacheServiceMethods {
   get<T>(key: string, options?: KeyOptions & StrategyOptions): Promise<T | undefined>;
   set<T>(key: string, value: T, options?: WriteOptions<T>): Promise<void>;
   delete(key: string | readonly string[], options?: KeyOptions): Promise<void>;
@@ -38,6 +40,10 @@ declare class CacheService {
     options?: GetOrSetManyOptions<T>,
   ): Promise<(T | undefined)[]>;
 }
+
+// docs:check fails here when this summary and the real class differ (a method or a signature).
+type Same<A, B> = (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false;
+export const inSync: Same<CacheServiceMethods, Pick<CacheService, keyof CacheService>> = true;
 ```
 
 ```ts

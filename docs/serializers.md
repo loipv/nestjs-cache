@@ -16,12 +16,29 @@ uses `JSON.stringify` and `JSON.parse` and checks the envelope shape, so values 
 To keep other types, pass your own `Serializer` as the module `serializer`:
 
 ```ts
-import type { CacheEnvelope } from '@loipv/nestjs-cache';
+import {
+  CacheModule,
+  jsonSerializer,
+  type CacheEnvelope,
+  type Serializer,
+} from '@loipv/nestjs-cache';
 
-interface Serializer {
-  serialize(envelope: CacheEnvelope): string;
-  deserialize(raw: string): CacheEnvelope;
-}
+// Your own code: turns the ISO date strings in a value back into Date objects.
+declare function reviveDates(value: unknown): unknown;
+
+// A Serializer has these two methods. This one reads with jsonSerializer, which throws on input it
+// does not recognise, then revives the dates in the value.
+const dateSerializer = {
+  serialize(envelope: CacheEnvelope): string {
+    return jsonSerializer.serialize(envelope);
+  },
+  deserialize(raw: string): CacheEnvelope {
+    const envelope = jsonSerializer.deserialize(raw);
+    return { ...envelope, value: reviveDates(envelope.value) };
+  },
+} satisfies Serializer;
+
+CacheModule.forRoot({ serializer: dateSerializer });
 ```
 
 - `deserialize` must throw on input it does not recognise. The engine reports that as an `error` event with

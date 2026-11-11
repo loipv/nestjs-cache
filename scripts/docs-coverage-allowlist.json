@@ -13,7 +13,7 @@
   },
   {
     "fragment": "```ts class CacheService {",
-    "reason": "Moved to docs/cache-service.md. The signature summary became `declare class CacheService` with `import type` of its option types, so docs:check type-checks it."
+    "reason": "Moved to docs/cache-service.md. The signature summary became `interface CacheServiceMethods` with `import type` of its option types, plus a type-level check that it is identical to the public methods of the real `CacheService`, so docs:check catches drift."
   },
   {
     "fragment": "```ts CacheModule.forRoot({ stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) }, defaults: { lock:",
