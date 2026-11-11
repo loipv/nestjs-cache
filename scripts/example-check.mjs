@@ -26,7 +26,11 @@ let failed = null;
 
 try {
   run(npm, ['run', 'build'], root);
-  const packed = run(npm, ['pack', '--pack-destination', packDir, '--silent'], root);
+  const packed = run(
+    npm,
+    ['pack', '--ignore-scripts', '--pack-destination', packDir, '--silent'],
+    root,
+  );
   const tarball = join(packDir, packed.trim().split('\n').pop());
 
   // The example's package.json does not list the library: it is installed from the tarball.
