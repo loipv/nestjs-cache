@@ -139,7 +139,9 @@ export class CacheService {
    * the call rejects with the first failure.
    */
   invalidateTags(tags: readonly string[], options: { store?: string } = {}): Promise<void> {
-    return this.engine.invalidateTags(tags, options.store);
+    // A JavaScript caller may pass null: it means the default store, never a synchronous throw.
+    const { store } = (options as { store?: string } | null) ?? {};
+    return this.engine.invalidateTags(tags, store);
   }
 
   /**

@@ -436,6 +436,20 @@ describe('CacheService.invalidateTags', () => {
     expect([...store.data.keys()]).toEqual(['__tag__:x']);
   });
 
+  it('invalidateTags tolerates null or undefined options and never throws synchronously', async () => {
+    /* 0.7-T5: options null or undefined mean the default store; invalid arguments, even with
+       null options, are a rejected promise, never a synchronous throw. */
+    const { engine, store } = makeEngine();
+    const service = new CacheService(engine);
+    await expect(service.invalidateTags(['x'], null as never)).resolves.toBeUndefined();
+    await expect(service.invalidateTags(['y'], undefined)).resolves.toBeUndefined();
+    expect([...store.data.keys()].sort()).toEqual(['__tag__:x', '__tag__:y']);
+    await expect(service.invalidateTags([], null as never)).rejects.toThrow(CacheConfigError);
+    await expect(service.invalidateTags(null as never, null as never)).rejects.toThrow(
+      CacheConfigError,
+    );
+  });
+
   it('rejects with the first token write error', async () => {
     /* Spec 3.4: a failed token write rejects the service call (unlike other cache failures). */
     const { engine, store } = makeEngine();
