@@ -327,7 +327,10 @@ function createNodeRedisSentinelSubscriber(
   sentinel: NodeRedisSentinelLike,
 ): RedisSubscriberAdapter {
   let closed = false;
-  /** Every channel a SUBSCRIBE was sent for, so close removes the listener from each. */
+  /**
+   * Every channel a SUBSCRIBE was sent for and has not rejected, so close removes the listener
+   * from each.
+   */
   const channels = new Set<string>();
 
   // One listener for every channel; the tracker swallows a throwing handler. It subscribes in
@@ -339,6 +342,8 @@ function createNodeRedisSentinelSubscriber(
   const onError = (error: unknown): void => {
     tracker.error(error);
   };
+  // node-redis emits MASTER_CHANGE before its pub/sub proxy has finished moving to the new
+  // master, so an L1 backfill in that gap can still miss an invalidation (bounded by l1Ttl).
   const onTopologyChange = (event: unknown): void => {
     if ((event as { type?: unknown } | undefined)?.type === 'MASTER_CHANGE') tracker.ready();
   };
@@ -347,14 +352,22 @@ function createNodeRedisSentinelSubscriber(
     subscribe: (channel) => {
       if (closed) return Promise.reject(new Error(SUBSCRIBER_CLOSED));
       channels.add(channel);
-      return sentinel.subscribe(channel, deliver).then((reply) => {
-        if (!closed) return reply;
-        // T5-B: it completed after close, whose UNSUBSCRIBE came too early: remove it now.
-        void Promise.resolve()
-          .then(() => sentinel.unsubscribe(channel, deliver))
-          .catch(() => undefined);
-        throw new Error(SUBSCRIBER_CLOSED);
-      });
+      return sentinel.subscribe(channel, deliver).then(
+        (reply) => {
+          if (!closed) return reply;
+          // T5-B: it completed after close, whose UNSUBSCRIBE came too early: remove it now.
+          void Promise.resolve()
+            .then(() => sentinel.unsubscribe(channel, deliver))
+            .catch(() => undefined);
+          throw new Error(SUBSCRIBER_CLOSED);
+        },
+        (error: unknown) => {
+          // Not subscribed, so close must not UNSUBSCRIBE it: on a sentinel that is shutting
+          // down, that could make node-redis open a new pub/sub client. A retry re-adds it.
+          channels.delete(channel);
+          throw error;
+        },
+      );
     },
     close: () => {
       closed = true;

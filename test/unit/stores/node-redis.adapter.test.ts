@@ -549,6 +549,19 @@ describe('nodeRedisAdapter sentinel mode', () => {
     expect(failing.unsubscribe).toHaveBeenCalledTimes(2);
   });
 
+  /* F-3: a SUBSCRIBE that rejects leaves no channel behind, so close sends no UNSUBSCRIBE for it
+     (on a closed-down sentinel that UNSUBSCRIBE could make node-redis open a new pub/sub
+     client). A channel that did subscribe is still unsubscribed. */
+  it('sentinel: a rejected SUBSCRIBE leaves no channel for close to unsubscribe', async () => {
+    const sentinel = new FakeNodeRedisSentinel();
+    const subscriber = nodeRedisAdapter(sentinel.asSentinel()).createSubscriber();
+    sentinel.subscribe.mockRejectedValueOnce(new Error('Connection timeout'));
+    await expect(subscriber.subscribe('failed', vi.fn())).rejects.toThrow('Connection timeout');
+    await subscriber.subscribe('ok', vi.fn());
+    await subscriber.close();
+    expect(sentinel.unsubscribe.mock.calls.map(([channel]) => channel)).toEqual(['ok']);
+  });
+
   /* The sentinel never emits 'ready'. A MASTER_CHANGE topology event means the pub/sub proxy
      moved to a new master and messages may have been missed: onReconnect fires, and a SUBSCRIBE
      that had rejected is sent again. Other topology events fire nothing. */
