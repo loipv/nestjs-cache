@@ -3,7 +3,7 @@
 Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching.
 
 - `@Cacheable`, `@CachePut` and `@CacheEvict` decorators, plus a `CacheService` for direct calls.
-- Named stores: in-memory, Redis (ioredis) and a two-tier L1/L2 store synced over Pub/Sub.
+- Named stores: in-memory, Redis (ioredis or node-redis, standalone or Cluster) and a two-tier L1/L2 store synced over Pub/Sub.
 - Concurrent misses on the same key are coalesced into one load (per process), or across instances with the optional distributed lock.
 - Expiry strategies: `fixed`, `swr` (stale-while-revalidate) and `sliding`.
 - Per-store circuit breaker for Redis outages.
@@ -17,7 +17,7 @@ npm install @loipv/nestjs-cache
 ```
 
 Peer dependencies: `@nestjs/common`, `@nestjs/core` (`^11 || ^12`) and `reflect-metadata` (`^0.2`).
-`ioredis` (`^5 || ^6`) is an optional peer and is only needed for the Redis store.
+`ioredis` (`^5 || ^6`) and `redis` (`^5`, node-redis) are optional peers; install the one you use for the Redis store.
 
 ## Quick start
 
@@ -101,6 +101,71 @@ Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (th
 Writes go to L2, then L1 with `min(ttl, l1Ttl)`, then an invalidation message is published.
 `l1Ttl` defaults to `10_000`. A received invalidation message longer than 1 MiB (1_048_576 characters) is not parsed:
 it clears the whole L1.
+
+## Redis Cluster
+
+Pass an ioredis `Cluster` to `redisStore` as you would a single client:
+
+```ts
+import { Cluster } from 'ioredis';
+import { CacheModule, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache';
+
+const cluster = new Cluster([{ host: 'redis-1', port: 6379 }]);
+
+CacheModule.forRoot({
+  prefix: 'myapp',
+  stores: {
+    default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: cluster }) }),
+  },
+});
+```
+
+- **Versions.** Cluster mode needs ioredis 5.6.0 or later (sharded Pub/Sub) and Redis 7 or later. The adapter creates
+  its subscriber with `duplicate([], { shardedSubscribers: true })`, so you do not set `shardedSubscribers` yourself.
+  On ioredis below 5.6.0, `SSUBSCRIBE` fails with a `MOVED` error, reported as an `error` event with
+  `operation: 'subscribe'`. The peer range stays `^5.0.0 || ^6.0.0`.
+- **Batches.** `getMany`/`setMany` (`MGET`) and `delete` (`UNLINK`) split their keys per hash slot, so keys in
+  different slots work, at one command per slot.
+- **`clear`.** It scans every master and deletes the matches. It rejects (a store error and an `error` event) when the
+  cluster client does not know a master yet, for example a `lazyConnect` client before its first command. It can miss
+  keys that move between nodes during resharding. Versioned namespaces are not affected: their `clear` only writes a
+  new token.
+- **No automatic hash tags.** Keys are not wrapped in `{...}`, so related keys can live on different nodes.
+- Calling `scan` directly on a cluster-mode adapter rejects with `CacheConfigError` pointing to `scanIterator`.
+- **Sync.** The invalidation bus uses sharded Pub/Sub (`SPUBLISH`/`SSUBSCRIBE`).
+
+## node-redis
+
+`nodeRedisAdapter` wraps a [`redis`](https://github.com/redis/node-redis) v5 client or cluster. `redis` (`^5.0.0`) is
+an optional peer dependency. Pass a client that is already `connect()`ed: the adapter only connects the subscriber
+connection it duplicates itself. Cluster mode is detected automatically (the client has `masters`).
+
+```ts
+import { createClient, createCluster } from 'redis';
+import { nodeRedisAdapter, redisStore } from '@loipv/nestjs-cache';
+
+// standalone
+const client = createClient({ url: process.env.REDIS_URL });
+await client.connect();
+const standalone = redisStore({ client: nodeRedisAdapter(client) });
+
+// cluster
+const cluster = createCluster({ rootNodes: [{ url: 'redis://redis-1:6379' }] });
+await cluster.connect();
+const clustered = redisStore({ client: nodeRedisAdapter(cluster) });
+```
+
+The same cluster rules apply (Redis 7+, per-slot batches, `clear` scans every master). The types are
+`NodeRedisLike` and `NodeRedisClusterLike`.
+
+- A standalone node-redis client signals reconnects, so L1 is cleared after one, as with ioredis.
+- A node-redis cluster gives no reliable post-reconnect signal, so after a reconnect the tiered store is not told to
+  clear L1: L1 can serve stale entries for up to `l1Ttl`. Node errors (`'node-error'`, `'error'`) are reported as
+  `error` events with `operation: 'subscribe'`.
+- If the client's reconnect strategy gives up (ioredis `retryStrategy` returning `null`, node-redis
+  `reconnectStrategy` returning `false` or an `Error`), the invalidation subscription is not retried and L1 sync stays
+  off for that instance until restart; the error is reported once. With the default strategies the subscriber keeps
+  retrying.
 
 ## Decorators
 
@@ -253,217 +318,16 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - Names must match exactly. A sub-namespace such as `users:admin` is not versioned by `users: { versioned: true }`;
   list it on its own.
 - Namespaces starting with `__` are reserved and rejected (see [Error behaviour](#error-behaviour)).
-- If the token cannot be read or written, an `error` event with `operation: 'version'` is emitted. A `get` is then a
-  miss without a `miss` event, `getOrSet` runs the loader without writing the result, and `set` and `delete` do
-  nothing.
-- A `tieredStore` never rejects. If you clear while L2 is down, the new token reaches L1 only, and once it expires
-  that instance can return to the old token and the data written before the clear. This is the same class of problem as
-  clearing a two-tier cache while L2 is down in 0.3.
-- The same applies to reads. While L2 is unreachable, a `tieredStore` cannot tell a lost version key from a failed
-  read. Once the L1 copy of the version key expires (after `l1Ttl`), each instance creates its own token, the namespace
-  reads cold (every request runs the loader), and writes made during the outage are orphaned when L2 returns. No stale
-  data is served. A fix is planned for 0.5.
-
-## Batch operations
-
-`getMany`, `setMany` and `getOrSetMany` read and write many keys of one namespace in a call.
-
-```ts
-const [a, b] = await cache.getMany<User>(['user:1', 'user:2'], { namespace: 'users' });
-
-await cache.setMany(
-  [
-    ['user:1', userOne],
-    ['user:2', userTwo],
-  ],
-  { namespace: 'users', ttl: 30_000 },
-);
-
-const users = await cache.getOrSetMany<User>(
-  ['user:1', 'user:2', 'user:3'],
-  async (missing) => {
-    const rows = await repo.findByKeys(missing); // only the keys not in the cache
-    return new Map(rows.map((row) => [row.key, row.user]));
-  },
-  { namespace: 'users', ttl: 30_000, cacheNull: true },
-);
-```
-
-- Results are in input order. A key read twice in one call is read and loaded once. An empty key gives `undefined`
-  and one `error` event with `operation: 'key'`. `[]` makes no store call.
-- The loader receives only the misses and returns a `Map`. A requested key missing from the `Map` is treated as a
-  `null` result and follows `cacheNull`. Keys in the `Map` that were not requested are ignored: not cached, not
-  returned. An error from the loader, or a return value that is not a `Map`, reaches the caller.
-- Loading is single-flight per key and shared with `getOrSet` in the same process: concurrent `getOrSetMany(['a', 'b'])`
-  and `getOrSetMany(['b', 'c'])` call their loaders with `['a', 'b']` and `['c']`.
-- `swr` serves stale values and refreshes them with one loader call for the stale keys. `sliding` makes `getMany`
-  call `getAndTouch` for each key (per key, not one batch call).
-- `getOrSetMany` with `lock: true` throws `CacheConfigError`, and `defaults.lock.enabled` is ignored for batches.
-  Coalescing is per process.
-- The `load` event fires once per loader call and carries `keys` (all the keys passed to the loader); `key` is the
-  first of them.
-- `CacheStore` has the optional `getMany` and `setMany`. `redisStore` uses one `MGET` when the client has `mget`;
-  other stores are called key by key.
-- `setMany` with a duplicated key keeps the last value.
-- `setMany` entries must be `[key, value]` pairs. An element that is not a pair throws a `TypeError` from
-  destructuring.
-- With a versioned namespace the batch methods read the token once for the call.
-
-## Null caching and TTL jitter
-
-Both are off by default.
-
-- **Null caching** (`cacheNull: true`) stores `null`/`undefined` results for `nullTtl` (default `30_000` ms), which protects the backend from repeated lookups of missing data. Set it globally in `defaults` or per method. `null` and `undefined` are kept distinct.
-- **TTL jitter** (`defaults.jitter`, a number in `[0, 1)`) spreads expirations: the effective TTL is `ttl x (1 + r)` with `r` random in `[-jitter, +jitter]`, which avoids many keys expiring at the same moment.
-
-## Expiry strategies
-
-`strategy` is available on `@Cacheable`, `@CachePut`, `CacheService.getOrSet` and `CacheService.set`, and is chosen per
-call. `CacheService.get` accepts it too, only to pick the read command.
-
-| Strategy    | Options                       | What it does                                                                                                                                     |
-| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `'fixed'`   | none (default)                | The entry lives `ttl` (with jitter if configured) and is then a miss.                                                                            |
-| `'swr'`     | `staleTtl` (required)         | Fresh for `ttl`, then stale for another `staleTtl`. A stale read returns the old value at once and refreshes it in the background.               |
-| `'sliding'` | `maxTtl` (optional, `>= ttl`) | Each read resets the expiry to `ttl` (no jitter). With `maxTtl`, the entry still expires `maxTtl` after it was stored, however often it is read. |
-
-```ts
-@Injectable()
-export class ProductService {
-  @Cacheable({
-    namespace: 'products',
-    key: 'p:{0}',
-    ttl: 60_000,
-    strategy: 'swr',
-    staleTtl: 5 * 60_000,
-  })
-  findById(id: string): Promise<Product | null> {
-    /* ... */
-  }
-
-  @Cacheable({
-    namespace: 'sessions',
-    key: 's:{0}',
-    ttl: 30 * 60_000,
-    strategy: 'sliding',
-    maxTtl: 8 * 3_600_000,
-  })
-  loadSession(id: string): Promise<Session | null> {
-    /* ... */
-  }
-}
-
-const price = await cache.getOrSet('price:1', () => fetchPrice('1'), {
-  namespace: 'prices',
-  ttl: 10_000,
-  strategy: 'swr',
-  staleTtl: 60_000,
-});
-```
-
-**Stale-while-revalidate.** A `hit` event with `stale: true` is emitted for a stale read. The background refresh is
-joined with concurrent misses on the same key (one load), and a refresh that fails emits `error` with
-`operation: 'refresh'` while the old value stays until it expires. Two warnings for decorated methods:
-
-- The refresh calls your method again in the background, with the same `this` and the same arguments, after the
-  original request has ended. The method must not depend on request context (request-scoped providers,
-  `AsyncLocalStorage`, a request object passed in the arguments).
-- The synchronous part of the method (everything before its first `await`) runs before the stale value is returned
-  to the caller, because the refresh is started first. Keep that part cheap.
-
-Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh until then, and then expired.
-`CacheService.get` returns a stale entry (with `hit.stale: true`) but never refreshes, as it has no loader.
-
-**Sliding and `CacheService.get`.** `CacheService.get(key, { strategy: 'sliding' })` resets the entry's window to
-`defaults.ttl`, not to the `ttl` the entry was written with, because the store needs the new TTL before the entry is
-read. Pass the same TTL through `defaults.ttl`, or read with `getOrSet`, which knows the call's `ttl`. Sliding uses the
-store's `getAndTouch`, which is atomic in the memory and Redis stores. A tiered store does not touch L2 on an L1 hit, so
-the window is refreshed on L1 misses only (about once per `l1Ttl` per instance), and the backfill is capped at
-`min(ttl, l1Ttl)`; its atomicity depends on L2, and an L2 without `getAndTouch` is read with a plain `get`, which does
-not extend it. A custom store without `getAndTouch` falls back to a `get` followed by a `set`, which is not atomic. `null` values stored with `cacheNull` always use `fixed` and `nullTtl`.
-
-Validation: `staleTtl` and `maxTtl` must be finite numbers greater than 0, `maxTtl` must be `>= ttl` (the call's `ttl`
-or `defaults.ttl`), and an unknown `strategy` name or `swr` without `staleTtl` is rejected with `CacheConfigError`.
-
-## Distributed lock
-
-Off by default. Without it, concurrent misses are coalesced per process only. With it, one instance loads while the
-others wait and then read the stored value, so a miss costs one load across the whole cluster.
-
-```ts
-CacheModule.forRoot({
-  stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) },
-  defaults: {
-    lock: { enabled: true, ttl: 10_000, waitTimeout: 3_000, retryDelay: 50 },
-  },
-});
-
-@Cacheable({ namespace: 'reports', key: 'r:{0}', lock: true }) // per method, overrides defaults.lock.enabled
-build(id: string): Promise<Report> { /* ... */ }
-
-await cache.getOrSet('report:1', () => build('1'), { namespace: 'reports', lock: true });
-```
-
-| Option                      | Default  | Meaning                                                             |
-| --------------------------- | -------- | ------------------------------------------------------------------- |
-| `defaults.lock.enabled`     | `false`  | Turn the lock on for every `@Cacheable` and `getOrSet`              |
-| `defaults.lock.ttl`         | `10_000` | How long the lock is held before it expires on its own (ms)         |
-| `defaults.lock.waitTimeout` | `3_000`  | How long a waiter polls for the value before loading it itself (ms) |
-| `defaults.lock.retryDelay`  | `50`     | Pause between polls (ms)                                            |
-
-`defaults.lock` is typed `CacheLockDefaults`. Any value other than an object or `undefined` throws `CacheConfigError`.
-
-- It needs a `redisStore`, or a `tieredStore` whose L2 is Redis (the lock is the L2's). The memory store has no lock.
-  With any other store the engine falls back to in-process coalescing, and a warning is logged once at startup. For `lock: true` on a method whose store has no lock, `CacheExplorer` logs the
-  warning once per class, method and store.
-- A request answered from the cache after waiting for the lock emits `miss` and then `hit` for the same request; do not double-count it in metrics.
-- Lock keys are `<prefix>:__lock__:<namespace>:<key>` (`__lock__:<namespace>:<key>` without a `prefix`; for a versioned namespace the namespace part is `<namespace>@<token>`). They live under your prefix, so a `clear` of a namespace never deletes them. Namespaces starting with `__` are reserved for this reason. A custom `LockProvider` receives this complete key.
-- **Rolling deploy from 0.3:** 0.3 used `lock:<fullKey>`. While 0.3 and 0.4 nodes run together they do not exclude each other, so a loader can run twice during the deploy.
-- The lock is **not auto-extended.** If a load runs longer than `lock.ttl`, the lock expires and another instance
-  may load the same key too (a duplicated load, never a wrong value). Set `lock.ttl` above your slowest load.
-- A waiter that finds the value returns it, and coalesced waiters in one process produce one `hit` per flight. If
-  `waitTimeout` passes, the waiter loads the value without the lock.
-- `lock` events report each acquire (`acquired`, `waitedMs`). Lock errors are reported as `error` events with
-  `operation: 'lock'` and the load proceeds without the lock.
-- `@CachePut` and `@CacheEvict` have no `lock` option.
-
-## Circuit breaker
-
-Wrap a store so that a slow or failing backend stops being called, instead of adding its timeout to every request.
-
-```ts
-import { circuitBreaker, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache';
-
-const store = tieredStore({
-  l1: memoryStore(),
-  l2: circuitBreaker(redisStore({ client: redis }), {
-    failureThreshold: 5, // default
-    openDuration: 10_000, // default, ms
-    timeout: 500, // default, ms
-  }),
-});
-```
-
-| State       | Behaviour                                                                                                                                               |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `closed`    | Commands go to the store. A failure or a `timeout` counts as one; a success resets the count. `failureThreshold` consecutive failures open the circuit. |
-| `open`      | Commands are rejected at once with `CircuitOpenError`. The first command after `openDuration` becomes a probe and moves the circuit to `half-open`.     |
-| `half-open` | Only the probe goes through; other commands are rejected. A successful probe closes the circuit, a failed one reopens it and restarts `openDuration`.   |
-
-- Defaults: `failureThreshold` 5 (an integer `>= 1`), `openDuration` 10_000, `timeout` 500. `timeout` and
-  `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
-  otherwise `circuitBreaker` throws `CacheConfigError`. `circuitBreaker(...)` returns a `CircuitBreakerStore`, its options are
-  typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
-- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `lock.acquire` and `lock.release`. `invalidation`, `bind`
-  and `close` are passed through. The breaker has `getAndTouch` and `lock` only if the wrapped store does.
-- `clear` is guarded by the breaker `timeout`. For big namespaces (Redis `SCAN`/`UNLINK` loops) use a larger `timeout`, otherwise `@CacheEvict({ allEntries: true })` can trip the breaker.
-- A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
-  state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
-- `CircuitOpenError` never reaches your code and never emits `error`: reads count as a miss, writes are skipped, and
-  loads run without the lock. Every state change emits a `breaker` event.
-- In a tiered store, an open L2 circuit means L1 keeps serving and L1 writes still happen, but invalidation messages
-  are not published. L1 entries on other instances can therefore stay stale for up to `l1Ttl` while the circuit is
-  open.
+- If the token cannot be read or written, an `error` event with `operation: 'version'` is emitted. On a plain store
+  (not tiered) a `get` is then a miss without a `miss` event, `getOrSet` runs the loader without writing the result,
+  and `set` and `delete` do nothing.
+- On a `tieredStore`, a failed version read falls back to the last token this process knew, with one `version` error
+  per failure; the next call reads the store again. With no known token the loader runs and nothing is cached. A failed
+  `clear` (L2 down) reports a `version` error and leaves the token unchanged, so it no longer moves the token in L1
+  only. With a plain Redis store the fallback means the data read fails too, so you see the `version` error plus a
+  `get` error.
+- Remaining risk: an instance that missed another instance's `clear` just before an outage keeps the old token during
+  the outage. The stale data comes from L1 only, so it lasts at most `l1Ttl`.
 
 ## Custom stores and invalidation buses
 
@@ -484,6 +348,10 @@ interface CacheStore {
   close?(): Promise<void>;
 }
 ```
+
+`getStrict` and `setStrict` are only needed by stores whose `get`/`set` degrade instead of rejecting, as a
+`tieredStore` does. They reject when the durable tier cannot be read or written, and the engine uses them for version
+tokens. Stores whose `get`/`set` already reject (memory, Redis) can leave them out.
 
 `getAndTouch` should be implemented by stores that can do it atomically: without it, `sliding` falls back to a `get`
 followed by a `set`, which is not atomic. `lock` is a `LockProvider` (`acquire(key, ttlMs)` returns a `LockHandle` or
@@ -507,6 +375,16 @@ the subscription is retried once the connection is ready. This automatic re-subs
 ioredis clients (through `ioredisAdapter`); custom adapters and buses must retry themselves. A bus may implement the optional `onError(handler)`;
 `tieredStore` reports those errors as `error` events with `operation: 'subscribe'` (the Redis bus reports
 errors of its subscriber connection this way).
+
+### Custom Redis adapters
+
+`redisStore({ client })` also accepts a `RedisClientAdapter` (see the TSDoc in `src/stores/redis-client.adapter.ts`).
+Two rules matter for Cluster:
+
+- `mget` and `unlink` receive keys that may belong to several hash slots. A Cluster adapter must split the command per
+  slot.
+- `scanIterator?(match, count)` is optional. When present, `clear` uses it instead of the `scan` cursor loop; it must
+  yield the matching keys of every node that holds data (each master of a cluster), in pages.
 
 ## Events
 
@@ -730,17 +608,17 @@ p95, lock wait p95 and breaker state.
 
 Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
-| Situation                                                    | Behaviour                                                                                                                                    |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                                                              |
-| Store write fails                                            | The result is still returned, `error` is emitted                                                                                             |
-| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                                                      |
-| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field                                       |
-| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped                                               |
-| Namespace version cannot be read or written                  | `error` with `operation: 'version'`; `get` is a miss without a `miss` event, `getOrSet` loads without writing, `set` and `delete` do nothing |
-| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                  |
-| The original method throws                                   | The error reaches the caller, nothing is stored                                                                                              |
-| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                                                             |
+| Situation                                                    | Behaviour                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                                                                                                                                                                    |
+| Store write fails                                            | The result is still returned, `error` is emitted                                                                                                                                                                                                   |
+| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                                                                                                                                                            |
+| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field                                                                                                                                             |
+| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped                                                                                                                                                     |
+| Namespace version cannot be read or written                  | `error` with `operation: 'version'`; `get` is a miss without a `miss` event, `getOrSet` loads without writing, `set` and `delete` do nothing; a tiered store uses the last known token instead (see [Versioned namespaces](#versioned-namespaces)) |
+| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                                                                                                                        |
+| The original method throws                                   | The error reaches the caller, nothing is stored                                                                                                                                                                                                    |
+| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                                                                                                                                                                   |
 
 `CacheConfigError` is thrown only in these cases:
 
@@ -783,7 +661,7 @@ event and does not reach the caller.
 - **Default keys use the class name.** Minifiers that rename classes change the default keys. `Map`/`Set` arguments are ignored by the default key, which makes different caches collide; use an explicit `key`.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
-- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is unreachable, a two-tier store cannot tell a lost version key from a failed read: after `l1Ttl` each instance creates its own token, the namespace reads cold and writes made during the outage are orphaned when L2 returns (no stale data is served; a fix is planned for 0.5). Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
+- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is down, a two-tier store falls back to the last known token (one `version` error per failed read); with no known token the loader runs and nothing is cached. A `clear` while L2 is down fails and leaves the token unchanged. An instance that missed another instance's `clear` just before the outage keeps the old token during it, so stale data is limited to L1 and lasts at most `l1Ttl`. Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
 - **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.
@@ -791,16 +669,17 @@ event and does not reach the caller.
 - **Background refresh is not awaited at shutdown.** A `swr` refresh in flight when the app closes may be cut off.
 - **Callback arity.** A `key` or `condition` callback that declares more parameters than the method is not reported by TypeScript.
 - **Failed eviction.** When `@CacheEvict` fails, stale data stays in the cache until its TTL expires. Watch the `error` event.
-- **Redis.** Redis 6.2 or later is required. Redis Cluster is not supported yet (single node and Sentinel are).
+- **Redis.** Redis 6.2 or later is required; Cluster mode needs Redis 7 or later. See [Redis Cluster](#redis-cluster) for its limits (`clear` during resharding, no automatic hash tags).
 
 ## Compatibility
 
-| Component    | Supported                    |
-| ------------ | ---------------------------- |
-| NestJS       | 11 (CommonJS) and 12 (ESM)   |
-| Node.js      | `>=22` (LTS 22, 24, 26)      |
-| ioredis      | `^5 \|\| ^6` (optional peer) |
-| Redis server | 6.2 or later                 |
+| Component          | Supported                                                  |
+| ------------------ | ---------------------------------------------------------- |
+| NestJS             | 11 (CommonJS) and 12 (ESM)                                 |
+| Node.js            | `>=22` (LTS 22, 24, 26)                                    |
+| ioredis            | `^5 \|\| ^6` (optional peer; Cluster needs 5.6.0 or later) |
+| redis (node-redis) | `^5` (optional peer)                                       |
+| Redis server       | 6.2 or later (Cluster: 7 or later)                         |
 
 The package ships both ESM and CommonJS builds. The injection tokens use `Symbol.for('@loipv/nestjs-cache:...')`,
 so they are shared when both builds are loaded in one process, and `instanceof CacheConfigError` matches errors
@@ -813,6 +692,8 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.2 - Resilience (done):** distributed lock (cross-instance stampede protection), per-store circuit breaker, `'swr'` (stale-while-revalidate) and `'sliding'` TTL strategies.
 - **0.3 - Observability (done):** Prometheus metrics (`CachePrometheusModule`) with a sample Grafana dashboard, configurable log level with debug logs, circuit breaker logs, and a `@nestjs/terminus` health indicator (`CacheHealthIndicator`). All from the main entry point.
 - **0.4 - Versioned namespaces and batches (done):** O(1) `clear` for opt-in versioned namespaces, `getMany`/`setMany`/`getOrSetMany`, `escapeKeyArgs`, lock keys under the prefix, and an optional `ping`.
+- **0.5 - Redis Cluster and node-redis (done):** Redis Cluster through ioredis, `nodeRedisAdapter` for `redis` v5 (standalone and cluster), `CacheStore.getStrict`/`setStrict`, `RedisClientAdapter.scanIterator`, and the tiered-store fix for versioned namespaces while L2 is down.
+- **0.6 - Tags and HTTP caching (planned):** cache tags, `HttpCacheInterceptor`, and a migration guide.
 
 ## Releasing
 
