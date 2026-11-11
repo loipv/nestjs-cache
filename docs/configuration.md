@@ -12,21 +12,21 @@ Pass the options to `CacheModule.forRoot(options)`, or return them from the `use
 `CacheModule.forRootAsync({ isGlobal, imports, inject, useFactory })`. A full `forRootAsync` example with Redis is in
 [Stores](stores.md#redis-and-two-tier-setup).
 
-| Option                | Type                                                  | Default                      | Meaning                                                              |
-| --------------------- | ----------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------- |
-| `prefix`              | `string`                                              | none                         | Prefix for every key                                                 |
-| `stores`              | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`     |
-| `defaults.ttl`        | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                                |
-| `defaults.jitter`     | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]`  |
-| `defaults.cacheNull`  | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                        |
-| `defaults.nullTtl`    | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                          |
+| Option                | Type                                                  | Default                      | Meaning                                                                                    |
+| --------------------- | ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
+| `prefix`              | `string`                                              | none                         | Prefix for every key                                                                       |
+| `stores`              | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`                           |
+| `defaults.ttl`        | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                                                      |
+| `defaults.jitter`     | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]`                        |
+| `defaults.cacheNull`  | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                                              |
+| `defaults.nullTtl`    | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                                                |
 | `namespaces`          | `{ [ns]: { versioned?: boolean } }`                   | none                         | Turns on [versioned namespaces](namespaces-and-tags.md#versioned-namespaces) (exact names) |
-| `versioning.cacheTtl` | `number` (ms)                                         | `1_000`                      | How long an instance keeps a namespace version in memory             |
-| `escapeKeyArgs`       | `boolean`                                             | `false`                      | Escapes `%` and `:` in string and number template arguments          |
-| `serializer`          | `Serializer`                                          | JSON                         | Envelope serializer                                                  |
-| `isGlobal`            | `boolean`                                             | `false`                      | Register the module globally                                         |
-| `defaults.lock`       | `CacheLockDefaults`                                   | lock off                     | The distributed lock; see [Distributed lock](resilience.md#distributed-lock) |
-| `logging.level`       | `'off' \| 'error' \| 'debug'`                         | `'error'`                    | What the library logs; see [Logging](observability.md#logging)       |
+| `versioning.cacheTtl` | `number` (ms)                                         | `1_000`                      | How long an instance keeps a namespace version in memory                                   |
+| `escapeKeyArgs`       | `boolean`                                             | `false`                      | Escapes `%` and `:` in string and number template arguments                                |
+| `serializer`          | `Serializer`                                          | JSON                         | Envelope serializer                                                                        |
+| `isGlobal`            | `boolean`                                             | `false`                      | Register the module globally                                                               |
+| `defaults.lock`       | `CacheLockDefaults`                                   | lock off                     | The distributed lock; see [Distributed lock](resilience.md#distributed-lock)               |
+| `logging.level`       | `'off' \| 'error' \| 'debug'`                         | `'error'`                    | What the library logs; see [Logging](observability.md#logging)                             |
 
 ## Null caching and TTL jitter
 
@@ -126,11 +126,11 @@ const price = await cache.getOrSet('price:1', () => fetchPrice('1'), {
 `softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. A non-empty refreshed value is
 returned when it arrives in time. An empty one (`null`, `undefined`, or a key a batch loader omits) is returned only if
 it was actually written: `cacheNull` is on, and the write was not vetoed by `unless`, a rejected tag list or a failed
-store write. Otherwise the stale value is returned, as on a timeout. A batch shares one window per call. The calls that never load (`@CachePut`,
-`set`, `setMany`, `get` and `getMany`) do not accept it: their option types (`StrategyOptions`) reject it at compile
-time, and a JavaScript caller gets `CacheConfigError`. The load calls take `LoadStrategyOptions`, which adds it.
-On a load call it needs `strategy: 'swr'`: the types allow it only there, and from JavaScript another strategy is a
-`CacheConfigError`.
+store write. Otherwise the stale value is returned, as on a timeout. A batch shares one window per call. The calls
+that never load (`@CachePut`, `set`, `setMany`, `get` and `getMany`) do not accept it: their option types
+(`StrategyOptions`) reject it at compile time, and a JavaScript caller gets `CacheConfigError`. The load calls take
+`LoadStrategyOptions`, which adds it. On a load call it needs `strategy: 'swr'`: the types allow it only there, and
+from JavaScript another strategy is a `CacheConfigError`.
 
 Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh until then, and then expired.
 `CacheService.get` returns a stale entry (with `hit.stale: true`) but never refreshes, as it has no loader.

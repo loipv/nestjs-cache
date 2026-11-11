@@ -23,11 +23,12 @@ To start the app yourself:
 # in the repository root
 npm ci --ignore-scripts
 npm run build
-npm pack --ignore-scripts --pack-destination /tmp
+PACK_DIR=$(mktemp -d)  # a fresh directory, so no older tarball can match below
+npm pack --ignore-scripts --pack-destination "$PACK_DIR"
 
 cd examples/basic
 npm install --ignore-scripts --no-package-lock
-npm install --ignore-scripts --no-save --no-package-lock /tmp/loipv-nestjs-cache-*.tgz
+npm install --ignore-scripts --no-save --no-package-lock "$PACK_DIR"/loipv-nestjs-cache-*.tgz
 npm run build
 npm start
 ```

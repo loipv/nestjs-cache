@@ -80,6 +80,7 @@ CacheModule.forRoot({
 - An unreadable entry this library wrote (a corrupt envelope, or one of another envelope version) is deleted on read
   under `compressedSerializer(jsonSerializer)` (the default `inner`), as under the plain `jsonSerializer`. A payload
   that cannot be decompressed is never deleted, since it may not be the library's. With a custom or nested `inner`
-  (another `compressedSerializer`, for example), an unreadable entry is never deleted.
+  (another `compressedSerializer`, for example), an entry that `inner` throws on is never deleted; one it reads into
+  an object that has a `v` field but is not a valid envelope is deleted, as under any serializer.
 - Invalid options throw `CacheConfigError` when the serializer is created.
 - `inner` must not produce strings that start with `"\u0000nc1:"`, the prefix the compressed values use.
