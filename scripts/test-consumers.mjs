@@ -25,14 +25,26 @@ let failed = null;
 
 try {
   run(npm, ['run', 'build'], root);
-  const packed = run(npm, ['pack', '--pack-destination', consumersDir, '--silent'], root);
+  const packed = run(
+    npm,
+    ['pack', '--ignore-scripts', '--pack-destination', consumersDir, '--silent'],
+    root,
+  );
   tarball = join(consumersDir, packed.trim().split('\n').pop());
 
   for (const app of apps) {
     const cwd = join(consumersDir, app.name);
     try {
-      run(npm, ['install', '--no-audit', '--no-fund', '--no-package-lock'], cwd);
-      run(npm, ['install', '--no-save', '--no-audit', '--no-fund', tarball], cwd);
+      run(
+        npm,
+        ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'],
+        cwd,
+      );
+      run(
+        npm,
+        ['install', '--ignore-scripts', '--no-save', '--no-audit', '--no-fund', tarball],
+        cwd,
+      );
       const output = run(process.execPath, [app.main], cwd);
       if (output.trim() !== 'ok') {
         throw new Error(`unexpected output: ${output}`);
