@@ -10,4 +10,4 @@ Pick the bump (`patch`, `minor` or `major`) and write one or two sentences for t
 `.changeset/*.md` file with the pull request. Changes that do not reach npm users (tests, CI, docs outside the
 package) need no changeset.
 
-See the "Releasing" section of the main README for how releases are published.
+See RELEASING.md in the repository root for how releases are published.

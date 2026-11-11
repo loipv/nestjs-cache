@@ -3,3 +3,4 @@ coverage
 docs
 .superpowers
 test/consumers/*/node_modules
+test/docs-fixtures

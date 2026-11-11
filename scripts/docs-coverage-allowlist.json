@@ -1,0 +1,22 @@
+[
+  {
+    "fragment": "```ts import Redis from 'ioredis'; import { CacheModule, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache'; CacheModule.forRootAsync({",
+    "reason": "Moved to docs/stores.md. The default import `import Redis from 'ioredis'` does not type-check in an ESM (NodeNext) project, so it became `import { Redis } from 'ioredis'`, which works in both module systems; the `@nestjs/config` import was added so the block type-checks."
+  },
+  {
+    "fragment": "Module options:",
+    "reason": "The lead-in of the module options table became the `## Module options` heading of docs/configuration.md."
+  },
+  {
+    "fragment": "```ts import Redis from 'ioredis'; import { CacheModule, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache'; const redis = new Redis({ sentinels:",
+    "reason": "Moved to docs/stores.md (Redis Sentinel). `import Redis from 'ioredis'` became `import { Redis } from 'ioredis'`, which type-checks in ESM projects too."
+  },
+  {
+    "fragment": "```ts class CacheService {",
+    "reason": "Moved to docs/cache-service.md. The signature summary became `declare class CacheService` with `import type` of its option types, so docs:check type-checks it."
+  },
+  {
+    "fragment": "```ts CacheModule.forRoot({ stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) }, defaults: { lock:",
+    "reason": "Moved to docs/resilience.md. The decorated method stood outside a class (not valid TypeScript); it now sits in a `ReportService` class and loads through a declared `buildReport`, and the imports and stubs were added so the block type-checks."
+  }
+]

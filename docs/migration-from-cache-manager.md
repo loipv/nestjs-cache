@@ -4,6 +4,8 @@ This guide moves a NestJS app from `@nestjs/cache-manager` (with `cache-manager`
 `@loipv/nestjs-cache`. The "before" snippets show `@nestjs/cache-manager` code. The "after" snippets are type-checked
 against this library in CI.
 
+[Back to the README](../README.md)
+
 TTLs are milliseconds in both libraries, so numbers carry over unchanged.
 
 ## API mapping
@@ -54,7 +56,7 @@ the two never touch the same keys. You can drop the old keys after the rollout.
 
 Before:
 
-```ts
+```ts nocheck
 import { Module } from '@nestjs/common';
 import { CacheModule } from '@nestjs/cache-manager';
 
@@ -78,7 +80,7 @@ export class AppModule {}
 
 Async registration. Before:
 
-```ts
+```ts nocheck
 CacheModule.registerAsync({
   isGlobal: true,
   useFactory: () => ({ ttl: Number(process.env.CACHE_TTL) }),
@@ -100,7 +102,7 @@ export const asyncCacheModule = CacheModule.forRootAsync({
 
 Before (Keyv):
 
-```ts
+```ts nocheck
 import { CacheModule } from '@nestjs/cache-manager';
 import { createKeyv } from '@keyv/redis';
 
@@ -152,7 +154,7 @@ export const tieredCacheModule = CacheModule.forRoot({
 
 Before:
 
-```ts
+```ts nocheck
 import { Inject, Injectable } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
@@ -201,7 +203,7 @@ Differences to know about:
 
 Before:
 
-```ts
+```ts nocheck
 import { Controller, Get, UseInterceptors } from '@nestjs/common';
 import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 

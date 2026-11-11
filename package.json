@@ -75,6 +75,8 @@
     "check:pack": "node scripts/check-pack.mjs",
     "check:pkg": "publint && attw --pack .",
     "check:workflows": "node scripts/check-workflows.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
+    "docs:coverage": "node scripts/check-docs-coverage.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts",
     "prepublishOnly": "npm run build && npm run check:pack && npm run check:pkg && npm run typecheck && npm test"
