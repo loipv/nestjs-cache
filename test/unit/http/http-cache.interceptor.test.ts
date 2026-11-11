@@ -194,6 +194,7 @@ describe('HttpCacheInterceptor', () => {
     expect(key).toHaveBeenNthCalledWith(1, {
       method: 'GET',
       url: '/items?b=2&a=1&a=0',
+      defaultKey: '/items?a=0&a=1&b=2',
       path: '/items',
       query: { b: '2', a: ['1', '0'] },
       params: {},
@@ -202,11 +203,34 @@ describe('HttpCacheInterceptor', () => {
     expect(key).toHaveBeenNthCalledWith(2, {
       method: 'GET',
       url: '/users/7',
+      defaultKey: '/users/7',
       path: '/users/7',
       query: {},
       params: { id: '7' },
       headers: {},
     });
+  });
+
+  it('req.defaultKey is the normalised default key', async () => {
+    /* F-4: a callback that returns req.defaultKey writes the same entry as no key at all */
+    const t = setup();
+    const keys: string[] = [];
+    const target = route({
+      key: (req) => {
+        keys.push(req.defaultKey);
+        return req.defaultKey;
+      },
+    });
+    const next = t.nextOf(() => 'x');
+    await t.run(target, get('/items?b=2&a=1'), next);
+    await t.run(target, get('/items?a=1&b=2'), next);
+    await t.run(target, get('/a:b?q=1%25'), next);
+    expect(keys).toEqual(['/items?a=1&b=2', '/items?a=1&b=2', '/a%3Ab?q=1%2525']);
+    expect(next.calls).toBe(2);
+    expect([...t.store.data.keys()].sort()).toEqual([
+      'http:/a%3Ab?q=1%2525',
+      'http:/items?a=1&b=2',
+    ]);
   });
 
   it('a key callback returning undefined skips the cache without an error event', async () => {

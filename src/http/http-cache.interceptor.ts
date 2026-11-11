@@ -149,5 +149,13 @@ async function load(req: unknown, next: CallHandler): Promise<unknown> {
 function toHttpCacheRequest(req: unknown, method: string, url: string): HttpCacheRequest {
   const raw = req as RawRequest;
   const { path, query } = parseHttpUrl(url);
-  return { method, url, path, query, params: raw.params ?? {}, headers: raw.headers ?? {} };
+  return {
+    method,
+    url,
+    defaultKey: httpCacheKey(url),
+    path,
+    query,
+    params: raw.params ?? {},
+    headers: raw.headers ?? {},
+  };
 }

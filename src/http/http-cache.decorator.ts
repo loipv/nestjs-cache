@@ -14,9 +14,16 @@ import type { StrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import { HttpCacheInterceptor } from './http-cache.interceptor.js';
 
+/** What a `key` callback receives about the request. */
 export interface HttpCacheRequest {
   method: string;
+  /** The raw request URL, as received (query unsorted, nothing escaped). */
   url: string;
+  /**
+   * The key used when `key` is not set: the path plus the query sorted by name then value, with
+   * `%` and `:` percent-encoded. It varies on path and query only.
+   */
+  defaultKey: string;
   path: string;
   query: Readonly<Record<string, string | readonly string[]>>;
   params: Readonly<Record<string, string>>;
