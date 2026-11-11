@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { SSE_METADATA } from '@nestjs/common/constants.js';
 import { HttpAdapterHost, Reflector } from '@nestjs/core';
-import { from, lastValueFrom, type Observable } from 'rxjs';
+import { defer, finalize, from, lastValueFrom, type Observable } from 'rxjs';
 import type { CacheEngine } from '../core/cache-engine.js';
 import { emptyKeyError, isEmptyKey } from '../core/key-builder.js';
 import { CACHE_ENGINE } from '../module/tokens.js';
@@ -32,6 +32,13 @@ interface RawRequest {
  */
 const loading = new WeakSet<object>();
 
+/**
+ * Requests an outer run decided not to cache (the key callback returned `undefined` or threw) and
+ * is passing through. The nested run passes through too, without calling the key callback again
+ * (a throwing callback would report a second `key` error). Cleared once the pass-through settles.
+ */
+const passing = new WeakSet<object>();
+
 /** Caches GET/HEAD response bodies of routes marked with `@HttpCache`; other requests pass through. */
 @Injectable()
 export class HttpCacheInterceptor implements NestInterceptor {
@@ -53,7 +60,7 @@ export class HttpCacheInterceptor implements NestInterceptor {
       return next.handle();
     }
     const req: unknown = context.switchToHttp().getRequest();
-    if (isObject(req) && loading.has(req)) return next.handle();
+    if (isObject(req) && (loading.has(req) || passing.has(req))) return next.handle();
     const adapter = this.adapterHost.httpAdapter;
     const method = adapter.getRequestMethod(req) as string;
     if (method !== 'GET' && method !== 'HEAD') return next.handle();
@@ -64,9 +71,9 @@ export class HttpCacheInterceptor implements NestInterceptor {
       key = this.keyOf(metadata, req, method, url);
     } catch (error) {
       this.engine.reportError(metadata.store, 'key', error);
-      return next.handle();
+      return passThrough(req, next);
     }
-    if (key === undefined) return next.handle();
+    if (key === undefined) return passThrough(req, next);
 
     const { store, namespace, strategy, tags } = metadata;
     // A tags callback gets the body and the request, once the body is to be written.
@@ -77,8 +84,11 @@ export class HttpCacheInterceptor implements NestInterceptor {
             ...metadata.loadOptions,
             tags: (body: unknown) => tags(body, toHttpCacheRequest(req, method, url)),
           };
-    return from(
-      this.engine.getOrSet({ store, namespace, key }, () => load(req, next), options, strategy),
+    // Lazy: nothing reads the store or runs the handler before the caller subscribes.
+    return defer(() =>
+      from(
+        this.engine.getOrSet({ store, namespace, key }, () => load(req, next), options, strategy),
+      ),
     );
   }
 
@@ -115,6 +125,18 @@ async function load(req: unknown, next: CallHandler): Promise<unknown> {
   } finally {
     loading.delete(req);
   }
+}
+
+/**
+ * Runs the rest of the chain with `req` marked as passing through, so a nested run passes through
+ * without calling the key callback again.
+ */
+function passThrough(req: unknown, next: CallHandler): Observable<unknown> {
+  if (!isObject(req)) return next.handle();
+  return defer(() => {
+    passing.add(req);
+    return next.handle().pipe(finalize(() => passing.delete(req)));
+  });
 }
 
 function toHttpCacheRequest(req: unknown, method: string, url: string): HttpCacheRequest {

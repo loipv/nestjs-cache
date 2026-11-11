@@ -440,6 +440,75 @@ describe('HttpCacheInterceptor', () => {
     },
   );
 
+  it('nothing runs before the returned Observable is subscribed', async () => {
+    /* 0.6-T4-1: intercept() alone reads no store and runs no handler; the work starts on subscribe */
+    const t = setup();
+    const target = route();
+    const next = t.nextOf(() => 'body');
+    const observable = t.interceptor.intercept(t.context(target, get('/items')), next);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(t.gets()).toBe(0);
+    expect(next.calls).toBe(0);
+    await expect(lastValueFrom(observable)).resolves.toBe('body');
+    expect(t.gets()).toBe(1);
+    expect(next.calls).toBe(1);
+  });
+
+  it.each([
+    [
+      'throws',
+      () => {
+        throw new Error('bad key');
+      },
+      1,
+    ],
+    ['returns undefined', () => undefined, 0],
+  ])(
+    'class + method @HttpCache whose key callback %s calls it once per request',
+    async (_name, impl, keyErrors) => {
+      /* 0.6-FW-2: the outer run decided "no cache"; the nested run passes through without calling the callback again */
+      const t = setup();
+      const key = vi.fn(impl);
+      @HttpCache({ key })
+      class Items {
+        @HttpCache({ key })
+        m(): void {}
+      }
+      const target = { handler: Items.prototype.m, cls: Items };
+      const handler = t.nextOf(() => 'x');
+      for (const n of [1, 2]) {
+        const req = get('/items');
+        // Mirrors Nest: the outer interceptor's next.handle() runs the inner one on subscribe.
+        const outer: CallHandler = {
+          handle: () => defer(() => t.interceptor.intercept(t.context(target, req), handler)),
+        };
+        await expect(t.run(target, req, outer)).resolves.toBe('x');
+        expect(key).toHaveBeenCalledTimes(n);
+        expect(handler.calls).toBe(n);
+        expect(t.errors()).toHaveLength(n * keyErrors);
+      }
+      expect(t.gets()).toBe(0);
+      expect(
+        t.errors().every((e) => (e.payload as { operation: string }).operation === 'key'),
+      ).toBe(true);
+    },
+  );
+
+  it('the "no cache" mark is cleared when the pass-through settles', async () => {
+    /* 0.6-FW-2: reusing the request object afterwards runs the key callback again */
+    const t = setup();
+    let skip = true;
+    const target = route({ key: () => (skip ? undefined : 'k') });
+    const req = get('/items');
+    const handler = t.nextOf(() => 'x');
+    await t.run(target, req, handler);
+    expect(t.gets()).toBe(0);
+    skip = false;
+    await t.run(target, req, handler);
+    expect(t.gets()).toBe(1);
+    expect([...t.store.data.keys()]).toEqual(['http:k']);
+  });
+
   it('passes an @Sse() route through untouched and stores nothing', async () => {
     /* F-2: a class-level @HttpCache must not buffer a server-sent event stream down to its last event */
     const t = setup();
