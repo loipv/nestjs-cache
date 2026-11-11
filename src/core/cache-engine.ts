@@ -201,6 +201,7 @@ export class CacheEngine {
     checkDuration('ttl', options.ttl);
     checkDuration('nullTtl', options.nullTtl);
     checkBoolean('cacheNull', options.cacheNull);
+    checkBoolean('lock', options.lock);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
     if (this.emptyKey(target, ref.key)) return loader();

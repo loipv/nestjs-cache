@@ -1,5 +1,6 @@
 import {
   assertBoolean,
+  assertFunction,
   assertNamespace,
   assertPositiveFinite,
   assertStrategyTtls,
@@ -26,6 +27,8 @@ export function CachePut<
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
+    assertFunction(target, propertyKey, 'condition', options?.condition);
+    assertFunction(target, propertyKey, 'unless', options?.unless);
     assertStrategyTtls(target, propertyKey, options, '@CachePut');
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const tagsOf = compileTags(target, propertyKey, options?.tags);

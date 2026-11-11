@@ -573,3 +573,38 @@ describe('@CacheEvict tags', () => {
     }).toThrow(/^S\.a: /);
   });
 });
+
+describe('@CacheEvict option types (JavaScript callers)', () => {
+  it.each([
+    ['allEntries', 'false', 'S.a: allEntries must be a boolean, got false'],
+    ['beforeInvocation', 1, 'S.a: beforeInvocation must be a boolean, got 1'],
+  ] as const)('rejects a non-boolean %s at class definition', (field, value, message) => {
+    /* 0.9-T6 (Task 5 observation 2): allEntries: 'false' is truthy, so it cleared the whole
+       namespace; a non-boolean allEntries or beforeInvocation is now a CacheConfigError when
+       the decorator runs. */
+    const options = { namespace: 'users', [field]: value } as never;
+    const define = (): unknown => {
+      class S {
+        @CacheEvict(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    };
+    expect(define).toThrow(CacheConfigError);
+    expect(define).toThrow(message);
+  });
+
+  it('accepts undefined allEntries and beforeInvocation', () => {
+    /* 0.9-T6: an undefined option is the same as an absent one. */
+    const options = { allEntries: undefined, beforeInvocation: undefined } as never;
+    expect(() => {
+      class S {
+        @CacheEvict(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).not.toThrow();
+  });
+});

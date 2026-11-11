@@ -4,6 +4,7 @@ import { createStrategy, type ExpiryStrategy } from '../core/strategies/expiry-s
 import {
   addCacheMetadata,
   assertBoolean,
+  assertFunction,
   assertNamespace,
   assertPositiveFinite,
   assertStrategyTtls,
@@ -102,12 +103,7 @@ function validate(
     );
   }
   assertTags(target, method, options?.tags);
-  const unless: unknown = options?.unless;
-  if (unless !== undefined && typeof unless !== 'function') {
-    throw new CacheConfigError(
-      `${describeMethod(target, method)}: unless must be a function, got ${typeof unless}`,
-    );
-  }
+  assertFunction(target, method, 'unless', options?.unless);
 }
 
 /** Caches the HTTP response body of a route (method) or of every route of a controller (class). */

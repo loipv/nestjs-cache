@@ -1,6 +1,7 @@
 import type { LoadOptions } from '../core/cache-engine.js';
 import {
   assertBoolean,
+  assertFunction,
   assertNamespace,
   assertPositiveFinite,
   assertStrategyTtls,
@@ -27,6 +28,9 @@ export function Cacheable<
     assertPositiveFinite(target, propertyKey, 'ttl', options?.ttl);
     assertPositiveFinite(target, propertyKey, 'nullTtl', options?.nullTtl);
     assertBoolean(target, propertyKey, 'cacheNull', options?.cacheNull);
+    assertBoolean(target, propertyKey, 'lock', options?.lock);
+    assertFunction(target, propertyKey, 'condition', options?.condition);
+    assertFunction(target, propertyKey, 'unless', options?.unless);
     assertStrategyTtls(target, propertyKey, options);
     const keyOf = compileKeyAt(target, propertyKey, options?.key as KeySpec<never[]> | undefined);
     const tagsOf = compileTags(target, propertyKey, options?.tags);

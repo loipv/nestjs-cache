@@ -62,6 +62,20 @@ describe('CacheService', () => {
     await expect(call(service, { ...options, softTimeout: undefined })).resolves.not.toThrow();
   });
 
+  it.each(['no', 1])('getOrSet rejects lock = %s before any store call', async (lock) => {
+    /* 0.9-T6 (Task 5 observation 2): a truthy non-boolean lock from JavaScript turned the lock
+       on; getOrSet now rejects it with CacheConfigError, like a non-boolean cacheNull, and
+       neither the store nor the loader is called. */
+    const { service, store } = setup();
+    const loader = vi.fn(() => Promise.resolve(1));
+    const call = (): Promise<number> => service.getOrSet('k', loader, { lock } as never);
+    await expect(call()).rejects.toThrow(CacheConfigError);
+    await expect(call()).rejects.toThrow(`Invalid lock: ${String(lock)}. It must be a boolean.`);
+    expect(store.calls).toEqual([]);
+    expect(loader).not.toHaveBeenCalled();
+    await expect(service.getOrSet('k', loader, { lock: undefined })).resolves.toBe(1);
+  });
+
   it('rejects an unknown store with CacheConfigError', async () => {
     const { service } = setup();
     await expect(service.get('k', { store: 'nope' })).rejects.toThrow(CacheConfigError);

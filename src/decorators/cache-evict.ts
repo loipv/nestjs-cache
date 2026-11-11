@@ -1,7 +1,7 @@
 import type { CacheEngine } from '../core/cache-engine.js';
 import { normalizeTags } from '../core/engine-tags.js';
 import { CacheConfigError } from '../errors.js';
-import { assertNamespace, describeMethod } from './metadata.js';
+import { assertBoolean, assertNamespace, describeMethod } from './metadata.js';
 import {
   assertInstanceMethod,
   compileEvictTags,
@@ -56,6 +56,8 @@ export function CacheEvict<K extends unknown[] = never[], G extends unknown[] = 
       beforeInvocation?: boolean;
       tags?: unknown;
     };
+    assertBoolean(target, propertyKey, 'allEntries', loose.allEntries);
+    assertBoolean(target, propertyKey, 'beforeInvocation', loose.beforeInvocation);
     const { namespace, allEntries = false, beforeInvocation = false } = loose;
     assertNamespace(target, propertyKey, namespace);
     const store = loose.store ?? 'default';

@@ -72,6 +72,19 @@ export function assertBoolean(
   );
 }
 
+/** A callback option (`condition`, `unless`) must be a function when it is set. */
+export function assertFunction(
+  target: object,
+  method: string | symbol,
+  field: string,
+  value: unknown,
+): void {
+  if (value === undefined || typeof value === 'function') return;
+  throw new CacheConfigError(
+    `${describeMethod(target, method)}: ${field} must be a function, got ${typeof value}`,
+  );
+}
+
 export function assertNamespace(
   target: object,
   method: string | symbol,

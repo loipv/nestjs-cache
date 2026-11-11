@@ -725,3 +725,39 @@ describe('@Cacheable softTimeout', () => {
     }
   });
 });
+
+describe('@Cacheable option types (JavaScript callers)', () => {
+  it.each([
+    ['lock', 'no', 'S.a: lock must be a boolean, got no'],
+    ['condition', 'yes', 'S.a: condition must be a function, got string'],
+    ['unless', 1, 'S.a: unless must be a function, got number'],
+  ] as const)('rejects a %s of the wrong type at class definition', (field, value, message) => {
+    /* 0.9-T6 (Task 5 observation 2): types prevent this in TypeScript, but a JavaScript caller
+       could pass lock: 'no' (truthy, so it locked) or a non-function condition/unless (a
+       TypeError per call). Now a CacheConfigError when the decorator runs, as @HttpCache does. */
+    const options = { [field]: value } as never;
+    const define = (): unknown => {
+      class S {
+        @Cacheable(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    };
+    expect(define).toThrow(CacheConfigError);
+    expect(define).toThrow(message);
+  });
+
+  it('accepts undefined lock, condition and unless', () => {
+    /* 0.9-T6: an undefined option is the same as an absent one. */
+    const options = { lock: undefined, condition: undefined, unless: undefined } as never;
+    expect(() => {
+      class S {
+        @Cacheable(options) a(): Promise<number> {
+          return Promise.resolve(1);
+        }
+      }
+      return S;
+    }).not.toThrow();
+  });
+});
