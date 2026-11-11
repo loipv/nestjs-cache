@@ -217,7 +217,9 @@ const store = redisStore({ client: nodeRedisAdapter(sentinel) });
 
 - The invalidation subscriber subscribes on the sentinel object itself (it does not duplicate it). Closing the store
   only unsubscribes its channels and never closes your client.
-- A Sentinel `MASTER_CHANGE` clears L1, because messages published during a failover are lost.
+- A Sentinel `MASTER_CHANGE` clears L1, because messages published during a failover are lost. node-redis emits it
+  before its pub/sub connection has moved to the new master, so an L1 backfill in that gap can still miss an
+  invalidation; like any lost message this is bounded by `l1Ttl`.
 - While a tiered store is open over it, the sentinel's `'error'` events are also reported as `error` events with
   `operation: 'subscribe'`. Still attach your own `'error'` listener.
 - **`nodeAddressMap` and a tiered store.** node-redis 5.x applies `nodeAddressMap` to its data connections but not to
@@ -295,7 +297,7 @@ Type checking: decorating a method that does not return a `Promise` is a compile
 Callbacks may declare fewer parameters than the method.
 
 Unknown store names fail at startup. A bad key template, `allEntries` without `namespace`, an empty `key: []` for
-`@CacheEvict`, invalid `tags` (see Tags), a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl` that is not a finite number greater than 0
+`@CacheEvict`, invalid `tags` (see Tags), a `static` method, and a `ttl`/`nullTtl`/`staleTtl`/`maxTtl`/`softTimeout` that is not a finite number greater than 0
 are rejected with `CacheConfigError`, as is a `cacheNull` that is not a boolean. See Error behaviour for the full list.
 
 ## HTTP caching
@@ -334,7 +336,7 @@ export class UsersController {
   and `HEAD` are cached (`HEAD` shares the `GET` entry); other methods and non-HTTP contexts pass through.
 - **Options:** `ttl`, `namespace` (default `'http'`), `store`, `lock`, `cacheNull`, `nullTtl`, `key`, `unless`
   (`(body) => boolean`; return `true` to keep that body out of the cache) and the strategy options (`strategy: 'swr'`
-  with `staleTtl`/`softTimeout`, or `'sliding'`). Invalid options throw `CacheConfigError` when the decorator runs; an
+  with `staleTtl`/`softTimeout`, or `'sliding'` with `maxTtl`). Invalid options throw `CacheConfigError` when the decorator runs; an
   unknown `store` fails at startup (`app.init()`) with a message that names `@HttpCache`.
 - **Default key:** the request URL with the query sorted by name, then value, and `%` and `:` percent-encoded:
   `/users?b=2&a=1` and `/users?a=1&b=2` share the entry `/users?a=1&b=2`. It varies only on the path and the query,
@@ -713,9 +715,11 @@ const price = await cache.getOrSet('price:1', () => fetchPrice('1'), {
 });
 ```
 
-`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. If the refresh loader resolves
-`undefined` or `null` (or, in a batch, omits a key), that is the answer: the call returns it, not the stale value. A
-batch shares one window per call. On `set`, `get`, `getMany` and `@CachePut` it is ignored but still validated.
+`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. A refresh counts only once its
+result is written: if the loader resolves `undefined` or `null` (or, in a batch, omits a key) without `cacheNull`,
+nothing is written and the stale entry stays, so the call returns the stale value, as on a timeout. With `cacheNull`
+the empty value is written and returned. A batch shares one window per call. On `set`, `get`, `getMany` and
+`@CachePut` it is ignored but still validated.
 
 Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh until then, and then expired.
 `CacheService.get` returns a stale entry (with `hit.stale: true`) but never refreshes, as it has no loader.
@@ -754,6 +758,7 @@ CacheModule.forRoot({
 - It compresses only above `threshold` and only when the result is shorter. Smaller payloads are stored as `inner`
   writes them, and uncompressed payloads are always readable, so a rolling deploy from an uncompressed serializer is
   safe.
+- Payloads above `maxDecompressedBytes` are stored uncompressed, so every value it writes can be read back.
 - The algorithm is taken from the prefix of the stored value, not from the configuration, so switching between `gzip`
   and `brotli` is safe: old entries stay readable.
 - Switching back from `compressedSerializer` to an uncompressed serializer makes the compressed entries unreadable:
