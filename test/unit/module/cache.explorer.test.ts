@@ -50,6 +50,45 @@ describe('CacheExplorer', () => {
     await expect(ref.init()).rejects.toThrow(/@HttpCache.*nope|nope.*@HttpCache/);
   });
 
+  it('names only the class for a class-level @HttpCache with an unknown store', async () => {
+    /* F-5: the class-level marker is not printed as a method name */
+    @HttpCache({ store: 'nope' })
+    @Controller()
+    class BadClass {
+      find(): number {
+        return 1;
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      controllers: [BadClass],
+    }).compile();
+    await expect(ref.init()).rejects.toThrow(
+      'Unknown cache store "nope" in BadClass (@HttpCache). Configured stores: default',
+    );
+  });
+
+  it('names only the class when a class-level @HttpCache sets lock: true without a lock', async () => {
+    /* F-5: the lock warning for a class-level entry prints the class name alone */
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    @HttpCache({ lock: true })
+    @Controller()
+    class LockyClass {
+      find(): number {
+        return 1;
+      }
+    }
+    const ref = await Test.createTestingModule({
+      imports: [CacheModule.forRoot()],
+      controllers: [LockyClass],
+    }).compile();
+    await ref.init();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'LockyClass sets lock: true but cache store "default" has no distributed lock; falling back to in-process coalescing',
+    );
+    await ref.close();
+  });
+
   it('names the decorator kind for @CacheEvict and @CachePut', async () => {
     class BadEvict {
       @CacheEvict({ store: 'nope' })

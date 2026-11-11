@@ -15,10 +15,16 @@ export function getCacheMetadata(ctor: object): readonly CacheMetadataEntry[] {
   return (ctor as Holder)[CACHE_METADATA] ?? [];
 }
 
+/** The `method` of the entry a class-level `@HttpCache` registers. Internal; messages name the class alone. */
+export const CLASS_LEVEL = '*';
+
+/** `Class.method`, or `Class` for a class-level entry. */
+export function memberName(className: string, method: string | symbol): string {
+  return method === CLASS_LEVEL ? className : `${className}.${String(method)}`;
+}
+
 export function describeMethod(target: object, method: string | symbol): string {
-  const name = (target as { constructor: { name: string } }).constructor.name;
-  // `'*'` is the class-level marker (an `@HttpCache` on the class): report the class alone.
-  return method === '*' ? name : `${name}.${String(method)}`;
+  return memberName((target as { constructor: { name: string } }).constructor.name, method);
 }
 
 export function addCacheMetadata(target: object, entry: CacheMetadataEntry): void {

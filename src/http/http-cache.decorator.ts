@@ -1,4 +1,4 @@
-import { applyDecorators, SetMetadata, UseInterceptors } from '@nestjs/common';
+import { applyDecorators, SetMetadata, StreamableFile, UseInterceptors } from '@nestjs/common';
 import type { LoadOptions } from '../core/cache-engine.js';
 import { createStrategy, type ExpiryStrategy } from '../core/strategies/expiry-strategy.js';
 import {
@@ -7,6 +7,7 @@ import {
   assertNamespace,
   assertPositiveFinite,
   assertStrategyTtls,
+  CLASS_LEVEL,
   describeMethod,
 } from '../decorators/metadata.js';
 import { presetStrategy, putOptionsOf } from '../decorators/method-wrapper.js';
@@ -54,6 +55,17 @@ export interface HttpCacheMetadata {
   strategy: ExpiryStrategy | undefined;
 }
 
+/** Bodies that are never cached: files, binary data and streams. */
+function isUncacheable(body: unknown): boolean {
+  return (
+    body instanceof StreamableFile ||
+    body instanceof Uint8Array ||
+    (typeof body === 'object' &&
+      body !== null &&
+      typeof (body as { pipe?: unknown }).pipe === 'function')
+  );
+}
+
 function validate(
   target: object,
   method: string | symbol,
@@ -91,10 +103,13 @@ export function HttpCache(options?: HttpCacheOptions): MethodDecorator & ClassDe
   return (target: object, propertyKey?: string | symbol, descriptor?: PropertyDescriptor) => {
     const isClass = propertyKey === undefined;
     const holder = isClass ? (target as { prototype: object }).prototype : target;
-    const method = isClass ? '*' : propertyKey;
+    const method = isClass ? CLASS_LEVEL : propertyKey;
     validate(holder, method, options);
     const loadOptions: LoadOptions<unknown> = putOptionsOf(options);
     if (options?.lock !== undefined) loadOptions.lock = options.lock;
+    // The built-in check first, then the user's: a file or stream never reaches the user's `unless`.
+    const unless = options?.unless;
+    loadOptions.unless = (body) => isUncacheable(body) || unless?.(body) === true;
     const metadata: HttpCacheMetadata = {
       namespace: options?.namespace ?? 'http',
       store: options?.store,

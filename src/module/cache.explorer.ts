@@ -1,7 +1,7 @@
 import { Logger, type OnModuleInit } from '@nestjs/common';
 import type { DiscoveryService } from '@nestjs/core';
 import type { CacheEngine } from '../core/cache-engine.js';
-import { getCacheMetadata, type CacheMetadataEntry } from '../decorators/metadata.js';
+import { getCacheMetadata, memberName, type CacheMetadataEntry } from '../decorators/metadata.js';
 import { CacheConfigError } from '../errors.js';
 
 /**
@@ -47,14 +47,14 @@ export class CacheExplorer implements OnModuleInit {
           if (entry.lock === true && !this.engine.hasLock(entry.store) && !warned.has(warnKey)) {
             warned.add(warnKey);
             this.logger.warn(
-              `${metatype.name}.${String(entry.method)} sets lock: true but cache store "${entry.store}" ` +
+              `${memberName(metatype.name, entry.method)} sets lock: true but cache store "${entry.store}" ` +
                 'has no distributed lock; falling back to in-process coalescing',
             );
           }
           continue;
         }
         throw new CacheConfigError(
-          `Unknown cache store "${entry.store}" in ${metatype.name}.${String(entry.method)} ` +
+          `Unknown cache store "${entry.store}" in ${memberName(metatype.name, entry.method)} ` +
             `(${KIND_LABELS[entry.kind]}). Configured stores: ${this.engine.storeNames().join(', ')}`,
         );
       }

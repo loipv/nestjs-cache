@@ -1,7 +1,6 @@
 import {
   Inject,
   Injectable,
-  StreamableFile,
   type CallHandler,
   type ExecutionContext,
   type NestInterceptor,
@@ -9,7 +8,7 @@ import {
 import { SSE_METADATA } from '@nestjs/common/constants.js';
 import { HttpAdapterHost, Reflector } from '@nestjs/core';
 import { from, lastValueFrom, type Observable } from 'rxjs';
-import type { CacheEngine, LoadOptions } from '../core/cache-engine.js';
+import type { CacheEngine } from '../core/cache-engine.js';
 import { emptyKeyError, isEmptyKey } from '../core/key-builder.js';
 import { CACHE_ENGINE } from '../module/tokens.js';
 import {
@@ -24,17 +23,6 @@ interface RawRequest {
   headers?: Record<string, string | string[] | undefined>;
 }
 
-/** Bodies that are never cached: files, binary data and streams. */
-function isUncacheable(body: unknown): boolean {
-  return (
-    body instanceof StreamableFile ||
-    body instanceof Uint8Array ||
-    (typeof body === 'object' &&
-      body !== null &&
-      typeof (body as { pipe?: unknown }).pipe === 'function')
-  );
-}
-
 /**
  * Requests whose `@HttpCache` load is running. Nest does not de-duplicate interceptors: a class-level
  * and a method-level `@HttpCache`, or an `APP_INTERCEPTOR` plus a route's `@HttpCache`, run this
@@ -44,20 +32,9 @@ function isUncacheable(body: unknown): boolean {
  */
 const loading = new WeakSet<object>();
 
-/** The route's load options with the built-in `unless` first, then the user's. */
-function withBuiltInUnless(options: LoadOptions<unknown>): LoadOptions<unknown> {
-  const user = options.unless;
-  return {
-    ...options,
-    unless: (body) => isUncacheable(body) || user?.(body) === true,
-  };
-}
-
 /** Caches GET/HEAD response bodies of routes marked with `@HttpCache`; other requests pass through. */
 @Injectable()
 export class HttpCacheInterceptor implements NestInterceptor {
-  private readonly loadOptions = new WeakMap<HttpCacheMetadata, LoadOptions<unknown>>();
-
   constructor(
     @Inject(CACHE_ENGINE) private readonly engine: CacheEngine,
     @Inject(Reflector) private readonly reflector: Reflector,
@@ -96,7 +73,7 @@ export class HttpCacheInterceptor implements NestInterceptor {
       this.engine.getOrSet(
         { store, namespace, key },
         () => load(req, next),
-        this.loadOptionsOf(metadata),
+        metadata.loadOptions,
         strategy,
       ),
     );
@@ -119,15 +96,6 @@ export class HttpCacheInterceptor implements NestInterceptor {
     }
     if (isEmptyKey(key)) throw emptyKeyError();
     return key;
-  }
-
-  private loadOptionsOf(metadata: HttpCacheMetadata): LoadOptions<unknown> {
-    let options = this.loadOptions.get(metadata);
-    if (options === undefined) {
-      options = withBuiltInUnless(metadata.loadOptions);
-      this.loadOptions.set(metadata, options);
-    }
-    return options;
   }
 }
 
