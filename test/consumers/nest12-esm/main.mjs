@@ -12,7 +12,7 @@ assert.equal(typeof lib.CacheEvict, 'function');
 // The DI tokens are internal (0.9): the package index does not export them.
 assert.equal(lib.CACHE_ENGINE, undefined);
 assert.ok(new lib.CacheConfigError('x') instanceof Error);
-// node-redis v5 client: the adapter is built without connecting.
+// node-redis v6 client: the adapter is built without connecting.
 assert.equal(typeof lib.nodeRedisAdapter(createClient()).createSubscriber, 'function');
 
 class UserService {
