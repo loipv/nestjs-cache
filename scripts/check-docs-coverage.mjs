@@ -5,6 +5,9 @@
 //
 //   node scripts/check-docs-coverage.mjs [--base <commit>]   (default: 720a834, the README before the split)
 //
+// The default base 720a834 must stay reachable from the branch that runs this check: merge with a
+// fast-forward or a merge commit, never a squash or rebase that drops it.
+//
 // A code block that is not found verbatim still counts when its lines appear, in order, in one
 // code block of the current docs: imports and declared stubs added to make a block type-check
 // (`docs:check`) lose nothing.

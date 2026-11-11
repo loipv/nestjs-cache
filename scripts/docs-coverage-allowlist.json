@@ -26,5 +26,9 @@
   {
     "fragment": "| `CacheService` call (rejects) | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl`, `maxTtl` or `softTimeout`",
     "reason": "Moved to docs/resilience.md. 0.9 rejects `softTimeout` without `strategy: 'swr'` on `getOrSet` and `getOrSetMany` (final review M-8), so the row lists it."
+  },
+  {
+    "fragment": "- **0.9 - Planned:** replica reads and `redis` v6 support.",
+    "reason": "roadmap line rewritten when 0.9 shipped"
   }
 ]
