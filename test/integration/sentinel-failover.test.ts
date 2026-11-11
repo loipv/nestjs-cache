@@ -12,6 +12,7 @@ import { tieredStore } from '../../src/stores/tiered.store.js';
 import { selectedAdapters, skipTitle } from './helpers/adapters.js';
 import { probePubSub, type ProbeClient } from './helpers/pubsub-probe.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './helpers/redis-sentinel.js';
+import { withinStartup } from './helpers/startup-timeout.js';
 
 const RECOVERY_MS = 30_000;
 
@@ -114,17 +115,24 @@ interface Setup {
 }
 
 /* The probe needs a live Sentinel set before the cases are declared, so each adapter's set starts
-   here and the describe below stops it. Probing publishes only; the topology is unchanged. */
+   here and the describe below stops it. Probing publishes only; the topology is unchanged. The
+   whole startup has STARTUP_TIMEOUT_MS: Vitest does not time out collection. */
 const SETUPS: Setup[] = [];
-try {
+let abandoned = false;
+async function startSetups(): Promise<void> {
   for (const name of ADAPTERS) {
     const handle = await startRedisSentinel();
-    SETUPS.push({ name, handle, reachable: false });
+    if (abandoned) {
+      // the startup timed out while this set started: the file has failed already
+      await handle.stop();
+      return;
+    }
+    const setup: Setup = { name, handle, reachable: false };
+    SETUPS.push(setup);
     try {
       const probe = await connect(name, handle);
       try {
-        const setup = SETUPS[SETUPS.length - 1];
-        if (setup !== undefined) setup.reachable = await probePubSub(probe.probe);
+        setup.reachable = await probePubSub(probe.probe);
       } finally {
         await closeWithin(() => probe.close()).catch(() => undefined);
       }
@@ -132,8 +140,12 @@ try {
       // a client that cannot even connect leaves pub/sub unreachable; the cases report the rest
     }
   }
+}
+try {
+  await withinStartup(startSetups(), 'Starting the Sentinel sets for the failover cases');
 } catch (error) {
   // No afterAll exists yet, so stop the sets already started before failing the file.
+  abandoned = true;
   await Promise.allSettled(SETUPS.map((setup) => setup.handle.stop()));
   throw error;
 }

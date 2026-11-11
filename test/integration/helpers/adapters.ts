@@ -4,6 +4,7 @@ import { afterAll } from 'vitest';
 import { nodeRedisAdapter, type NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
 import type { RedisStoreOptions } from '../../../src/stores/redis.store.js';
 import { probePubSub, type ProbeClient } from './pubsub-probe.js';
+import { StartupTimeoutError, withinStartup } from './startup-timeout.js';
 import { startRedisCluster, type RedisClusterHandle } from './redis-cluster.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './redis-sentinel.js';
 import { startRedis } from './redis.js';
@@ -33,20 +34,32 @@ const reachability = new Map<AdapterName, Promise<boolean>>();
  * set through a temporary client, so it starts no extra container. The probe drives that raw
  * client, not the library's adapter, so an adapter pub/sub bug fails the cases instead of skipping
  * them. A file calls it with top-level `await` before declaring cases, then uses
- * `it.skipIf(!reachable)` and `skipTitle`.
+ * `it.skipIf(!reachable)` and `skipTitle`. A startup that does not finish within
+ * `STARTUP_TIMEOUT_MS` rejects, failing the file with its name.
  */
 export function canReachPubSub(name: AdapterName): Promise<boolean> {
   let result = reachability.get(name);
   if (result === undefined) {
     result = (async () => {
-      let started: StartedAdapter | undefined;
+      let started: StartedAdapter;
       try {
-        started = await startAdapter(name);
-        return await probePubSub(started.probe);
-      } catch {
+        started = await withinStartup(
+          startAdapter(name),
+          `Starting ${name} for the pub/sub probe`,
+          (late) => late.stop(),
+        );
+      } catch (error) {
+        // A startup that hangs fails the file, which then runs no afterAll: stop what it shares.
+        if (error instanceof StartupTimeoutError) {
+          stopShared();
+          throw error;
+        }
         return false;
+      }
+      try {
+        return await probePubSub(started.probe);
       } finally {
-        await started?.stop().catch(() => undefined);
+        await started.stop().catch(() => undefined);
       }
     })();
     reachability.set(name, result);
@@ -124,6 +137,17 @@ function cluster(): Promise<RedisClusterHandle> {
 function sentinel(): Promise<RedisSentinelHandle> {
   sharedSentinel ??= startRedisSentinel();
   return sharedSentinel;
+}
+
+/** Stops the file's shared containers now, or each once it has started; for a failed collection. */
+function stopShared(): void {
+  const pending = [sharedStandalone, sharedCluster, sharedSentinel];
+  sharedStandalone = undefined;
+  sharedCluster = undefined;
+  sharedSentinel = undefined;
+  for (const handle of pending) {
+    handle?.then((started) => started.stop()).catch(() => undefined);
+  }
 }
 
 afterAll(async () => {
