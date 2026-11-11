@@ -18,7 +18,8 @@ Multi-store, two-tier cache for NestJS with decorators, stampede protection and 
 npm install @loipv/nestjs-cache
 ```
 
-Peer dependencies: `@nestjs/common`, `@nestjs/core` (`^11 || ^12`) and `reflect-metadata` (`^0.2`).
+Peer dependencies: `@nestjs/common`, `@nestjs/core` (`^11 || ^12`), `reflect-metadata` (`^0.2`) and `rxjs` (`^7.1`, which
+Nest itself requires, so a Nest app already has it).
 `ioredis` (`^5 || ^6`) and `redis` (`^5 || ^6`, node-redis) are optional peers; install the one you use for the Redis store.
 
 ## Quick start
@@ -1207,6 +1208,7 @@ event and does not reach the caller.
 | Node.js            | `>=22` (LTS 22, 24, 26)                                    |
 | ioredis            | `^5 \|\| ^6` (optional peer; Cluster needs 5.6.0 or later) |
 | redis (node-redis) | `^5 \|\| ^6` (optional peer; Sentinel supported)           |
+| rxjs               | `^7.1` (peer, as for `@nestjs/common`)                     |
 | Redis server       | 6.2 or later (Cluster: 7 or later)                         |
 
 The package ships both ESM and CommonJS builds. The injection tokens use `Symbol.for('@loipv/nestjs-cache:...')`,

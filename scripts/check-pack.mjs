@@ -90,6 +90,14 @@ for (const p of ['dist/index.d.ts', 'dist/index.d.cts']) {
   }
 }
 
+// 6. Peer dependencies are not bundled: rxjs (a peer since 0.9) is imported, not inlined.
+for (const p of ['dist/index.js', 'dist/index.cjs']) {
+  if (!fileSet.has(p)) continue;
+  if (/function Observable\d*\(/.test(readFileSync(join(root, p), 'utf8'))) {
+    violations.push(`${p} bundles rxjs (it must stay an external peer dependency)`);
+  }
+}
+
 if (violations.length > 0) {
   console.error(`check:pack failed with ${violations.length} violation(s):`);
   for (const v of violations) console.error(`  - ${v}`);
