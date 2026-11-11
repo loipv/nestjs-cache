@@ -10,7 +10,7 @@ import { nodeRedisAdapter } from '../../src/stores/node-redis.adapter.js';
 import { redisStore, type RedisStoreOptions } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
 import { selectedAdapters, skipTitle } from './helpers/adapters.js';
-import { probePubSub } from './helpers/pubsub-probe.js';
+import { probePubSub, type ProbeClient } from './helpers/pubsub-probe.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './helpers/redis-sentinel.js';
 
 const RECOVERY_MS = 30_000;
@@ -22,6 +22,8 @@ const ADAPTERS = selectedAdapters().filter(
 
 interface Client {
   client: RedisStoreOptions['client'];
+  /** The raw client, for `probePubSub`: it must not go through the adapter under test. */
+  probe: ProbeClient;
   close(): Promise<void>;
 }
 
@@ -35,6 +37,7 @@ async function connect(name: SentinelAdapter, handle: RedisSentinelHandle): Prom
     redis.on('error', () => undefined); // emitted while ioredis reconnects after a failover
     return {
       client: redis,
+      probe: { kind: 'ioredis', client: redis },
       close: async () => {
         await redis.quit();
       },
@@ -49,6 +52,7 @@ async function connect(name: SentinelAdapter, handle: RedisSentinelHandle): Prom
   await redis.connect();
   return {
     client: nodeRedisAdapter(redis),
+    probe: { kind: 'node-redis-sentinel', client: redis },
     close: async () => {
       await redis.close();
     },
@@ -120,7 +124,7 @@ try {
       const probe = await connect(name, handle);
       try {
         const setup = SETUPS[SETUPS.length - 1];
-        if (setup !== undefined) setup.reachable = await probePubSub(probe.client);
+        if (setup !== undefined) setup.reachable = await probePubSub(probe.probe);
       } finally {
         await closeWithin(() => probe.close()).catch(() => undefined);
       }

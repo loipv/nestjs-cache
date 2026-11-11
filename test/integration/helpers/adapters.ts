@@ -3,7 +3,7 @@ import { createClient, createCluster, createSentinel } from 'redis';
 import { afterAll } from 'vitest';
 import { nodeRedisAdapter, type NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
 import type { RedisStoreOptions } from '../../../src/stores/redis.store.js';
-import { probePubSub } from './pubsub-probe.js';
+import { probePubSub, type ProbeClient } from './pubsub-probe.js';
 import { startRedisCluster, type RedisClusterHandle } from './redis-cluster.js';
 import { startRedisSentinel, type RedisSentinelHandle } from './redis-sentinel.js';
 import { startRedis } from './redis.js';
@@ -30,8 +30,10 @@ const reachability = new Map<AdapterName, Promise<boolean>>();
 /**
  * Whether the host can use `name`'s pub/sub, probed once per test file (the cache is per module,
  * and Vitest loads this module once per file). It uses the file's shared container or Sentinel
- * set through a temporary client, so it starts no extra container. A file calls it with top-level
- * `await` before declaring cases, then uses `it.skipIf(!reachable)` and `skipTitle`.
+ * set through a temporary client, so it starts no extra container. The probe drives that raw
+ * client, not the library's adapter, so an adapter pub/sub bug fails the cases instead of skipping
+ * them. A file calls it with top-level `await` before declaring cases, then uses
+ * `it.skipIf(!reachable)` and `skipTitle`.
  */
 export function canReachPubSub(name: AdapterName): Promise<boolean> {
   let result = reachability.get(name);
@@ -40,7 +42,7 @@ export function canReachPubSub(name: AdapterName): Promise<boolean> {
       let started: StartedAdapter | undefined;
       try {
         started = await startAdapter(name);
-        return await probePubSub(started.client);
+        return await probePubSub(started.probe);
       } catch {
         return false;
       } finally {
@@ -91,6 +93,8 @@ export interface RawRedis {
 
 export interface StartedAdapter {
   client: RedisStoreOptions['client'];
+  /** The raw client, for `probePubSub`: it must not go through the adapter under test. */
+  probe: ProbeClient;
   /** Empties every database; on a cluster, every master. */
   flush(): Promise<void>;
   raw: RawRedis;
@@ -162,6 +166,7 @@ async function startIoredis(): Promise<StartedAdapter> {
   const client = new Redis(redis.url);
   return {
     client,
+    probe: { kind: 'ioredis', client },
     flush: async () => {
       await client.flushall();
     },
@@ -194,6 +199,7 @@ async function startIoredisCluster(): Promise<StartedAdapter> {
   });
   return {
     client,
+    probe: { kind: 'ioredis', client },
     flush: async () => {
       await Promise.all(client.nodes('master').map((node) => node.flushall()));
     },
@@ -260,6 +266,7 @@ async function startNodeRedis(): Promise<StartedAdapter> {
   }
   return {
     client: nodeRedisAdapter(client),
+    probe: { kind: 'node-redis', client },
     flush: async () => {
       await client.flushAll();
     },
@@ -294,6 +301,7 @@ async function startNodeRedisCluster(): Promise<StartedAdapter> {
     Promise.all(client.masters.map(async (master) => run(await client.nodeClient(master))));
   return {
     client: nodeRedisAdapter(client),
+    probe: { kind: 'node-redis', client },
     flush: async () => {
       await perMaster((node) => node.flushAll());
     },
@@ -326,6 +334,7 @@ async function startIoredisSentinel(): Promise<StartedAdapter> {
   client.on('error', () => undefined);
   return {
     client,
+    probe: { kind: 'ioredis', client },
     flush: async () => {
       await client.flushall();
     },
@@ -361,6 +370,7 @@ async function startNodeRedisSentinel(): Promise<StartedAdapter> {
   await client.connect();
   return {
     client: nodeRedisAdapter(client),
+    probe: { kind: 'node-redis-sentinel', client },
     flush: async () => {
       await client.flushAll();
     },
