@@ -53,3 +53,11 @@ void cache.getMany(['k'], SOFT);
 void cache.set('k', 1, SOFT);
 // @ts-expect-error setMany does not support softTimeout
 void cache.setMany([['k', 1]], SOFT);
+
+/* 0.9-T6 J-06: getOrSetMany never locks and rejects lock: true, so the type accepts only
+   false (an options object shared with getOrSet may still say lock: false). */
+const loadMany = (): Promise<Map<string, number>> => Promise.resolve(new Map<string, number>());
+void cache.getOrSetMany(['k'], loadMany, { lock: false });
+// @ts-expect-error getOrSetMany does not support lock: true
+void cache.getOrSetMany(['k'], loadMany, { lock: true });
+expectTypeOf<lib.GetOrSetManyOptions<number>['lock']>().toEqualTypeOf<false | undefined>();

@@ -629,7 +629,8 @@ const users = await cache.getOrSetMany<User>(
 - `swr` serves stale values and refreshes them with one loader call for the stale keys; with `softTimeout` the whole
   call shares one wait window (see [Expiry strategies](#expiry-strategies)). `sliding` makes `getMany`
   call `getAndTouch` for each key (per key, not one batch call).
-- `getOrSetMany` with `lock: true` throws `CacheConfigError`, and `defaults.lock.enabled` is ignored for batches.
+- `getOrSetMany` never locks: its `lock` option accepts only `false` (a JavaScript caller passing `lock: true` gets
+  `CacheConfigError`), and `defaults.lock.enabled` is ignored for batches.
   Coalescing is per process.
 - The `load` event fires once per loader call and carries `keys` (all the keys passed to the loader); `key` is the
   first of them.

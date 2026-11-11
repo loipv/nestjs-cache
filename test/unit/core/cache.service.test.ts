@@ -362,7 +362,7 @@ describe('CacheService', () => {
       const nulls = vi.fn(async () => new Map<string, string>());
       await service.getOrSetMany(['z'], nulls, { cacheNull: true, nullTtl: 9 });
       expect(store.data.get('z')?.ttlMs).toBe(9);
-      await expect(service.getOrSetMany(['a'], loader, { lock: true })).rejects.toThrow(
+      await expect(service.getOrSetMany(['a'], loader, { lock: true } as never)).rejects.toThrow(
         CacheConfigError,
       );
       expect(await service.getMany([])).toEqual([]);

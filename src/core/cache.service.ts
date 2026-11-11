@@ -39,11 +39,12 @@ interface WritesMany<T> {
   tags?: readonly string[] | ((value: T, key: string) => readonly string[]);
 }
 
-interface LoadPolicy<T> {
+/** The load options; `L` narrows `lock` (`false` for `getOrSetMany`, which never locks). */
+interface LoadPolicy<T, L extends boolean = boolean> {
   cacheNull?: boolean;
   nullTtl?: number;
   unless?: (result: T) => boolean;
-  lock?: boolean;
+  lock?: L;
 }
 
 /**
@@ -53,11 +54,14 @@ interface LoadPolicy<T> {
  */
 export type GetOrSetOptions<T> = KeyOptions & Writes<T> & LoadStrategyOptions & LoadPolicy<T>;
 
-/** `getOrSetMany` options; `lock: true` is not supported. */
+/**
+ * `getOrSetMany` options. `lock` accepts only `false`: a batch never locks, and `lock: true`
+ * from JavaScript rejects with `CacheConfigError`.
+ */
 export type GetOrSetManyOptions<T> = KeyOptions &
   WritesMany<T> &
   LoadStrategyOptions &
-  LoadPolicy<T>;
+  LoadPolicy<T, false>;
 
 function refOf(
   key: string,
