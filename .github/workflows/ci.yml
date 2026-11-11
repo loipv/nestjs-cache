@@ -52,7 +52,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Install Nest 11
         if: matrix.nest == 11
-        run: npm install --no-save --ignore-scripts @nestjs/common@11 @nestjs/core@11 @nestjs/testing@11
+        run: npm install --no-save --ignore-scripts @nestjs/common@11 @nestjs/core@11 @nestjs/testing@11 @nestjs/platform-express@11 @nestjs/platform-fastify@11
       - if: ${{ !(matrix.node == 24 && matrix.nest == 12) }}
         run: npm test
       - if: ${{ matrix.node == 24 && matrix.nest == 12 }}
