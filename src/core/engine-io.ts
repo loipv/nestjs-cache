@@ -241,6 +241,8 @@ export class EngineIO {
    * Applies the `unless`/`cacheNull` policy, then writes with the matching strategy. `taken` is
    * the stamp of tags known before a load; without it, `options.tags` is stamped only once the
    * write is decided (a tag function gets the value). An entry without tags adds no await.
+   * Resolves `true` only when the entry was written: `false` when the policy skips it or it is
+   * empty without `cacheNull` (even when that deletes), its stamp is `'skip'`, or the set fails.
    */
   async store<T>(
     target: Target,
@@ -251,26 +253,27 @@ export class EngineIO {
     strategy: ExpiryStrategy,
     deleteWhenEmpty: boolean,
     taken?: Stamping,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const plan = writePlan(this.envelope, target, value, options, strategy);
-    if (plan === 'skip') return;
+    if (plan === 'skip') return false;
     if (plan === 'empty') {
       // Through `delete`, so a versioned namespace reads its token fresh, as any delete does.
       if (deleteWhenEmpty) {
         await this.delete({ store: ref.store, namespace: ref.namespace }, [ref.key]);
       }
-      return;
+      return false;
     }
     const { tags } = options;
     const stamping =
       taken ?? (tags === undefined ? undefined : await this.tags.stampFor(target, tags, value));
-    if (stamping === 'skip') return;
-    await this.write(target, ref, key, value, plan.strategy, plan.ttl, stamping);
+    if (stamping === 'skip') return false;
+    return await this.write(target, ref, key, value, plan.strategy, plan.ttl, stamping);
   }
 
   /**
    * `store` for loaded batch values, written with one `writeMany`; it never deletes. `taken` is
    * as for `store`; without it, the entries to write are stamped together (one token call).
+   * Resolves the user keys written, as `writeMany` does.
    */
   async storeMany<T>(
     target: Target,
@@ -278,7 +281,7 @@ export class EngineIO {
     options: BatchPutOptions<T>,
     strategy: ExpiryStrategy,
     taken?: Stamping,
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string>> {
     const planned: (WriteItem & { value: T })[] = [];
     for (const item of items) {
       const plan = writePlan(this.envelope, target, item.value, options, strategy);
@@ -290,12 +293,13 @@ export class EngineIO {
     } else {
       writes = taken === 'skip' ? [] : planned.map((write) => ({ ...write, tags: taken }));
     }
-    await this.writeMany(target, writes);
+    return await this.writeMany(target, writes);
   }
 
   /**
    * `ttl` is an integer >= 1, already jittered when the strategy asks for it. `tags` is the
-   * entry's stamp, written as the envelope's `tags` unless absent or empty.
+   * entry's stamp, written as the envelope's `tags` unless absent or empty. Resolves whether the
+   * entry was written (`false` after a `set` error).
    */
   async write(
     { name, store }: Target,
@@ -305,7 +309,7 @@ export class EngineIO {
     strategy: ExpiryStrategy,
     ttl: number,
     tags?: TagStamp,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let storeTtl: number;
     try {
       const wrapped = strategy.wrap(value, Date.now(), ttl);
@@ -314,17 +318,24 @@ export class EngineIO {
       await store.set(key, this.options.serializer.serialize(envelope), storeTtl);
     } catch (error) {
       this.reportError(name, 'set', error);
-      return;
+      return false;
     }
     this.events.emit('set', { store: name, namespace: ref.namespace, key: ref.key, ttl: storeTtl });
+    return true;
   }
 
   /**
    * Writes several entries with one `store.setMany` (one `set` per entry without it), each as
    * `write` would, emitting `set` per written entry. A value that cannot be serialized is a
    * `set` error and is left out; a failing batch write is one `set` error. Keys are unique.
+   * Resolves the user keys (`ref.key`) written: those a `set` event was emitted for.
    */
-  async writeMany({ name, store }: Target, items: readonly WriteItem[]): Promise<void> {
+  async writeMany(
+    { name, store }: Target,
+    items: readonly WriteItem[],
+  ): Promise<ReadonlySet<string>> {
+    // User keys (`ref.key`), not store keys: a batch is one namespace and loads by user key.
+    const done = new Set<string>();
     const entries: { key: string; value: string; ttlMs: number }[] = [];
     const written: { ref: KeyRef; ttl: number }[] = [];
     for (const { ref, key, value, strategy, ttl, tags } of items) {
@@ -337,14 +348,14 @@ export class EngineIO {
         this.reportError(name, 'set', error);
       }
     }
-    if (entries.length === 0) return;
+    if (entries.length === 0) return done;
     let stored: boolean[];
     if (store.setMany !== undefined) {
       try {
         await store.setMany(entries);
       } catch (error) {
         this.reportError(name, 'set', error);
-        return;
+        return done;
       }
       stored = entries.map(() => true);
     } else {
@@ -357,8 +368,10 @@ export class EngineIO {
     }
     written.forEach(({ ref, ttl }, i) => {
       if (stored[i] !== true) return;
+      done.add(ref.key);
       this.events.emit('set', { store: name, namespace: ref.namespace, key: ref.key, ttl });
     });
+    return done;
   }
 
   async delete(

@@ -764,6 +764,72 @@ describe('CacheEngine batch API', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    const batchUnwritten: [string, Record<string, unknown>, (store: BatchStore) => void, string][] =
+      [
+        ['unless returning true', { unless: (v: unknown) => v === null }, () => undefined, 'none'],
+        [
+          'unless throwing',
+          {
+            unless: (v: unknown) => {
+              if (v === null) throw new Error('unless failed');
+              return false;
+            },
+          },
+          () => undefined,
+          'set',
+        ],
+        [
+          "a tag stamp 'skip'",
+          {
+            tags: (_value: unknown, key: string) => {
+              if (key === 'a') throw new Error('bad tags');
+              return ['t'];
+            },
+          },
+          () => undefined,
+          'tag',
+        ],
+        [
+          'a failing store write',
+          {},
+          (store) => {
+            store.failSetMany = new Error('setMany failed');
+          },
+          'set',
+        ],
+      ];
+
+    it.each(batchUnwritten)(
+      'getOrSetMany softTimeout with cacheNull: an empty refresh skipped by %s returns stale',
+      async (_, extra, arrange, operation) => {
+        /* Spec 4: the loader returns null for 'a' and 'newb' for 'b'. cacheNull would write the
+           null, but its write does not happen, so 'a' gets its stale value; 'b' gets its new
+           value even when its own write failed too (F-6: a non-empty value is fresh data). */
+        const { engine, store, emitted } = setup();
+        await engine.set({ key: 'a' }, 'oldA', SWR);
+        await engine.set({ key: 'b' }, 'oldB', SWR);
+        vi.setSystemTime(150);
+        emitted.length = 0;
+        arrange(store);
+        const loader = vi.fn(
+          async () =>
+            new Map<string, string | null>([
+              ['a', null],
+              ['b', 'newb'],
+            ]),
+        );
+        const soft = { ...SWR, softTimeout: 50, cacheNull: true, ...extra };
+        expect(await engine.getOrSetMany({}, ['a', 'b'], loader, soft)).toEqual(['oldA', 'newb']);
+        expect(loader).toHaveBeenCalledOnce();
+        const errors = emitted.filter((e) => e.event === 'error');
+        expect(errors.map((e) => (e.payload as { operation: string }).operation)).toEqual(
+          operation === 'none' ? [] : [operation],
+        );
+        expect((await engine.getMany({}, ['a'], SWR))[0]).toBe('oldA');
+        expect(vi.getTimerCount()).toBe(0);
+      },
+    );
+
     it('a failed refresh only emits error{operation: refresh}', async () => {
       /* The background loader rejects: the caller already has the stale value, one refresh
          error is reported and the stale entry stays. */

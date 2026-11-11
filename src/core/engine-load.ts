@@ -53,10 +53,20 @@ type Located = Pick<LoadPlan<unknown>, 'target' | 'ref'>;
 
 /**
  * A refresh that found the lock held settles its flight without a value. `unwritten` marks an
- * empty value (`undefined`/`null`, or an omitted batch key) that was not stored, because
- * `cacheNull` was off or the load could not write.
+ * empty value (`undefined`/`null`, or an omitted batch key) that was not stored, by what the
+ * write actually did (`EngineIO.store`/`storeMany`): `cacheNull` off, a load that does not
+ * write, an `unless` veto or throw, a `'skip'` tag stamp or a failed set.
  */
-type Outcome<T> = { loaded: true; value: T; unwritten?: true } | { loaded: false };
+type Outcome<T> = Loaded<T> | { loaded: false };
+
+/** A flight that loaded a value; see `Outcome`. */
+type Loaded<T> = { loaded: true; value: T; unwritten?: true };
+
+/** A loaded value and whether its write happened. */
+interface Stored<T> {
+  value: T;
+  written: boolean;
+}
 
 /**
  * The value a refresh wrote; `undefined` when it was skipped or failed, or loaded an empty value
@@ -65,6 +75,12 @@ type Outcome<T> = { loaded: true; value: T; unwritten?: true } | { loaded: false
  * `{ value }`.
  */
 export type Refreshed<T> = { value: T } | undefined;
+
+/** A batch loader's result and the user keys of it that were written. */
+interface LoadedMany<T> {
+  loaded: ReadonlyMap<string, T>;
+  written: ReadonlySet<string>;
+}
 
 /** Node runs a longer `setTimeout` delay after 1 ms; the soft wait is capped at this instead. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -110,15 +126,13 @@ function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
 export class EngineLoad {
   private readonly singleFlight = new SingleFlight();
   private readonly lockSettings: LockSettings;
-  private readonly cacheNull: boolean;
 
   constructor(
     private readonly io: EngineIO,
-    defaults: Pick<ResolvedDefaults, 'lock' | 'cacheNull'>,
+    defaults: Pick<ResolvedDefaults, 'lock'>,
   ) {
     const { ttl, waitTimeout, retryDelay } = defaults.lock;
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
-    this.cacheNull = defaults.cacheNull;
   }
 
   /**
@@ -171,7 +185,7 @@ export class EngineLoad {
       else skipped.push(item);
     });
     if (skipped.length > 0) {
-      const loaded = await this.loadMany(plan, skipped, false);
+      const { loaded } = await this.loadMany(plan, skipped, false);
       for (const item of skipped) values.set(item.ref.key, loaded.get(item.ref.key));
     }
     return values;
@@ -180,8 +194,9 @@ export class EngineLoad {
   /**
    * One loader call for the stale items not already in flight, as `refresh`; the items in
    * flight join theirs. A failure is one `refresh` error; the stale values stay. Never rejects:
-   * the result holds the keys whose refreshed value was written, by plain key (an omitted key
-   * only with `cacheNull`, as `undefined`; otherwise it keeps its stale value, `Refreshed`).
+   * the result holds, by plain key, each refreshed value that counts (`Refreshed`): a non-empty
+   * one, and an empty one (an omitted key as `undefined`) only when it was actually written;
+   * any other key keeps its stale value.
    * With `softTimeout`, it settles once every item is done or that many ms have passed,
    * whichever is first, with the keys done by then; the refreshes run on.
    */
@@ -215,12 +230,13 @@ export class EngineLoad {
     const own = items.filter(
       (item) => !this.singleFlight.has(this.flightKey(plan.target, item.key)),
     );
-    let loaded: Promise<ReadonlyMap<string, T>> | undefined;
+    let batch: Promise<LoadedMany<T>> | undefined;
     return items.map((item) =>
       this.singleFlight.run<Outcome<unknown>>(this.flightKey(plan.target, item.key), async () => {
-        loaded ??= this.loadMany(plan, own, refreshing);
-        const value = (await loaded).get(item.ref.key);
-        return this.outcome(value, item.noWrite !== true, plan.options.cacheNull);
+        batch ??= this.loadMany(plan, own, refreshing);
+        const { loaded, written } = await batch;
+        const { key } = item.ref;
+        return this.outcome({ value: loaded.get(key), written: written.has(key) });
       }),
     );
   }
@@ -228,13 +244,13 @@ export class EngineLoad {
   /**
    * Runs the loader for `items` and stores what it returned for them, except `noWrite` items;
    * other keys are ignored. Tags known up front have their tokens taken before the loader runs,
-   * as in `loadAndStore`, when any item is to be written.
+   * as in `loadAndStore`, when any item is to be written. `written` holds the user keys stored.
    */
   private async loadMany<T>(
     plan: BatchPlan<T>,
     items: readonly LoadItem[],
     refreshing: boolean,
-  ): Promise<ReadonlyMap<string, T>> {
+  ): Promise<LoadedMany<T>> {
     const { tags } = plan.options;
     const writable = items.filter((item) => item.noWrite !== true);
     const taken =
@@ -248,8 +264,14 @@ export class EngineLoad {
     );
     // An omitted key is stored as if the loader had returned `undefined` for it.
     const values = writable.map(({ ref, key }) => ({ ref, key, value: loaded.get(ref.key) as T }));
-    await this.io.storeMany(plan.target, values, plan.options, plan.strategy, taken);
-    return loaded;
+    const written = await this.io.storeMany(
+      plan.target,
+      values,
+      plan.options,
+      plan.strategy,
+      taken,
+    );
+    return { loaded, written };
   }
 
   /**
@@ -285,60 +307,54 @@ export class EngineLoad {
     return `${target.name}\u0000${key.full}`;
   }
 
-  private async missTask<T>(plan: LoadPlan<T>): Promise<{ loaded: true; value: T }> {
-    const value =
+  /** A miss's flight outcome; `unwritten` as in `Outcome`, for a refresh that joins it. */
+  private async missTask<T>(plan: LoadPlan<T>): Promise<Loaded<T>> {
+    const stored =
       plan.lock === undefined
         ? await this.loadAndStore(plan, false)
         : await this.loadLocked(plan, plan.lock);
-    return this.planOutcome(plan, value);
+    return this.outcome(stored);
   }
 
   /**
-   * A loaded value as a flight outcome: marked `unwritten` when it is empty and was not stored
-   * (`cacheNull` off, or a load that does not write), as `writePlan` decides.
+   * A loaded value as a flight outcome: marked `unwritten` when it is empty and its write did
+   * not happen. A non-empty value is fresh data whether or not it was written (F-6).
    */
-  private outcome<T>(
-    value: T,
-    writes: boolean,
-    cacheNull: boolean | undefined,
-  ): { loaded: true; value: T; unwritten?: true } {
-    if (isEmpty(value) && !(writes && (cacheNull ?? this.cacheNull))) {
-      return { loaded: true, value, unwritten: true };
-    }
+  private outcome<T>({ value, written }: Stored<T>): Loaded<T> {
+    if (isEmpty(value) && !written) return { loaded: true, value, unwritten: true };
     return { loaded: true, value };
   }
 
-  private planOutcome<T>(
-    plan: LoadPlan<T>,
-    value: T,
-  ): { loaded: true; value: T; unwritten?: true } {
-    return this.outcome(value, plan.noWrite !== true, plan.options.cacheNull);
-  }
-
-  /** A value found while waiting for another holder is served with a single `hit`. */
-  private async loadLocked<T>(plan: LoadPlan<T>, lock: LockProvider): Promise<T> {
+  /**
+   * A value found while waiting for another holder is served with a single `hit`; it is in the
+   * store, so it counts as written.
+   */
+  private async loadLocked<T>(plan: LoadPlan<T>, lock: LockProvider): Promise<Stored<T>> {
     const { target, ref, key, strategy, ttl } = plan;
-    const result = await loadWithLock<{ value: T; stale: boolean }>(
+    const result = await loadWithLock<Stored<T> & { stale: boolean }>(
       lock,
       key.lock,
       this.lockSettings,
       async () => {
         const cached = await this.io.read(target, key, strategy, ttl);
         return servable(cached, strategy)
-          ? { found: true, value: { value: cached.value as T, stale: cached.stale } }
+          ? {
+              found: true,
+              value: { value: cached.value as T, written: true, stale: cached.stale },
+            }
           : { found: false };
       },
-      async () => ({ value: await this.loadAndStore(plan, false), stale: false }),
+      async () => ({ ...(await this.loadAndStore(plan, false)), stale: false }),
       this.hooks(plan),
     );
     // A stale swr value is served as is; the holder's own write is the refresh.
     if (result.from === 'cache') this.io.hit(target.name, ref, result.value.stale);
-    return result.value.value;
+    return result.value;
   }
 
   private async refreshTask<T>(plan: LoadPlan<T>): Promise<Outcome<T>> {
     if (plan.lock === undefined) {
-      return this.planOutcome(plan, await this.loadAndStore(plan, true));
+      return this.outcome(await this.loadAndStore(plan, true));
     }
     let outcome: Outcome<T> = { loaded: false };
     await refreshWithLock(
@@ -346,7 +362,7 @@ export class EngineLoad {
       plan.key.lock,
       this.lockSettings.ttl,
       async () => {
-        outcome = this.planOutcome(plan, await this.loadAndStore(plan, true));
+        outcome = this.outcome(await this.loadAndStore(plan, true));
       },
       this.hooks(plan),
     );
@@ -368,9 +384,9 @@ export class EngineLoad {
    * A synchronous loader throw is a failed load too; `refreshing` reports it as `refresh`. Tags
    * known up front (an array) have their tokens taken before the loader runs, and the write uses
    * exactly those, so an invalidation during the load is not lost (spec 3.3). A `noWrite` plan
-   * only loads.
+   * only loads. `written` is what `EngineIO.store` reports.
    */
-  private async loadAndStore<T>(plan: LoadPlan<T>, refreshing: boolean): Promise<T> {
+  private async loadAndStore<T>(plan: LoadPlan<T>, refreshing: boolean): Promise<Stored<T>> {
     const { target, ref, key, loader, options, strategy } = plan;
     const writes = plan.noWrite !== true;
     // Awaited only with tags known up front: an untagged load keeps the 0.6 ticks.
@@ -387,7 +403,8 @@ export class EngineLoad {
       throw error;
     }
     this.io.emitLoad(target.name, ref, started, true);
-    if (writes) await this.io.store(target, ref, key, value, options, strategy, false, taken);
-    return value;
+    const written =
+      writes && (await this.io.store(target, ref, key, value, options, strategy, false, taken));
+    return { value, written };
   }
 }

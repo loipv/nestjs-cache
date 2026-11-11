@@ -536,6 +536,96 @@ describe('CacheEngine swr softTimeout', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  const unwrittenEmpty: [string, Record<string, unknown>, (store: FakeStore) => void, string][] = [
+    ['unless returning true', { unless: (v: unknown) => v === null }, () => undefined, 'none'],
+    [
+      'unless throwing',
+      {
+        unless: () => {
+          throw new Error('unless failed');
+        },
+      },
+      () => undefined,
+      'set',
+    ],
+    [
+      "a tag stamp 'skip'",
+      {
+        tags: () => {
+          throw new Error('bad tags');
+        },
+      },
+      () => undefined,
+      'tag',
+    ],
+    [
+      'a failing store write',
+      {},
+      (store) => {
+        store.failNext('set');
+      },
+      'set',
+    ],
+  ];
+
+  it.each(unwrittenEmpty)(
+    'softTimeout with cacheNull: an empty refresh skipped by %s returns stale',
+    async (_, extra, arrange, operation) => {
+      /* Spec 4: cacheNull would write the refreshed null, but the write does not happen (unless
+         vetoes or throws, the tag stamp is 'skip', the store set fails). The store still holds
+         'old', so the caller gets 'old', as with an unwritten empty value without cacheNull. */
+      const { engine, store, emitted } = makeEngine();
+      await engine.set({ key: 'k' }, 'old', SWR);
+      vi.setSystemTime(150);
+      emitted.length = 0;
+      arrange(store);
+      const loader = vi.fn(() => delayed(10, null));
+      const state = track(
+        engine.getOrSet<string | null>({ key: 'k' }, loader, {
+          ...SWR,
+          softTimeout: 50,
+          cacheNull: true,
+          ...extra,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(state).toEqual({ settled: true, value: 'old' });
+      expect(loader).toHaveBeenCalledOnce();
+      const errors = emitted.filter((e) => e.event === 'error');
+      expect(errors.map((e) => (e.payload as { operation: string }).operation)).toEqual(
+        operation === 'none' ? [] : [operation],
+      );
+      expect(emitted.some((e) => e.event === 'set')).toBe(false);
+      expect(await engine.get({ key: 'k' })).toBe('old');
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each([null, undefined])(
+    'the softTimeout result for a written empty value is unchanged (%s)',
+    async (empty) => {
+      /* Spec 4: an empty refresh that cacheNull actually writes replaces the stale entry, so the
+         caller still gets the empty value, and a later read hits it. */
+      const { engine, emitted } = makeEngine();
+      await engine.set({ key: 'k' }, 'old', SWR);
+      vi.setSystemTime(150);
+      emitted.length = 0;
+      const state = track(
+        engine.getOrSet<string | null | undefined>({ key: 'k' }, () => delayed(10, empty), {
+          ...SWR,
+          softTimeout: 50,
+          cacheNull: true,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(state).toEqual({ settled: true, value: empty });
+      expect(emitted.map((e) => e.event)).toEqual(['hit', 'load', 'set']);
+      expect(await engine.get({ key: 'k' })).toBe(empty);
+      expect(emitted.at(-1)?.event).toBe('hit');
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it('the softTimeout timer is always cleared', async () => {
     /* In time, timed out, failed and skipped: no timer is left behind once the call and its
        refresh are done, and the timer is unref'd. */
