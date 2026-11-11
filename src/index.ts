@@ -26,6 +26,8 @@ export type {
 export type { CacheEnvelope } from './core/envelope.js';
 export type { Serializer } from './serializers/json.serializer.js';
 export { jsonSerializer } from './serializers/json.serializer.js';
+export { compressedSerializer } from './serializers/compressed.serializer.js';
+export type { CompressedSerializerOptions } from './serializers/compressed.serializer.js';
 export { CacheEvents } from './core/events.js';
 export type {
   BreakerState,

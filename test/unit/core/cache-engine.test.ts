@@ -1,3 +1,4 @@
+import { compressedSerializer } from '../../../src/serializers/compressed.serializer.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -215,6 +216,15 @@ describe('CacheEngine', () => {
     expect(await engine.get({ key: 'a' })).toBeUndefined();
     expect(store.data.has('a')).toBe(true);
     expect(emitted.some(isDeserializeError)).toBe(true);
+  });
+
+  it('a corrupt compressed payload is one deserialize error and a miss', async () => {
+    /* the compressed serializer's throw takes the normal deserialize path and deletes nothing */
+    const { engine, store, emitted } = makeEngine({ serializer: compressedSerializer() });
+    store.data.set('a', { value: '\u0000nc1:gz:bm90IGd6aXA=', ttlMs: 1 });
+    expect(await engine.get({ key: 'a' })).toBeUndefined();
+    expect(emitted.filter(isDeserializeError)).toHaveLength(1);
+    expect(store.data.has('a')).toBe(true);
   });
 
   it('a serializer that throws on write resolves and reports a set error', async () => {
