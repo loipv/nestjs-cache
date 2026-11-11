@@ -1,6 +1,6 @@
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { CacheConfigError } from '../errors.js';
-import type { CacheEnvelope } from '../core/envelope.js';
+import { hasOwnVersion, type CacheEnvelope } from '../core/envelope.js';
 import { jsonSerializer, type Serializer } from './json.serializer.js';
 
 export interface CompressedSerializerOptions {
@@ -16,6 +16,13 @@ export interface CompressedSerializerOptions {
    */
   maxDecompressedBytes?: number;
 }
+
+/**
+ * Internal (not exported from the package): the key of the check `compressedSerializer` adds
+ * over `jsonSerializer`, which tells the engine whether an unreadable raw string is one of the
+ * library's own envelopes (spec 4). The check returns `undefined` when it cannot tell.
+ */
+export const OWN_ENVELOPE: unique symbol = Symbol('nestjs-cache.ownEnvelope');
 
 const DETECT = '\u0000nc1:';
 const PREFIXES = { gzip: `${DETECT}gz:`, brotli: `${DETECT}br:` } as const;
@@ -54,7 +61,26 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
   const serializer = inner as Serializer;
   const prefix = PREFIXES[algorithm];
 
-  return {
+  /** The inner string of a prefixed `raw`; throws as `deserialize` does on bad input. */
+  const unpack = (raw: string): string => {
+    const body = raw.slice(DETECT.length);
+    const tag = body.slice(0, 3);
+    if (tag !== 'gz:' && tag !== 'br:') {
+      throw new Error('Invalid cache payload: unknown compression algorithm');
+    }
+    const encoded = body.slice(3);
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) {
+      throw new Error('Invalid cache payload: not valid base64');
+    }
+    const bytes = Buffer.from(encoded, 'base64');
+    const unpacked =
+      tag === 'gz:'
+        ? gunzipSync(bytes, { maxOutputLength: maxDecompressedBytes })
+        : brotliDecompressSync(bytes, { maxOutputLength: maxDecompressedBytes });
+    return unpacked.toString('utf8');
+  };
+
+  const compressed: Serializer = {
     serialize(envelope: CacheEnvelope): string {
       const plain = serializer.serialize(envelope);
       const size = Buffer.byteLength(plain, 'utf8');
@@ -68,22 +94,30 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
       return out.length < plain.length ? out : plain;
     },
     deserialize(raw: string): CacheEnvelope {
-      if (!raw.startsWith(DETECT)) return serializer.deserialize(raw);
-      const body = raw.slice(DETECT.length);
-      const tag = body.slice(0, 3);
-      if (tag !== 'gz:' && tag !== 'br:') {
-        throw new Error('Invalid cache payload: unknown compression algorithm');
-      }
-      const encoded = body.slice(3);
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) {
-        throw new Error('Invalid cache payload: not valid base64');
-      }
-      const bytes = Buffer.from(encoded, 'base64');
-      const unpacked =
-        tag === 'gz:'
-          ? gunzipSync(bytes, { maxOutputLength: maxDecompressedBytes })
-          : brotliDecompressSync(bytes, { maxOutputLength: maxDecompressedBytes });
-      return serializer.deserialize(unpacked.toString('utf8'));
+      return serializer.deserialize(raw.startsWith(DETECT) ? unpack(raw) : raw);
     },
   };
+  // Only over the built-in JSON serializer, whose format is known. Non-enumerable, so a spread
+  // copy with another `deserialize` does not inherit a check that no longer matches it.
+  if (serializer === jsonSerializer) {
+    Object.defineProperty(compressed, OWN_ENVELOPE, {
+      value: (raw: string): boolean | undefined => {
+        let plain = raw;
+        if (raw.startsWith(DETECT)) {
+          try {
+            plain = unpack(raw);
+          } catch {
+            // A value that cannot be decompressed may be anything: never grounds to delete.
+            return undefined;
+          }
+        }
+        try {
+          return hasOwnVersion(JSON.parse(plain));
+        } catch {
+          return false;
+        }
+      },
+    });
+  }
+  return compressed;
 }

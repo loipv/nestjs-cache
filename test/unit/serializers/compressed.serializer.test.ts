@@ -3,7 +3,10 @@ import { brotliCompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { unwrap, wrap } from '../../../src/core/envelope.js';
 import { CacheConfigError } from '../../../src/errors.js';
-import { compressedSerializer } from '../../../src/serializers/compressed.serializer.js';
+import {
+  compressedSerializer,
+  OWN_ENVELOPE,
+} from '../../../src/serializers/compressed.serializer.js';
 import { jsonSerializer, type Serializer } from '../../../src/serializers/json.serializer.js';
 
 const GZ = '\u0000nc1:gz:';
@@ -167,5 +170,34 @@ describe('compressedSerializer', () => {
     const out = s.serialize(e);
     expect(out.startsWith(GZ)).toBe(true);
     expect(s.deserialize(out).tags).toEqual(e.tags);
+  });
+
+  it('marks only a wrapper of jsonSerializer with a non-enumerable OWN_ENVELOPE check', () => {
+    /* Spec 4: the check says true for an envelope of another version (plain or compressed),
+       false for a foreign value, and undefined when it cannot decompress; a custom inner and a
+       spread copy carry no marker. */
+    const marked = compressedSerializer({ maxDecompressedBytes: 256 }) as unknown as Record<
+      typeof OWN_ENVELOPE,
+      (raw: string) => boolean | undefined
+    >;
+    const check = marked[OWN_ENVELOPE];
+    expect(check('{"v":2}')).toBe(true);
+    expect(check(GZ + gzipSync(Buffer.from('{"v":2}')).toString('base64'))).toBe(true);
+    expect(check(BR + brotliCompressSync(Buffer.from('{"v":"x"}')).toString('base64'))).toBe(true);
+    expect(check('{"foo":1}')).toBe(false);
+    expect(check('[{"v":1}]')).toBe(false);
+    expect(check('not json')).toBe(false);
+    expect(check(GZ + gzipSync(Buffer.from('{"foo":1}')).toString('base64'))).toBe(false);
+    expect(check(GZ + Buffer.from('garbage').toString('base64'))).toBeUndefined();
+    const large = `{"v":2,"value":"${'a'.repeat(500)}"}`;
+    expect(check(GZ + gzipSync(Buffer.from(large)).toString('base64'))).toBeUndefined();
+    expect(check('\u0000nc1:zz:AAAA')).toBeUndefined();
+    const custom: Serializer = {
+      serialize: jsonSerializer.serialize,
+      deserialize: jsonSerializer.deserialize,
+    };
+    expect(OWN_ENVELOPE in compressedSerializer({ inner: custom })).toBe(false);
+    expect(OWN_ENVELOPE in { ...compressedSerializer() }).toBe(false);
+    expect(Object.getOwnPropertySymbols(compressedSerializer())).toEqual([OWN_ENVELOPE]);
   });
 });

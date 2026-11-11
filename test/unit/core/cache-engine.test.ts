@@ -1,4 +1,6 @@
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { compressedSerializer } from '../../../src/serializers/compressed.serializer.js';
+import { jsonSerializer, type Serializer } from '../../../src/serializers/json.serializer.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -225,6 +227,87 @@ describe('CacheEngine', () => {
     expect(await engine.get({ key: 'a' })).toBeUndefined();
     expect(emitted.filter(isDeserializeError)).toHaveLength(1);
     expect(store.data.has('a')).toBe(true);
+  });
+
+  const FOREIGN_VERSION = '{"v":2,"value":1,"storedAt":0}';
+  const gz = (plain: string): string =>
+    `\u0000nc1:gz:${gzipSync(Buffer.from(plain)).toString('base64')}`;
+  const br = (plain: string): string =>
+    `\u0000nc1:br:${brotliCompressSync(Buffer.from(plain)).toString('base64')}`;
+
+  it.each([
+    ['compressedSerializer()', () => compressedSerializer()],
+    [
+      'compressedSerializer({ inner: jsonSerializer })',
+      () => compressedSerializer({ inner: jsonSerializer }),
+    ],
+    [
+      'compressedSerializer({ algorithm: brotli })',
+      () => compressedSerializer({ algorithm: 'brotli' }),
+    ],
+  ])(
+    'a foreign-version envelope is deleted under compressedSerializer(jsonSerializer), both uncompressed and compressed (%s)',
+    async (_, make) => {
+      /* Spec 4: an entry of another envelope version is the library's own, plain or behind a
+         gzip/brotli prefix, so it is deleted as under jsonSerializer; a foreign value is not. */
+      const { engine, store, emitted } = makeEngine({ serializer: make() });
+      const raws = {
+        plain: FOREIGN_VERSION,
+        gzip: gz(FOREIGN_VERSION),
+        brotli: br(FOREIGN_VERSION),
+        corrupt: gz('{"v":1,"value":1}'),
+        foreignPlain: '{"foo":1}',
+        foreignGzip: gz('{"foo":1}'),
+        notJson: gz('not json'),
+      };
+      for (const [key, raw] of Object.entries(raws)) store.data.set(key, { value: raw, ttlMs: 1 });
+      for (const key of Object.keys(raws)) expect(await engine.get({ key })).toBeUndefined();
+      expect([...store.data.keys()].sort()).toEqual(['foreignGzip', 'foreignPlain', 'notJson']);
+      expect(emitted.filter(isDeserializeError)).toHaveLength(Object.keys(raws).length);
+    },
+  );
+
+  it('a decompression error is never treated as a foreign envelope (no delete)', async () => {
+    /* Spec 4: a prefixed value that cannot be decompressed within maxDecompressedBytes (too
+       large, truncated, bad base64, unknown algorithm) is left in the store, even when its
+       content would be an envelope of another version. */
+    const padded = `{"v":2,"value":"${'a'.repeat(500)}","storedAt":0}`;
+    const { engine, store, emitted } = makeEngine({
+      serializer: compressedSerializer({ maxDecompressedBytes: 256 }),
+    });
+    const whole = gzipSync(Buffer.from(FOREIGN_VERSION));
+    const raws = {
+      tooLarge: gz(padded),
+      tooLargeBrotli: br(padded),
+      truncated: `\u0000nc1:gz:${whole.subarray(0, whole.length - 6).toString('base64')}`,
+      badBase64: '\u0000nc1:gz:!!!not base64!!!',
+      unknownAlgorithm: `\u0000nc1:zz:${whole.toString('base64')}`,
+    };
+    for (const [key, raw] of Object.entries(raws)) store.data.set(key, { value: raw, ttlMs: 1 });
+    for (const key of Object.keys(raws)) expect(await engine.get({ key })).toBeUndefined();
+    expect(store.data.size).toBe(Object.keys(raws).length);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    expect(emitted.filter(isDeserializeError)).toHaveLength(Object.keys(raws).length);
+  });
+
+  it('a custom inner serializer keeps the 0.8 behaviour (no delete)', async () => {
+    /* Spec 4: the marker is set only over the built-in jsonSerializer. A custom inner that
+       throws, even one that delegates to jsonSerializer, never leads to a delete. */
+    const delegating: Serializer = {
+      serialize: (e) => jsonSerializer.serialize(e),
+      deserialize: (raw) => jsonSerializer.deserialize(raw),
+    };
+    for (const inner of [delegating, { ...jsonSerializer }]) {
+      const { engine, store, emitted } = makeEngine({
+        serializer: compressedSerializer({ inner }),
+      });
+      store.data.set('plain', { value: FOREIGN_VERSION, ttlMs: 1 });
+      store.data.set('gzip', { value: gz(FOREIGN_VERSION), ttlMs: 1 });
+      expect(await engine.get({ key: 'plain' })).toBeUndefined();
+      expect(await engine.get({ key: 'gzip' })).toBeUndefined();
+      expect([...store.data.keys()]).toEqual(['plain', 'gzip']);
+      expect(emitted.filter(isDeserializeError)).toHaveLength(2);
+    }
   });
 
   it('a serializer that throws on write resolves and reports a set error', async () => {

@@ -1,5 +1,6 @@
 import type { StrategyOptions } from '../decorators/options.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
+import { OWN_ENVELOPE } from '../serializers/compressed.serializer.js';
 import { jsonSerializer } from '../serializers/json.serializer.js';
 import type { Target } from './engine-keys.js';
 import {
@@ -9,7 +10,7 @@ import {
   type TagOption,
   type TagStamp,
 } from './engine-tags.js';
-import { isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
+import { hasOwnVersion, isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
 import type { ReportError } from './events.js';
 import {
   classifyEnvelope,
@@ -74,15 +75,6 @@ export function servable(
   strategy: ExpiryStrategy,
 ): lookup is Extract<Lookup, { found: true }> {
   return lookup.found && (!lookup.stale || strategy.kind === 'swr');
-}
-
-function hasOwnVersion(value: unknown): boolean {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.prototype.hasOwnProperty.call(value, 'v')
-  );
 }
 
 export function isEmpty(value: unknown): value is null | undefined {
@@ -198,8 +190,10 @@ export async function deleteInvalid(
  * Whether an unreadable entry was written by this library: a corrupted envelope or one of
  * another version, i.e. an object with an own `v`. `decoded` is what the serializer returned,
  * or `undefined` when it threw. The built-in JSON serializer validates the envelope itself, so
- * for it the raw JSON is inspected; a throwing custom serializer never leads to a delete.
- * Never throws: a value that cannot even be inspected (a revoked Proxy) is not ours.
+ * for it the raw JSON is inspected; `compressedSerializer` over it carries an `OWN_ENVELOPE`
+ * check that does the same behind the compression prefix (`undefined`, so no delete, when it
+ * cannot decompress). A throwing custom serializer never leads to a delete. Never throws: a
+ * value that cannot even be inspected (a revoked Proxy) is not ours.
  */
 function ownEnvelope(
   ctx: EnvelopeContext,
@@ -208,8 +202,12 @@ function ownEnvelope(
 ): boolean {
   try {
     if (decoded !== undefined) return hasOwnVersion(decoded.value);
-    if (ctx.options.serializer !== jsonSerializer) return false;
-    return hasOwnVersion(JSON.parse(raw));
+    const { serializer } = ctx.options;
+    if (serializer === jsonSerializer) return hasOwnVersion(JSON.parse(raw));
+    const check: unknown = (serializer as Partial<Record<typeof OWN_ENVELOPE, unknown>>)[
+      OWN_ENVELOPE
+    ];
+    return typeof check === 'function' && (check as (raw: string) => unknown)(raw) === true;
   } catch {
     return false;
   }

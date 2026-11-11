@@ -23,6 +23,19 @@ export function unwrap(envelope: CacheEnvelope): unknown {
   return envelope.value;
 }
 
+/**
+ * Whether `value` looks like an envelope this library wrote, of any version: a plain object with
+ * an own `v`. Used to decide whether an unreadable entry may be deleted.
+ */
+export function hasOwnVersion(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, 'v')
+  );
+}
+
 export function isEnvelope(candidate: unknown): candidate is CacheEnvelope {
   if (typeof candidate !== 'object' || candidate === null) return false;
   const c = candidate as Record<string, unknown>;
