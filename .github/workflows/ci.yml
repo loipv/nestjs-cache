@@ -1,52 +1,116 @@
 name: CI
+
 on:
-  push: { branches: [main] }
-  pull_request:
-concurrency: { group: 'ci-${{ github.ref }}', cancel-in-progress: true }
+  push:
+    branches: [main]
+  pull_request: {}
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its previous run. Pushes to main are never cancelled: each
+# commit gets its own group, so every main commit keeps a CI result (the Release workflow runs
+# after CI on main).
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every install skips dependency lifecycle scripts, as in release.yml, so CI also proves that the
+# build and the tests work without them.
 jobs:
   static:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24, cache: npm }
-      - run: npm ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - run: npm run check:pack
+      - run: npm run check:pkg
+      - run: npm run check:workflows
+
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: { node: [22, 24, 26], nest: [11, 12] }
+      matrix:
+        node: [22, 24, 26]
+        nest: [11, 12]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '${{ matrix.node }}', cache: npm }
-      - run: npm ci
-      - if: matrix.nest == 11
-        run: npm install --no-save @nestjs/common@11 @nestjs/core@11 @nestjs/testing@11
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install Nest 11
+        if: matrix.nest == 11
+        run: npm install --no-save --ignore-scripts @nestjs/common@11 @nestjs/core@11 @nestjs/testing@11
       - if: ${{ !(matrix.node == 24 && matrix.nest == 12) }}
         run: npm test
       - if: ${{ matrix.node == 24 && matrix.nest == 12 }}
         run: npm run test:cov
+
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: { ioredis: [5, 6] }
+      matrix:
+        ioredis: [5, 6]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24, cache: npm }
-      - run: npm ci
-      - run: npm install --no-save ioredis@${{ matrix.ioredis }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm install --no-save --ignore-scripts ioredis@${{ matrix.ioredis }}
       - run: npm run test:integration
+
+  # Installs the packed tarball into a Nest 11 CommonJS app and a Nest 12 ESM app, on the oldest
+  # and the current supported Node line.
   consumers:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24, cache: npm }
-      - run: npm ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: npm run test:consumers
+
+  # The single required status check for branch protection: fails unless every job above
+  # succeeded. GitHub counts a skipped required check as passing, so this job must never be
+  # skipped: `always()` makes it run (and fail) whenever a need failed, was skipped, timed out or
+  # was cancelled. `npm run check:workflows` guards the `if` and the `needs` list.
+  ci-ok:
+    if: always()
+    needs: [static, unit, integration, consumers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needs results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required CI job did not succeed (result: $r)"
+              exit 1
+            fi
+          done

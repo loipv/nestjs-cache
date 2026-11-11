@@ -14,29 +14,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Skips when main has moved on since this CI run: the changesets actions tag and commit on
-  # github.sha (main's head), so they must match the tested commit. The newer commit's CI run releases.
+  # Runs only in the canonical repository (forks skip it). Skips when main has moved on since this
+  # CI run: the changesets actions tag and commit on github.sha (main's head), so they must match
+  # the tested commit. The newer commit's CI run releases.
+  #
+  # Every job installs with --ignore-scripts: no dependency lifecycle script runs next to write
+  # permissions, the OIDC token, or the build of the tarball that gets published. Every action is
+  # pinned by commit SHA (tags are mutable); Dependabot keeps the pins current.
   select-mode:
     if: >-
+      github.repository == 'loipv/nestjs-cache' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_sha == github.sha
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
       mode: ${{ steps.select-mode.outputs.mode }}
       publish-plan-artifact-id: ${{ steps.select-mode.outputs.publish-plan-artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - id: select-mode
         uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
 
@@ -45,19 +52,20 @@ jobs:
     needs: select-mode
     if: needs.select-mode.outputs.mode == 'version'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: npm run version-packages
@@ -67,20 +75,21 @@ jobs:
     needs: select-mode
     if: needs.select-mode.outputs.mode == 'publish'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
       pack-dir-artifact-id: ${{ steps.pack.outputs.pack-dir-artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - id: pack
         uses: changesets/action/pack@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
@@ -91,22 +100,23 @@ jobs:
   publish:
     needs: pack
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
       - name: Require npm 11.5.1 or later for trusted publishing
         run: |
           node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)" \
-            || npm install --global npm@^11.5.1
+            || npm install --global --ignore-scripts npm@^11.5.1
       # No dependency install scripts run next to the OIDC token; the changeset CLI needs none.
       - run: npm ci --ignore-scripts
       - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
