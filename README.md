@@ -4,10 +4,11 @@ Multi-store, two-tier cache for NestJS with decorators, stampede protection and 
 
 - `@Cacheable`, `@CachePut` and `@CacheEvict` decorators, plus a `CacheService` for direct calls.
 - `@HttpCache` for opt-in caching of controller routes (Express and Fastify).
-- Named stores: in-memory, Redis (ioredis or node-redis, standalone or Cluster) and a two-tier L1/L2 store synced over Pub/Sub.
+- Named stores: in-memory, Redis (ioredis or node-redis, standalone, Cluster or Sentinel) and a two-tier L1/L2 store synced over Pub/Sub.
 - Concurrent misses on the same key are coalesced into one load (per process), or across instances with the optional distributed lock.
 - Expiry strategies: `fixed`, `swr` (stale-while-revalidate) and `sliding`.
 - Per-store circuit breaker for Redis outages.
+- Optional gzip or brotli compression of large payloads (`compressedSerializer`).
 - Optional null caching and TTL jitter, both off by default.
 - No runtime dependencies. Dual ESM and CommonJS build.
 
@@ -169,6 +170,66 @@ The same cluster rules apply (Redis 7+, per-slot batches, `clear` scans every ma
   off for that instance until restart; the failure is reported (possibly twice: once from the client's error event and
   once from the failed subscribe). With the default strategies the subscriber keeps retrying.
 
+## Redis Sentinel
+
+Redis Sentinel works with both clients. Every command goes to the current master; the sentinels are used for
+discovery and failover only (replica reads are planned for 0.9).
+
+**ioredis.** Pass a client built with `sentinels` and `name` to `redisStore`, as you would a single client:
+
+```ts
+import Redis from 'ioredis';
+import { CacheModule, memoryStore, redisStore, tieredStore } from '@loipv/nestjs-cache';
+
+const redis = new Redis({
+  sentinels: [
+    { host: 'sentinel-1', port: 26379 },
+    { host: 'sentinel-2', port: 26379 },
+    { host: 'sentinel-3', port: 26379 },
+  ],
+  name: 'mymaster',
+});
+
+CacheModule.forRoot({
+  stores: { default: tieredStore({ l1: memoryStore(), l2: redisStore({ client: redis }) }) },
+});
+```
+
+The Pub/Sub connection comes from `duplicate()` and re-subscribes after a failover. After a failover an ioredis
+subscriber can miss invalidation messages for about 10 s (the old master drops it late); like any lost message this is
+bounded by `l1Ttl`.
+
+**node-redis (v5).** Pass a `createSentinel(...)` object that is already `connect()`ed to `nodeRedisAdapter`. It is
+detected automatically (the type is `NodeRedisSentinelLike`):
+
+```ts
+import { createSentinel } from 'redis';
+import { nodeRedisAdapter, redisStore } from '@loipv/nestjs-cache';
+
+const sentinel = createSentinel({
+  name: 'mymaster',
+  sentinelRootNodes: [{ host: 'sentinel-1', port: 26379 }],
+});
+sentinel.on('error', (err) => console.error(err));
+await sentinel.connect();
+const store = redisStore({ client: nodeRedisAdapter(sentinel) });
+```
+
+- The invalidation subscriber subscribes on the sentinel object itself (it does not duplicate it). Closing the store
+  only unsubscribes its channels and never closes your client.
+- A Sentinel `MASTER_CHANGE` clears L1, because messages published during a failover are lost.
+- While a tiered store is open over it, the sentinel's `'error'` events are also reported as `error` events with
+  `operation: 'subscribe'`. Still attach your own `'error'` listener.
+- **`nodeAddressMap` and a tiered store.** node-redis 5.x applies `nodeAddressMap` to its data connections but not to
+  its Sentinel pub/sub connection, which connects to the address the sentinel announces. If that address cannot be
+  reached from your app (NAT, Docker port mapping, Kubernetes without routable pod IPs), the tiered store's
+  invalidation subscription never connects. After a failover node-redis then waits for that connection before it uses
+  the new master, so every command on that client hangs, and `close()` hangs too. Any SUBSCRIBE on the client triggers
+  it, not only this library's. It is fixed upstream in node-redis 6.3.1, which this library's `redis ^5` peer range does
+  not cover yet. If the master and replica addresses the sentinels announce are reachable from your app, you are not
+  affected. Otherwise use ioredis (`natMap` covers its subscriber too), make the announced addresses reachable
+  (`replica-announce-ip` / `sentinel announce-ip`), or do not put a tiered store over it.
+
 ## Decorators
 
 ```ts
@@ -213,6 +274,7 @@ export class UserService {
 | `ttl`                  | `@Cacheable`, `@CachePut` | Overrides `defaults.ttl`                                                                        |
 | `strategy`             | `@Cacheable`, `@CachePut` | `'fixed'` (default), `'swr'` or `'sliding'` (see Expiry strategies)                             |
 | `staleTtl`, `maxTtl`   | `@Cacheable`, `@CachePut` | Strategy parameters (`swr` needs `staleTtl`; `sliding` accepts `maxTtl`)                        |
+| `softTimeout`          | `@Cacheable`              | `swr` only: wait up to this many ms for the refresh of a stale entry (see Expiry strategies)    |
 | `lock`                 | `@Cacheable`              | `true`/`false` overrides `defaults.lock.enabled` (see Distributed lock)                         |
 | `cacheNull`, `nullTtl` | `@Cacheable`, `@CachePut` | Per-method override of the defaults                                                             |
 | `condition`            | `@Cacheable`, `@CachePut` | Receives the method arguments; `false` skips the cache                                          |
@@ -272,7 +334,7 @@ export class UsersController {
   and `HEAD` are cached (`HEAD` shares the `GET` entry); other methods and non-HTTP contexts pass through.
 - **Options:** `ttl`, `namespace` (default `'http'`), `store`, `lock`, `cacheNull`, `nullTtl`, `key`, `unless`
   (`(body) => boolean`; return `true` to keep that body out of the cache) and the strategy options (`strategy: 'swr'`
-  with `staleTtl`/`maxTtl`, or `'sliding'`). Invalid options throw `CacheConfigError` when the decorator runs; an
+  with `staleTtl`/`softTimeout`, or `'sliding'`). Invalid options throw `CacheConfigError` when the decorator runs; an
   unknown `store` fails at startup (`app.init()`) with a message that names `@HttpCache`.
 - **Default key:** the request URL with the query sorted by name, then value, and `%` and `:` percent-encoded:
   `/users?b=2&a=1` and `/users?a=1&b=2` share the entry `/users?a=1&b=2`. It varies only on the path and the query,
@@ -489,8 +551,11 @@ Limits and errors:
 Consistency and cost:
 
 - Tags are scoped per store; one tag can span several namespaces in the same store.
-- The instance that invalidates sees it immediately; other instances see it within `versioning.cacheTtl` (default
-  1000 ms), the same setting that governs versioned namespaces.
+- The instance that invalidates sees it immediately. When an entry's stamp differs from an instance's cached tag
+  token, that instance re-reads the token from the store (at most once per tag per `versioning.cacheTtl`, default
+  1000 ms) and a confirmed match is a hit. So instances do not keep rewriting each other's entries after an
+  invalidation, and other instances usually see it on the next read; the worst case is still bounded by
+  `versioning.cacheTtl`, the same setting that governs versioned namespaces.
 - Each tag has a version key `<prefix>:__tag__:<tag>` with a 30-day TTL. Reads cost no extra round-trip while the tag
   tokens are cached in the process; up to 10 000 tag tokens are kept per process (the least recently refreshed is
   evicted first).
@@ -499,7 +564,9 @@ Consistency and cost:
 - On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old tag
   token for up to `l1Ttl` plus `versioning.cacheTtl` (the tag token key is cached in L1), not only
   `versioning.cacheTtl`.
-- Invalidated entries are not deleted. They become misses and leave the store when their TTL expires.
+- Invalidated entries are not deleted. They become misses and leave the store when their TTL expires. The one
+  exception is the sliding path: an entry whose tag mismatch is confirmed against the store is deleted (not on tiered
+  stores or stores with `getStrict`, where it is just a miss).
 
 Write timing:
 
@@ -555,7 +622,8 @@ const users = await cache.getOrSetMany<User>(
   returned. An error from the loader, or a return value that is not a `Map`, reaches the caller.
 - Loading is single-flight per key and shared with `getOrSet` in the same process: concurrent `getOrSetMany(['a', 'b'])`
   and `getOrSetMany(['b', 'c'])` call their loaders with `['a', 'b']` and `['c']`.
-- `swr` serves stale values and refreshes them with one loader call for the stale keys. `sliding` makes `getMany`
+- `swr` serves stale values and refreshes them with one loader call for the stale keys; with `softTimeout` the whole
+  call shares one wait window (see [Expiry strategies](#expiry-strategies)). `sliding` makes `getMany`
   call `getAndTouch` for each key (per key, not one batch call).
 - `getOrSetMany` with `lock: true` throws `CacheConfigError`, and `defaults.lock.enabled` is ignored for batches.
   Coalescing is per process.
@@ -630,6 +698,25 @@ joined with concurrent misses on the same key (one load), and a refresh that fai
 - The synchronous part of the method (everything before its first `await`) runs before the stale value is returned
   to the caller, because the refresh is started first. Keep that part cheap.
 
+**`softTimeout`.** With `strategy: 'swr'` a stale hit normally returns the old value at once. Add `softTimeout` (ms)
+to wait up to that long for the refresh instead (joining one already in flight): the fresh value is returned if it
+arrives in time, the stale one otherwise (timeout or loader error). The refresh keeps running and writes its result
+either way. Fresh hits never wait.
+
+```ts
+const price = await cache.getOrSet('price:1', () => fetchPrice('1'), {
+  namespace: 'prices',
+  ttl: 10_000,
+  strategy: 'swr',
+  staleTtl: 60_000,
+  softTimeout: 200,
+});
+```
+
+`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. If the refresh loader resolves
+`undefined` or `null` (or, in a batch, omits a key), that is the answer: the call returns it, not the stale value. A
+batch shares one window per call. On `set`, `get`, `getMany` and `@CachePut` it is ignored but still validated.
+
 Entries written by 0.1 carry only `expiresAt`; read with `swr` they are fresh until then, and then expired.
 `CacheService.get` returns a stale entry (with `hit.stale: true`) but never refreshes, as it has no loader.
 
@@ -641,8 +728,41 @@ the window is refreshed on L1 misses only (about once per `l1Ttl` per instance),
 `min(ttl, l1Ttl)`; its atomicity depends on L2, and an L2 without `getAndTouch` is read with a plain `get`, which does
 not extend it. A custom store without `getAndTouch` falls back to a `get` followed by a `set`, which is not atomic. `null` values stored with `cacheNull` always use `fixed` and `nullTtl`.
 
-Validation: `staleTtl` and `maxTtl` must be finite numbers greater than 0, `maxTtl` must be `>= ttl` (the call's `ttl`
+Validation: `staleTtl`, `maxTtl` and `softTimeout` must be finite numbers greater than 0, `maxTtl` must be `>= ttl` (the call's `ttl`
 or `defaults.ttl`), and an unknown `strategy` name or `swr` without `staleTtl` is rejected with `CacheConfigError`.
+
+## Compression
+
+`compressedSerializer` wraps a serializer and compresses large payloads with gzip or brotli. Pass it as the module
+`serializer`:
+
+```ts
+import { CacheModule, compressedSerializer } from '@loipv/nestjs-cache';
+
+CacheModule.forRoot({
+  serializer: compressedSerializer({ algorithm: 'gzip', threshold: 1024 }),
+});
+```
+
+| Option                 | Default          | Meaning                                                                 |
+| ---------------------- | ---------------- | ----------------------------------------------------------------------- |
+| `inner`                | `jsonSerializer` | Serializer that produces and reads the string that gets compressed      |
+| `algorithm`            | `'gzip'`         | `'gzip'` or `'brotli'`, used for writes                                 |
+| `threshold`            | `1024`           | Payloads whose UTF-8 byte length is above it are tried for compression  |
+| `maxDecompressedBytes` | 16 MiB           | Upper bound of a decompressed payload; larger ones are rejected on read |
+
+- It compresses only above `threshold` and only when the result is shorter. Smaller payloads are stored as `inner`
+  writes them, and uncompressed payloads are always readable, so a rolling deploy from an uncompressed serializer is
+  safe.
+- The algorithm is taken from the prefix of the stored value, not from the configuration, so switching between `gzip`
+  and `brotli` is safe: old entries stay readable.
+- Switching back from `compressedSerializer` to an uncompressed serializer makes the compressed entries unreadable:
+  they produce `deserialize` errors and are misses until they expire.
+- Compression is synchronous (`node:zlib`) and costs event-loop CPU on large payloads; `brotli` compresses smaller
+  and slower than `gzip`.
+- A corrupt or oversized payload is a `deserialize` error and a miss, like any unreadable entry.
+- Invalid options throw `CacheConfigError` when the serializer is created.
+- `inner` must not produce strings that start with `"\u0000nc1:"`, the prefix the compressed values use.
 
 ## Distributed lock
 
@@ -1019,14 +1139,14 @@ Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
 `CacheConfigError` is thrown only in these cases:
 
-| When                                | Cases                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; invalid decorator `tags` (not an array or function, an empty string, a malformed template, `@CacheEvict({ tags: [] })`); a namespace starting with `__`                        |
-| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                                                                                                                 |
-| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store                                                                                                 |
-| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl` or `maxTtl` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`; `invalidateTags` with an empty list, an empty string, a non-array, more than 32 tags or an unknown store |
+| When                                | Cases                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Class definition (decorators)       | Bad decorator options (`ttl`, `nullTtl`, `staleTtl`, `maxTtl`, `softTimeout`, a non-boolean `cacheNull`, key template, `allEntries` without `namespace`); `@Cacheable` together with `@CachePut`; a `static` method; `@CacheEvict({ key: [] })`; invalid decorator `tags` (not an array or function, an empty string, a malformed template, `@CacheEvict({ tags: [] })`); a namespace starting with `__`                        |
+| `circuitBreaker(...)` / store setup | Invalid breaker or store options                                                                                                                                                                                                                                                                                                                                                                                                |
+| App startup                         | Invalid module options (including `defaults.lock`, a non-boolean `defaults.cacheNull`, a duration <= 0, `jitter` outside `[0, 1)`, a missing `default` store, a bad `namespaces`, `versioning.cacheTtl` or `escapeKeyArgs`, a namespace starting with `__` in `namespaces`); a decorator naming an unknown store                                                                                                                |
+| `CacheService` call (rejects)       | Unknown store name; invalid `ttl`, `nullTtl`, `staleTtl`, `maxTtl` or `softTimeout` (including `maxTtl < ttl`); a non-boolean `cacheNull`; unknown `strategy` name; `swr` without `staleTtl`; `clear('')`; a namespace starting with `__`; `keys` or `entries` that is not an array; `getOrSetMany` with `lock: true`; `invalidateTags` with an empty list, an empty string, a non-array, more than 32 tags or an unknown store |
 
-Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
+`compressedSerializer(...)` with invalid options also throws `CacheConfigError`. Every other failure (store, serializer, key building, `unless`, lock, background refresh) goes through the `error`
 event and does not reach the caller.
 
 ## Security
@@ -1059,7 +1179,7 @@ event and does not reach the caller.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
 - **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is down, a two-tier store (or any store with `getStrict`) falls back to the last known token (one `version` error per failed read); with no known token the loader runs and nothing is cached. A `clear` while L2 is down fails and leaves the token unchanged. An instance that missed another instance's `clear` just before the outage keeps the old token during it, so stale data is limited to L1 and lasts at most `l1Ttl`. Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
-- **Tag invalidation windows.** Right after an invalidation, instances whose cached tag tokens differ treat each other's entries as misses and rewrite them for up to `versioning.cacheTtl`; a hot tagged key is effectively uncached fleet-wide for that window, and with `lock` on a waiter can wait up to `lock.waitTimeout`. A sliding read on a store with `getAndTouch` extends an invalidated entry's TTL before the tag check (it is never served; bounded by `maxTtl`). A `getOrSet` issued after `invalidateTags` can join a load that started before it and receive that load's value once (with template tags the written entry is stale-stamped, so the next read misses), like the concurrent-misses caveat below.
+- **Tag invalidation windows.** An instance whose cached tag token is out of date re-reads it from the store when it sees a differing stamp (at most once per tag per `versioning.cacheTtl`), so after an invalidation other instances usually see it on their next read; when the re-read budget is used up they treat the entry as a miss until the next window. A sliding read whose tag mismatch is confirmed against the store deletes the entry (on tiered stores and stores with `getStrict` it is only a miss). A `getOrSet` issued after `invalidateTags` can join a load that started before it and receive that load's value once (with template tags the written entry is stale-stamped, so the next read misses), like the concurrent-misses caveat below.
 - **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.
@@ -1076,7 +1196,7 @@ event and does not reach the caller.
 | NestJS             | 11 (CommonJS) and 12 (ESM)                                 |
 | Node.js            | `>=22` (LTS 22, 24, 26)                                    |
 | ioredis            | `^5 \|\| ^6` (optional peer; Cluster needs 5.6.0 or later) |
-| redis (node-redis) | `^5` (optional peer)                                       |
+| redis (node-redis) | `^5` (optional peer; Sentinel supported)                   |
 | Redis server       | 6.2 or later (Cluster: 7 or later)                         |
 
 The package ships both ESM and CommonJS builds. The injection tokens use `Symbol.for('@loipv/nestjs-cache:...')`,
@@ -1093,7 +1213,8 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.5 - Redis Cluster and node-redis (done):** Redis Cluster through ioredis, `nodeRedisAdapter` for `redis` v5 (standalone and cluster), `CacheStore.getStrict`/`setStrict`, `RedisClientAdapter.scanIterator`, and the tiered-store fix for versioned namespaces while L2 is down.
 - **0.6 - HTTP caching (done):** `@HttpCache` and `HttpCacheInterceptor` for opt-in route caching on Express and Fastify, and a [migration guide](docs/migration-from-cache-manager.md) from `@nestjs/cache-manager`.
 - **0.7 - Tags (done):** `tags` on `@Cacheable`, `@CachePut`, `@HttpCache` and the `CacheService` writes, `CacheService.invalidateTags` and `@CacheEvict({ tags })`.
-- **0.8 - Planned:** Redis Sentinel and replica reads, serializers and compression, and an swr `softTimeout`.
+- **0.8 - Compression, Sentinel and `softTimeout` (done):** `compressedSerializer` (gzip and brotli), swr `softTimeout`, Redis Sentinel (ioredis and node-redis), and the tag token re-read.
+- **0.9 - Planned:** replica reads and `redis` v6 support.
 
 ## Releasing
 
