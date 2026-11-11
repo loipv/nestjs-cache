@@ -6,7 +6,12 @@ import { CacheService } from '../../src/core/cache.service.js';
 import { CacheModule } from '../../src/module/cache.module.js';
 import type { InvalidationMessage } from '../../src/stores/cache-store.interface.js';
 import { redisStore } from '../../src/stores/redis.store.js';
-import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
+import {
+  hasHostPubSub,
+  selectedAdapters,
+  startAdapter,
+  type StartedAdapter,
+} from './helpers/adapters.js';
 import { startRedis } from './helpers/redis.js';
 
 describe('RedisStore (integration), ioredis standalone only', () => {
@@ -99,7 +104,10 @@ describe.each(selectedAdapters())('RedisStore (integration) on %s', (adapterName
     expect((await redis.raw.keys('*')).sort()).toEqual(['a1:x', 'b:x']);
   });
 
-  it('carries invalidation messages between two stores', async () => {
+  // Skipped where the host cannot reach the adapter's pub/sub (pubSubSkipReason, ruling T1-B).
+  const itWithPubSub = it.skipIf(!hasHostPubSub(adapterName));
+
+  itWithPubSub('carries invalidation messages between two stores', async () => {
     /* Both stores share one client: each store's subscriber is a duplicate of it. */
     const a = redisStore({ client });
     const b = redisStore({ client });

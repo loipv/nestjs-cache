@@ -1,22 +1,49 @@
 import { Cluster, Redis } from 'ioredis';
-import { createClient, createCluster } from 'redis';
+import { createClient, createCluster, createSentinel } from 'redis';
 import { afterAll } from 'vitest';
-import { nodeRedisAdapter } from '../../../src/stores/node-redis.adapter.js';
+import { nodeRedisAdapter, type NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
 import type { RedisStoreOptions } from '../../../src/stores/redis.store.js';
 import { startRedisCluster, type RedisClusterHandle } from './redis-cluster.js';
+import { startRedisSentinel, type RedisSentinelHandle } from './redis-sentinel.js';
 import { startRedis } from './redis.js';
 
-export type AdapterName = 'ioredis' | 'ioredis-cluster' | 'node-redis' | 'node-redis-cluster';
+export type AdapterName =
+  | 'ioredis'
+  | 'ioredis-cluster'
+  | 'ioredis-sentinel'
+  | 'node-redis'
+  | 'node-redis-cluster'
+  | 'node-redis-sentinel';
 
 const ALL_ADAPTERS: readonly AdapterName[] = [
   'ioredis',
   'ioredis-cluster',
+  'ioredis-sentinel',
   'node-redis',
   'node-redis-cluster',
+  'node-redis-sentinel',
 ];
 
 /**
- * The adapters the suites run against: `CACHE_IT_ADAPTERS` (comma-separated), or all four.
+ * Why pub/sub cases skip an adapter, or undefined when the host can test its pub/sub. Ruling
+ * T1-B: node-redis applies `nodeAddressMap` to a Sentinel's data clients but not to its pub/sub
+ * proxy, which connects to the master's container-network address; from the host (through Docker's
+ * port mapping) that SUBSCRIBE never connects. Unit tests cover node-redis Sentinel pub/sub against
+ * a fake.
+ */
+export function pubSubSkipReason(name: AdapterName): string | undefined {
+  return name === 'node-redis-sentinel'
+    ? "node-redis Sentinel's pub/sub ignores nodeAddressMap, so the host cannot reach it (ruling T1-B)"
+    : undefined;
+}
+
+/** The adapters whose pub/sub the host can test (see `pubSubSkipReason`). */
+export function hasHostPubSub(name: AdapterName): boolean {
+  return pubSubSkipReason(name) === undefined;
+}
+
+/**
+ * The adapters the suites run against: `CACHE_IT_ADAPTERS` (comma-separated), or all six.
  * An unknown name throws, so a typo never silently skips a suite.
  */
 export function selectedAdapters(): AdapterName[] {
@@ -56,20 +83,33 @@ export interface StartedAdapter {
 }
 
 /**
- * One cluster container per test file at most: the two cluster adapters share it. It starts on
+ * One cluster container and one Sentinel set (master, replica, sentinel) per test file at most:
+ * the two cluster adapters share the first, the two Sentinel adapters the second. Each starts on
  * first use and stops in an `afterAll` registered for the file. Vitest loads this module once per
  * test file, so the state below is per file.
  */
 let sharedCluster: Promise<RedisClusterHandle> | undefined;
+let sharedSentinel: Promise<RedisSentinelHandle> | undefined;
 
 function cluster(): Promise<RedisClusterHandle> {
   sharedCluster ??= startRedisCluster();
   return sharedCluster;
 }
 
+function sentinel(): Promise<RedisSentinelHandle> {
+  sharedSentinel ??= startRedisSentinel();
+  return sharedSentinel;
+}
+
 afterAll(async () => {
   const pending = sharedCluster;
   sharedCluster = undefined;
+  if (pending !== undefined) await (await pending).stop();
+});
+
+afterAll(async () => {
+  const pending = sharedSentinel;
+  sharedSentinel = undefined;
   if (pending !== undefined) await (await pending).stop();
 });
 
@@ -83,6 +123,10 @@ export function startAdapter(name: AdapterName): Promise<StartedAdapter> {
       return startNodeRedis();
     case 'node-redis-cluster':
       return startNodeRedisCluster();
+    case 'ioredis-sentinel':
+      return startIoredisSentinel();
+    case 'node-redis-sentinel':
+      return startNodeRedisSentinel();
   }
 }
 
@@ -162,7 +206,10 @@ async function scanIoredis(client: Redis, pattern: string): Promise<string[]> {
 
 type NodeRedisClient = ReturnType<typeof createClient>;
 
-async function scanNodeRedis(client: NodeRedisClient, pattern: string): Promise<string[]> {
+async function scanNodeRedis(
+  client: Pick<NodeRedisLike, 'scan'>,
+  pattern: string,
+): Promise<string[]> {
   const found: string[] = [];
   let cursor = '0';
   do {
@@ -237,6 +284,73 @@ async function startNodeRedisCluster(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pTTL(key),
       keys: async (pattern) => (await perMaster((node) => scanNodeRedis(node, pattern))).flat(),
+    },
+    stop: async () => {
+      await client.close();
+    },
+  };
+}
+
+/** ioredis through the sentinel: it asks the sentinel for the master and follows failovers. */
+async function startIoredisSentinel(): Promise<StartedAdapter> {
+  const handle = await sentinel();
+  const client = new Redis({
+    sentinels: handle.sentinels,
+    name: handle.name,
+    natMap: handle.natMap,
+  });
+  // A failover or a dropped socket emits 'error' while ioredis reconnects.
+  client.on('error', () => undefined);
+  return {
+    client,
+    flush: async () => {
+      await client.flushall();
+    },
+    raw: {
+      get: (key) => client.get(key),
+      set: async (key, value, ttlMs) => {
+        await client.set(key, value, 'PX', ttlMs);
+      },
+      del: async (key) => {
+        await client.del(key);
+      },
+      pttl: (key) => client.pttl(key),
+      keys: (pattern) => scanIoredis(client, pattern),
+    },
+    stop: async () => {
+      await client.quit();
+    },
+  };
+}
+
+/** node-redis's Sentinel client; every command goes to the master it reports. */
+async function startNodeRedisSentinel(): Promise<StartedAdapter> {
+  const handle = await sentinel();
+  const client = createSentinel({
+    name: handle.name,
+    sentinelRootNodes: handle.sentinels,
+    // node-redis's nodeAddressMap has the shape of ioredis's natMap (an object keyed by
+    // "host:port"); it is not applied to the Sentinel's pub/sub, see pubSubSkipReason.
+    nodeAddressMap: handle.natMap,
+  });
+  // As in startNodeRedis.
+  client.on('error', () => undefined);
+  await client.connect();
+  return {
+    client: nodeRedisAdapter(client),
+    flush: async () => {
+      await client.flushAll();
+    },
+    raw: {
+      get: (key) => client.get(key),
+      set: async (key, value, ttlMs) => {
+        await client.set(key, value, { expiration: { type: 'PX', value: ttlMs } });
+      },
+      del: async (key) => {
+        await client.del(key);
+      },
+      pttl: (key) => client.pTTL(key),
+      keys: (pattern) => scanNodeRedis(client, pattern),
     },
     stop: async () => {
       await client.close();

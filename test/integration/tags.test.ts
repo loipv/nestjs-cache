@@ -7,7 +7,12 @@ import type { CacheStore } from '../../src/stores/cache-store.interface.js';
 import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
-import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
+import {
+  hasHostPubSub,
+  selectedAdapters,
+  startAdapter,
+  type StartedAdapter,
+} from './helpers/adapters.js';
 
 const NAMESPACES = { users: {}, orders: {} } as const;
 
@@ -160,7 +165,8 @@ describe.each(selectedAdapters())('cache tags (integration) on %s', (adapterName
     });
   });
 
-  describe('with two tieredStore apps', () => {
+  // Two tiered stores sync over pub/sub: skipped where the host cannot reach it (ruling T1-B).
+  describe.skipIf(!hasHostPubSub(adapterName))('with two tieredStore apps', () => {
     let apps: App[];
 
     beforeEach(async () => {

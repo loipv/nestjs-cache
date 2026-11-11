@@ -8,7 +8,12 @@ import type { CacheStore } from '../../src/stores/cache-store.interface.js';
 import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
-import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
+import {
+  hasHostPubSub,
+  selectedAdapters,
+  startAdapter,
+  type StartedAdapter,
+} from './helpers/adapters.js';
 import { startRedis } from './helpers/redis.js';
 
 const NAMESPACES = { users: { versioned: true } } as const;
@@ -113,7 +118,8 @@ describe.each(selectedAdapters())('versioned namespaces (integration) on %s', (a
     });
   });
 
-  describe('with two tieredStore instances', () => {
+  // Two tiered stores sync over pub/sub: skipped where the host cannot reach it (ruling T1-B).
+  describe.skipIf(!hasHostPubSub(adapterName))('with two tieredStore instances', () => {
     let apps: { ref: TestingModule; cache: CacheService }[];
 
     beforeEach(async () => {

@@ -6,7 +6,13 @@ import { CacheModule } from '../../src/module/cache.module.js';
 import { memoryStore } from '../../src/stores/memory.store.js';
 import { redisStore } from '../../src/stores/redis.store.js';
 import { tieredStore } from '../../src/stores/tiered.store.js';
-import { selectedAdapters, startAdapter, type StartedAdapter } from './helpers/adapters.js';
+import {
+  hasHostPubSub,
+  pubSubSkipReason,
+  selectedAdapters,
+  startAdapter,
+  type StartedAdapter,
+} from './helpers/adapters.js';
 import { startRedis } from './helpers/redis.js';
 import { Redis } from 'ioredis';
 
@@ -63,7 +69,16 @@ async function expectServedFromL1(
   );
 }
 
-describe.each(selectedAdapters())('TieredStore (integration) on %s', (adapterName) => {
+/* Every case below syncs two instances over pub/sub (waitForSync in beforeEach), so an adapter
+   whose pub/sub the host cannot reach skips the suite and starts no container (ruling T1-B). */
+const WITH_PUBSUB = selectedAdapters().filter(hasHostPubSub);
+const WITHOUT_PUBSUB = selectedAdapters().filter((name) => !hasHostPubSub(name));
+
+describe.each(WITHOUT_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
+  it.skip(`skipped: ${pubSubSkipReason(adapterName) ?? ''}`, () => undefined);
+});
+
+describe.each(WITH_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
   let redis: StartedAdapter;
   let a: Instance;
   let b: Instance;

@@ -68,6 +68,7 @@ jobs:
           - { ioredis: 5, adapters: 'ioredis,ioredis-cluster' }
           - { ioredis: 6, adapters: 'ioredis,ioredis-cluster' }
           - { ioredis: 6, adapters: 'node-redis,node-redis-cluster' }
+          - { ioredis: 6, adapters: 'ioredis-sentinel,node-redis-sentinel' }
     env:
       CACHE_IT_ADAPTERS: ${{ matrix.adapters }}
     steps:
