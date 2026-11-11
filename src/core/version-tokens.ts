@@ -64,6 +64,12 @@ interface KindState {
   readonly bumps: Map<string, number>;
   /** `fresh` reads in flight per slot. */
   readonly freshes: Map<string, number>;
+  /**
+   * When each slot was last allowed a re-read (`mayRecheck`), oldest first; capped at `limit`.
+   */
+  readonly rechecked: Map<string, number>;
+  /** In-flight re-reads (`recheck`), one per slot; a bump unregisters the slot's. */
+  readonly rechecks: Map<string, Promise<string | undefined>>;
 }
 
 function newState(kind: TokenKind, limit: number): KindState {
@@ -75,6 +81,8 @@ function newState(kind: TokenKind, limit: number): KindState {
     reads: new Map(),
     bumps: new Map(),
     freshes: new Map(),
+    rechecked: new Map(),
+    rechecks: new Map(),
   };
 }
 
@@ -146,19 +154,84 @@ export class VersionTokens {
    * it for `cacheTtl`. A bump that completes during the read keeps its token in the cache.
    */
   async fresh(target: Target, kind: TokenKind, name: string): Promise<string> {
+    return (await this.readFresh(target, kind, name, true)) as string;
+  }
+
+  /**
+   * Whether `name` may be re-read now (spec 3.3 step 3): true at most once per `cacheTtl` per
+   * (store, name), and the time is recorded. The record keeps at most as many slots as the
+   * token cache (`MAX_TAG_TOKENS` for tags), evicting the oldest first.
+   */
+  mayRecheck(target: Target, kind: TokenKind, name: string): boolean {
+    const state = this.kinds[kind];
+    const k = slot(target, name);
+    const now = Date.now();
+    const last = state.rechecked.get(k);
+    if (last !== undefined && now < last + this.cacheTtl) return false;
+    state.rechecked.delete(k);
+    state.rechecked.set(k, now);
+    for (const oldest of state.rechecked.keys()) {
+      if (state.rechecked.size <= state.limit) break;
+      state.rechecked.delete(oldest);
+    }
+    return true;
+  }
+
+  /**
+   * Re-reads the token of `name` from the store, bypassing the cache, for a stamp that differs
+   * from the cached token (spec 3.3). Joins the slot's re-read in flight; otherwise starts one
+   * when `mayRecheck` allows it, and returns `undefined` (no read) when it does not. Never
+   * creates the token: a missing or empty key resolves `undefined` and drops a cached tag
+   * token. As with `fresh`, the result is cached unless a bump completed meanwhile; a bump also
+   * unregisters the re-read, so no later call joins a read older than the bump. A rejection
+   * reaches every waiter and caches nothing.
+   */
+  recheck(target: Target, kind: TokenKind, name: string): Promise<string | undefined> | undefined {
+    const state = this.kinds[kind];
+    const k = slot(target, name);
+    const running = state.rechecks.get(k);
+    if (running !== undefined) return running;
+    if (!this.mayRecheck(target, kind, name)) return undefined;
+    const read = this.readFresh(target, kind, name, false).finally(() => {
+      if (state.rechecks.get(k) === read) state.rechecks.delete(k);
+    });
+    state.rechecks.set(k, read);
+    return read;
+  }
+
+  /**
+   * The store's token of `name`, bypassing the cache; `create` writes one when the key is
+   * missing, else a missing (or empty) key is `undefined`. What it read is cached unless a bump
+   * completed during the read; a missing tag key then drops the cached token instead.
+   */
+  private async readFresh(
+    target: Target,
+    kind: TokenKind,
+    name: string,
+    create: boolean,
+  ): Promise<string | undefined> {
     const state = this.kinds[kind];
     const k = slot(target, name);
     state.freshes.set(k, (state.freshes.get(k) ?? 0) + 1);
     const bumps = state.bumps.get(k) ?? 0;
     try {
-      const token = await this.read(target, kind, name);
+      const token = create
+        ? await this.read(target, kind, name)
+        : await readToken(target.store, tokenKey(this.prefix, kind, name));
+      const found = token !== undefined && token !== '';
       if ((state.bumps.get(k) ?? 0) === bumps) {
-        // In-flight reads started earlier; they must not replace this newer token.
-        state.inflight.delete(k);
+        // In-flight reads started earlier; they must not replace this newer token (or, for a
+        // missing key, cache the token it replaced). A create in flight is newer: it stays.
         state.reads.delete(k);
-        this.remember(state, k, token);
+        if (found) {
+          state.inflight.delete(k);
+          this.remember(state, k, token);
+        } else if (kind === 'tag') {
+          // As in `currentMany`: the tag key is gone, so its token is no fallback any more.
+          state.cache.delete(k);
+        }
       }
-      return token;
+      return found ? token : undefined;
     } finally {
       // The last fresh read of the slot ends: nothing compares its bump count any more.
       const left = (state.freshes.get(k) ?? 0) - 1;
@@ -180,6 +253,7 @@ export class VersionTokens {
     if (state.freshes.has(k)) state.bumps.set(k, (state.bumps.get(k) ?? 0) + 1);
     state.inflight.delete(k);
     state.reads.delete(k);
+    state.rechecks.delete(k);
     this.remember(state, k, token);
   }
 
@@ -192,12 +266,14 @@ export class VersionTokens {
    * meanwhile, and an older read-or-create still in flight then no longer updates the cache; a
    * missing key is not cached, and for a tag it also drops the cached token. A `current` that
    * caches a token also unregisters a plain read still in flight, so that read cannot undo it.
-   * Rejects when any store read rejects, for every waiter on it.
+   * Rejects when any store read rejects, for every waiter on it. The names served from the
+   * process cache (not read by this call nor joined to a read) are added to `fromCache`.
    */
   async currentMany(
     target: Target,
     kind: TokenKind,
     names: readonly string[],
+    fromCache?: Set<string>,
   ): Promise<Map<string, string | undefined>> {
     const state = this.kinds[kind];
     const result = new Map<string, string | undefined>();
@@ -210,6 +286,7 @@ export class VersionTokens {
       const cached = state.cache.get(k);
       if (cached !== undefined && now < cached.until) {
         result.set(name, cached.token);
+        fromCache?.add(name);
         continue;
       }
       result.set(name, undefined);

@@ -620,3 +620,122 @@ describe('VersionTokens', () => {
     }
   });
 });
+
+describe('VersionTokens: re-reading a mismatched tag', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mayRecheck allows one re-read per (store, tag) per cacheTtl', () => {
+    /* Spec 3.3 step 3: the first call for a slot is allowed and recorded; until cacheTtl has
+       passed the same slot is refused. The same tag in another store is its own slot. */
+    const store = new FakeStore();
+    const target = { name: 'default', store };
+    const other = { name: 'other', store };
+    const tokens = new VersionTokens('app', 1000);
+    expect(tokens.mayRecheck(target, 'tag', 'a')).toBe(true);
+    expect(tokens.mayRecheck(target, 'tag', 'a')).toBe(false);
+    expect(tokens.mayRecheck(other, 'tag', 'a')).toBe(true);
+    expect(tokens.mayRecheck(target, 'tag', 'b')).toBe(true);
+    vi.advanceTimersByTime(999);
+    expect(tokens.mayRecheck(target, 'tag', 'a')).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(tokens.mayRecheck(target, 'tag', 'a')).toBe(true);
+    expect(tokens.mayRecheck(target, 'tag', 'a')).toBe(false);
+    expect(store.calls).toEqual([]);
+  });
+
+  it('the re-read map is capped at MAX_TAG_TOKENS and evicts the oldest first', () => {
+    /* Spec 3.3 step 3: with the constructor seam at 2, a third slot evicts the oldest, which is
+       then allowed again within cacheTtl. Without the seam the cap is MAX_TAG_TOKENS. */
+    const target = { name: 'default', store: new FakeStore() };
+    const small = new VersionTokens('app', 1000, 2);
+    expect(small.mayRecheck(target, 'tag', 'a')).toBe(true);
+    expect(small.mayRecheck(target, 'tag', 'b')).toBe(true);
+    expect(small.mayRecheck(target, 'tag', 'c')).toBe(true);
+    expect(small.mayRecheck(target, 'tag', 'b')).toBe(false);
+    expect(small.mayRecheck(target, 'tag', 'a')).toBe(true);
+    expect(small.mayRecheck(target, 'tag', 'c')).toBe(false);
+    expect(small.mayRecheck(target, 'tag', 'b')).toBe(true);
+
+    const full = new VersionTokens('app', 1000);
+    for (let i = 0; i <= MAX_TAG_TOKENS; i++) full.mayRecheck(target, 'tag', `t${String(i)}`);
+    expect(full.mayRecheck(target, 'tag', 't1')).toBe(false);
+    expect(full.mayRecheck(target, 'tag', 't0')).toBe(true);
+  });
+
+  it('currentMany reports the names it served from the process cache', async () => {
+    /* `fromCache` receives exactly the names whose token was not read in this call: a token
+       read from the store, a missing one and an expired cached one are not in it. */
+    const { store, tokens, target } = setup();
+    await tokens.ensureMany(target, 'tag', ['a']);
+    vi.advanceTimersByTime(600);
+    await tokens.current(target, 'tag', 'b');
+    vi.advanceTimersByTime(500);
+    store.data.set('app:__tag__:c', { value: 'cccccccc', ttlMs: 1 });
+    const fromCache = new Set<string>();
+    const result = await tokens.currentMany(target, 'tag', ['a', 'b', 'c', 'd', 'b'], fromCache);
+    expect([...result.keys()]).toEqual(['a', 'b', 'c', 'd']);
+    expect(fromCache).toEqual(new Set(['b']));
+  });
+
+  it('recheck reads the store past the cache, never creates, and is limited by mayRecheck', async () => {
+    /* A re-read bypasses the cached token and caches what it read. Within cacheTtl the slot is
+       refused (undefined, no read). A missing key reads as undefined, writes nothing and drops
+       the cached tag token. */
+    const { store, tokens, target } = setup();
+    const first = await tokens.current(target, 'tag', 'a');
+    store.data.set('app:__tag__:a', { value: 'newtoken', ttlMs: 1 });
+    const gets = ops(store, 'get');
+    expect(await tokens.recheck(target, 'tag', 'a')).toBe('newtoken');
+    expect(ops(store, 'get')).toBe(gets + 1);
+    expect(tokens.cached(target, 'tag', 'a')).toBe('newtoken');
+    expect(first).not.toBe('newtoken');
+    expect(tokens.recheck(target, 'tag', 'a')).toBeUndefined();
+    expect(ops(store, 'get')).toBe(gets + 1);
+    vi.advanceTimersByTime(1000);
+    store.data.delete('app:__tag__:a');
+    const sets = ops(store, 'set');
+    expect(await tokens.recheck(target, 'tag', 'a')).toBeUndefined();
+    expect(ops(store, 'set')).toBe(sets);
+    expect(store.data.has('app:__tag__:a')).toBe(false);
+    expect(tokens.cached(target, 'tag', 'a')).toBeUndefined();
+  });
+
+  it('concurrent rechecks of a tag share one read; a bump unregisters it and keeps its token', async () => {
+    /* Each tag has its own single flight: a second recheck joins the first (one store read).
+       A bump during the read keeps the bumped token cached, and a later recheck does not join
+       the pre-bump read (it is refused by mayRecheck instead). A rejected read rejects every
+       waiter and caches nothing. */
+    const { store, tokens, target } = setup();
+    await tokens.current(target, 'tag', 'a');
+    const read = deferred<string | undefined>();
+    const get = store.get.bind(store);
+    const spy = vi.spyOn(store, 'get').mockImplementation((key) => {
+      if (key === 'app:__tag__:a') return read.promise;
+      return get(key);
+    });
+    const one = tokens.recheck(target, 'tag', 'a');
+    const two = tokens.recheck(target, 'tag', 'a');
+    expect(two).toBe(one);
+    expect(spy).toHaveBeenCalledOnce();
+    await tokens.bump(target, 'tag', 'a');
+    const bumped = tokens.cached(target, 'tag', 'a');
+    expect(tokens.recheck(target, 'tag', 'a')).toBeUndefined();
+    read.resolve('preBump0');
+    expect(await one).toBe('preBump0');
+    expect(tokens.cached(target, 'tag', 'a')).toBe(bumped);
+    expect(spy).toHaveBeenCalledOnce();
+
+    spy.mockImplementation(() => Promise.reject(new Error('read failed')));
+    const failing = tokens.recheck(target, 'tag', 'b');
+    const joined = tokens.recheck(target, 'tag', 'b');
+    expect(joined).toBe(failing);
+    await expect(failing).rejects.toThrow('read failed');
+    expect(tokens.cached(target, 'tag', 'b')).toBeUndefined();
+  });
+});

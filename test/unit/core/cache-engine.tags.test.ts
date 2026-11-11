@@ -901,3 +901,274 @@ describe('CacheEngine tags: a tiered store whose L2 reads reject', () => {
     expect(await l1.get('app:__tag__:t')).toBeUndefined();
   });
 });
+
+/** A TagStore with `getAndTouch` (sliding reads extend the entry's TTL in the store). */
+class TouchStore extends TagStore {
+  getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    const entry = this.data.get(key);
+    if (entry !== undefined) entry.ttlMs = ttlMs;
+    return Promise.resolve(entry?.value);
+  }
+}
+
+/** Two engines (two instances) on one store, each with its own token cache. */
+function pair(cacheTtl = 60_000, store: FakeStore = new FakeStore()) {
+  const options = { prefix: 'app', versioning: { cacheTtl }, stores: { default: store } };
+  return { store, a: makeEngine(options), b: makeEngine(options) };
+}
+
+/** The store reads of a tag's token key so far, by any instance. */
+function tokenReads(store: FakeStore, tag: string): number {
+  return store.calls.filter((c) => c.op === 'get' && c.args[0] === `app:__tag__:${tag}`).length;
+}
+
+/** Writes a fresh entry for `key` stamped with `tags`, as another instance would. */
+function writeEntry(store: FakeStore, key: string, value: unknown, tags: Record<string, string>) {
+  const envelope: CacheEnvelope = {
+    v: 1,
+    value,
+    storedAt: Date.now(),
+    expiresAt: Date.now() + 60_000,
+    tags,
+  };
+  store.data.set(`app:${key}`, { value: JSON.stringify(envelope), ttlMs: 60_000 });
+}
+
+describe('CacheEngine tags: re-reading mismatched tokens and deleting invalid sliding entries', () => {
+  const target = { name: 'default', store: new FakeStore() };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a stamp that differs from the cached token but matches the store is a hit and refreshes the cache', async () => {
+    /* Spec 3.3 steps 1-2: B still caches the pre-invalidation token; A invalidated and wrote a
+       new entry. B's check finds the stamp differs from a token it served from its process
+       cache, re-reads the tag once, finds the stamp matches the store and serves the entry.
+       The re-read token is cached: the next read costs no token read, and an entry stamped
+       with the old token is now a miss without another read. */
+    const { store, a, b } = pair();
+    await b.engine.set({ key: 'k' }, 'old', { tags: ['t'] });
+    await a.engine.invalidateTags(['t']);
+    await a.engine.set({ key: 'k' }, 'new', { tags: ['t'] });
+    const fresh = a.engine.tokens.cached(target, 'tag', 't');
+    const old = b.engine.tokens.cached(target, 'tag', 't');
+    expect(old).not.toBe(fresh);
+    b.emitted.length = 0;
+    const before = tokenReads(store, 't');
+    expect(await b.engine.get({ key: 'k' })).toBe('new');
+    expect(tokenReads(store, 't')).toBe(before + 1);
+    expect(b.engine.tokens.cached(target, 'tag', 't')).toBe(fresh);
+    expect(await b.engine.get({ key: 'k' })).toBe('new');
+    writeEntry(store, 'j', 'stale', { t: old ?? '' });
+    expect(await b.engine.get({ key: 'j' })).toBeUndefined();
+    expect(tokenReads(store, 't')).toBe(before + 1);
+    expect(events(b.emitted)).toEqual(['hit', 'hit', 'miss']);
+  });
+
+  it('a stamp that differs from both is a miss', async () => {
+    /* The re-read token differs from the stamp too: a miss. getOrSet then loads and stamps the
+       write with the token it just re-read. */
+    const { store, a, b } = pair();
+    await b.engine.set({ key: 'k' }, 'v', { tags: ['t'] });
+    await a.engine.invalidateTags(['t']);
+    const fresh = a.engine.tokens.cached(target, 'tag', 't');
+    writeEntry(store, 'k', 'other', { t: 'zzzzzzzz' });
+    b.emitted.length = 0;
+    expect(await b.engine.get({ key: 'k' })).toBeUndefined();
+    expect(b.engine.tokens.cached(target, 'tag', 't')).toBe(fresh);
+    expect(await b.engine.getOrSet({ key: 'k' }, async () => 'loaded', { tags: ['t'] })).toBe(
+      'loaded',
+    );
+    expect(envelopeOf(store, 'app:k')?.tags).toEqual({ t: fresh });
+    expect(events(b.emitted)).toEqual(['miss', 'miss', 'load', 'set']);
+  });
+
+  it('a mismatched tag is re-read at most once per cacheTtl', async () => {
+    /* Spec 3.3 step 3: within cacheTtl (1 s) only the first mismatching read re-reads the tag;
+       the others are misses at once. Once the cached token expires the read is a plain store
+       read (no re-read on top); a token served from the cache after cacheTtl has passed since
+       the last re-read may be re-read again. */
+    const { engine, store } = setup();
+    await engine.set({ key: 'k' }, 'v', { tags: ['t'] });
+    writeEntry(store, 'k', 'v', { t: 'zzzzzzzz' });
+    const before = tokenReads(store, 't');
+    for (let i = 0; i < 5; i++) expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(tokenReads(store, 't')).toBe(before + 1);
+    vi.setSystemTime(1_000);
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(tokenReads(store, 't')).toBe(before + 2);
+    vi.setSystemTime(1_500);
+    for (let i = 0; i < 5; i++) expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(tokenReads(store, 't')).toBe(before + 3);
+  });
+
+  it('a failed re-read is a miss with one version error per call', async () => {
+    /* Spec 3.3 step 4: the cached tokens are served, the stamps differ, and every re-read
+       rejects. Each call is a miss (the old token is not taken as valid) and reports one
+       `version` error, however many tags failed; the cached tokens are kept. */
+    const store = new TagStore();
+    const { engine, emitted, token } = setup(store);
+    await engine.set({ key: 'k' }, 'v', { tags: ['t', 'u'] });
+    await engine.set({ key: 'j' }, 'v', { tags: ['v'] });
+    await engine.set({ key: 'm' }, 'v', { tags: ['w'] });
+    await engine.set({ key: 'n' }, 'v', { tags: ['s'] });
+    const cached = { t: token('t'), u: token('u'), s: token('s') };
+    writeEntry(store, 'k', 'v', { t: 'xxxxxxxx', u: 'yyyyyyyy' });
+    writeEntry(store, 'j', 'v', { v: 'xxxxxxxx' });
+    writeEntry(store, 'm', 'v', { w: 'xxxxxxxx' });
+    writeEntry(store, 'n', 'v', { s: 'xxxxxxxx' });
+    store.failTags = true;
+    emitted.length = 0;
+    const get = vi.spyOn(store, 'get');
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect(await engine.getMany({}, ['j', 'm'])).toEqual([undefined, undefined]);
+    expect(await engine.getOrSet({ key: 'n' }, async () => 'L', { tags: ['s'] })).toBe('L');
+    const tagReads = get.mock.calls.flatMap(([key]) => (key.includes('__tag__') ? [key] : []));
+    expect(tagReads.sort()).toEqual(['s', 't', 'u', 'v', 'w'].map((tag) => `app:__tag__:${tag}`));
+    expect(events(emitted)).toEqual([
+      ...['error:version', 'miss'],
+      ...['error:version', 'miss', 'miss'],
+      ...['error:version', 'miss', 'load', 'set'],
+    ]);
+    expect({ t: token('t'), u: token('u'), s: token('s') }).toEqual(cached);
+  });
+
+  it('batch reads gather mismatched tags and re-read each once', async () => {
+    /* Spec 3.3 step 5: three entries of a batch differ from B's cached token of the shared tag
+       only; that tag is re-read once for the whole batch, the per-key tags not at all, and
+       every entry is a hit. */
+    const { store, a, b } = pair();
+    const tags = (_: unknown, key: string): string[] => [key, 'shared'];
+    const entries = (n: number): [string, number][] => [
+      ['x', n],
+      ['y', n + 1],
+      ['z', n + 2],
+    ];
+    await b.engine.setMany({}, entries(1), { tags });
+    await a.engine.invalidateTags(['shared']);
+    await a.engine.setMany({}, entries(10), { tags });
+    const before = ['shared', 'x', 'y', 'z'].map((tag) => tokenReads(store, tag));
+    const loader = vi.fn(async (missing: string[]) => new Map(missing.map((k) => [k, 0])));
+    expect(await b.engine.getOrSetMany({}, ['x', 'y', 'z'], loader)).toEqual([10, 11, 12]);
+    expect(loader).not.toHaveBeenCalled();
+    expect(await b.engine.getMany({}, ['x', 'y', 'z'])).toEqual([10, 11, 12]);
+    expect(['shared', 'x', 'y', 'z'].map((tag) => tokenReads(store, tag))).toEqual([
+      (before[0] ?? 0) + 1,
+      ...before.slice(1),
+    ]);
+  });
+
+  it('two tags, one confirmed, one not: miss, both re-read once', async () => {
+    /* Review Focus 5: both tags of the stamp differ from the cached tokens. Re-reading `t`
+       confirms its part of the stamp, re-reading `u` does not, so the entry is a miss. Each tag
+       is read once; a second read within cacheTtl reads neither again. */
+    const { engine, store, token } = setup();
+    await engine.set({ key: 'k' }, 'v', { tags: ['t', 'u'] });
+    store.data.set('app:__tag__:t', { value: 'tttttttt', ttlMs: 1 });
+    store.data.set('app:__tag__:u', { value: 'uuuuuuuu', ttlMs: 1 });
+    writeEntry(store, 'k', 'v', { t: 'tttttttt', u: 'vvvvvvvv' });
+    const before = [tokenReads(store, 't'), tokenReads(store, 'u')];
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect([tokenReads(store, 't'), tokenReads(store, 'u')]).toEqual(before.map((n) => n + 1));
+    expect([token('t'), token('u')]).toEqual(['tttttttt', 'uuuuuuuu']);
+    expect(await engine.get({ key: 'k' })).toBeUndefined();
+    expect([tokenReads(store, 't'), tokenReads(store, 'u')]).toEqual(before.map((n) => n + 1));
+  });
+
+  it('two instances with different token views stop rewriting each other', async () => {
+    /* The 0.7 final-review probe: A invalidates the tag while B still caches the old token
+       (cacheTtl 60 s). Then 20 getOrSet calls alternate between A and B on one hot tagged key.
+       In 0.7 each instance treated the other's entry as a miss and rewrote it on every call;
+       now the loader runs exactly once (A's first call) and every later call is a hit. */
+    const { a, b } = pair();
+    let loads = 0;
+    const loader = vi.fn(async () => `v${String(++loads)}`);
+    const options = { tags: ['t'] };
+    expect(await a.engine.getOrSet({ key: 'hot' }, loader, options)).toBe('v1');
+    expect(await b.engine.getOrSet({ key: 'hot' }, loader, options)).toBe('v1');
+    expect(loader).toHaveBeenCalledOnce();
+    await a.engine.invalidateTags(['t']);
+    loader.mockClear();
+    const values: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      values.push(await (i % 2 === 0 ? a : b).engine.getOrSet({ key: 'hot' }, loader, options));
+    }
+    expect(loader).toHaveBeenCalledOnce();
+    expect(values).toEqual(Array.from({ length: 20 }, () => 'v2'));
+  });
+
+  it('sliding: an invalid entry read via getAndTouch is deleted; an uncertain one is not; a delete failure only emits an event', async () => {
+    /* Spec 3.3: a getAndTouch read just extended the entry's TTL, so an entry the tag check
+       finds invalid is deleted, on the single-key path and (one delete) on the batch path. An
+       uncertain entry (the tokens could not be read) stays. A failing delete is one `delete`
+       error event; the caller still sees a plain miss. A read that did not touch (a store
+       without getAndTouch, or a fixed entry) leaves an invalid entry in the store, as in 0.7. */
+    const store = new TouchStore();
+    const { engine, emitted } = setup(store);
+    const sliding = { strategy: 'sliding' as const, tags: ['t'] };
+    await engine.set({ key: 'k' }, 'v', sliding);
+    await engine.setMany(
+      {},
+      [
+        ['a', 1],
+        ['b', 2],
+      ],
+      sliding,
+    );
+    await engine.set({ key: 'u' }, 'v', { strategy: 'sliding', tags: ['u'] });
+    await engine.invalidateTags(['t']);
+    emitted.length = 0;
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    expect(await engine.getMany({}, ['a', 'b', 'u'], sliding)).toEqual([undefined, undefined, 'v']);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([
+      { op: 'delete', args: [['app:k']] },
+      { op: 'delete', args: [['app:a', 'app:b']] },
+    ]);
+    expect(['k', 'a', 'b', 'u'].map((key) => store.data.has(`app:${key}`))).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
+    expect(events(emitted)).toEqual(['miss', 'miss', 'miss', 'hit']);
+
+    // Uncertain: the cached token expired and its read fails.
+    await engine.set({ key: 'c' }, 'v', sliding);
+    vi.setSystemTime(10_000);
+    store.failTags = true;
+    emitted.length = 0;
+    expect(await engine.get({ key: 'c' }, sliding)).toBeUndefined();
+    expect(await engine.getMany({}, ['c'], sliding)).toEqual([undefined]);
+    expect(store.data.has('app:c')).toBe(true);
+    expect(events(emitted)).toEqual(['error:version', 'miss', 'error:version', 'miss']);
+    store.failTags = false;
+
+    // A failing delete: one `delete` error, a plain miss, the entry left.
+    await engine.set({ key: 'k' }, 'v', sliding);
+    await engine.setMany({}, [['a', 1]], sliding);
+    await engine.invalidateTags(['t']);
+    emitted.length = 0;
+    store.failNext('delete');
+    expect(await engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    store.failNext('delete');
+    expect(await engine.getMany({}, ['a'], sliding)).toEqual([undefined]);
+    expect(events(emitted)).toEqual(['error:delete', 'miss', 'error:delete', 'miss']);
+    expect(store.data.has('app:k')).toBe(true);
+
+    // Without getAndTouch, and for a fixed entry, the invalid entry stays.
+    const plain = setup();
+    await plain.engine.set({ key: 's' }, 'v', sliding);
+    await plain.engine.set({ key: 'f' }, 'v', { tags: ['t'] });
+    await plain.engine.invalidateTags(['t']);
+    expect(await plain.engine.get({ key: 's' }, sliding)).toBeUndefined();
+    expect(await plain.engine.getMany({}, ['s'], sliding)).toEqual([undefined]);
+    expect(await plain.engine.get({ key: 'f' })).toBeUndefined();
+    expect(plain.store.calls.some((c) => c.op === 'delete')).toBe(false);
+  });
+});

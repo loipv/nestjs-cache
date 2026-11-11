@@ -4,6 +4,7 @@ import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type { CacheEventMap, CacheEvents, CacheOperation, ReportError } from './events.js';
 import {
   decode,
+  deleteInvalid,
   stamped,
   toIntegerMs,
   writePlan,
@@ -186,7 +187,8 @@ export class EngineIO {
 
   /**
    * `lookups` from `readMany` with their tag stamps checked: one `currentMany` for all their tags
-   * and at most one `version` error (spec 3.2). Synchronous when no entry is tagged, so an
+   * and at most one `version` error (spec 3.2). The invalid entries a `getAndTouch` read extended
+   * are deleted with one `store.delete` (spec 3.3). Synchronous when no entry is tagged, so an
    * untagged batch gains no await.
    */
   checkStamps(target: Target, lookups: readonly Lookup[]): readonly Lookup[] | Promise<Lookup[]> {
@@ -196,12 +198,16 @@ export class EngineIO {
     if (stamps.length === 0) return lookups;
     return this.tags.verify(target, stamps).then((checks) => {
       let next = 0;
-      return lookups.map((lookup): Lookup => {
+      const extended: string[] = [];
+      const checked = lookups.map((lookup): Lookup => {
         if (!lookup.found || lookup.tags === undefined) return lookup;
         const check = checks[next++];
         if (check === 'valid') return { found: true, value: lookup.value, stale: lookup.stale };
+        if (check === 'invalid' && lookup.touched !== undefined) extended.push(lookup.touched);
         return check === 'invalid' ? { found: false } : { found: false, uncertain: true };
       });
+      if (extended.length === 0) return checked;
+      return deleteInvalid(this.envelope, target, extended).then(() => checked);
     });
   }
 

@@ -87,6 +87,28 @@ function checkStamp(
   return unknown ? 'uncertain' : 'valid';
 }
 
+/**
+ * The tags worth re-reading (spec 3.3 step 1): those of each stamp that differs from `current`
+ * only in tokens this call took from the process cache. A stamp that differs in a token just
+ * read from the store (or a missing one) is a miss whatever the cached tokens say.
+ */
+function suspectTags(
+  stamps: readonly TagStamp[],
+  current: ReadonlyMap<string, string | undefined>,
+  fromCache: ReadonlySet<string>,
+): Set<string> {
+  const suspects = new Set<string>();
+  for (const stamp of stamps) {
+    const differing = Object.entries(stamp).flatMap(([tag, token]) =>
+      current.get(tag) === token ? [] : [tag],
+    );
+    if (differing.every((tag) => fromCache.has(tag))) {
+      for (const tag of differing) suspects.add(tag);
+    }
+  }
+  return suspects;
+}
+
 /** Whether `stamp` adds a `tags` field: an absent or empty stamp does not. */
 export function hasTags(stamp: TagStamp | undefined): stamp is TagStamp {
   return stamp !== undefined && Object.keys(stamp).length > 0;
@@ -169,21 +191,61 @@ export class EngineTags {
    * The checks of read entries' stamps, in input order, with one `currentMany` for the union of
    * their tags (spec 3.2). A failed token read is one `version` error for the call; a store with
    * `getStrict` then compares with the tokens this process last knew (even past `cacheTtl`), and
-   * any other store makes every stamp `uncertain`.
+   * any other store makes every stamp `uncertain`. A stamp that differs only in tokens served
+   * from the process cache gets those tags re-read (`recheck`), then is checked again (3.3).
    */
   async verify(target: Target, stamps: readonly TagStamp[]): Promise<TagCheck[]> {
     const names = [...new Set(stamps.flatMap((stamp) => Object.keys(stamp)))];
+    const fromCache = new Set<string>();
     let current: ReadonlyMap<string, string | undefined>;
     let fallback = false;
     try {
-      current = await this.tokens.currentMany(target, 'tag', names);
+      current = await this.tokens.currentMany(target, 'tag', names, fromCache);
     } catch (error) {
       this.reportError(target.name, 'version', error);
       if (target.store.getStrict === undefined) return stamps.map(() => 'uncertain');
       current = new Map(names.map((name) => [name, this.tokens.cached(target, 'tag', name)]));
       fallback = true;
     }
+    if (!fallback) {
+      const suspects = suspectTags(stamps, current, fromCache);
+      if (suspects.size > 0) current = await this.recheck(target, current, suspects);
+    }
     return stamps.map((stamp) => checkStamp(stamp, current, fallback));
+  }
+
+  /**
+   * `current` with `suspects` re-read, each at most once and in parallel; a tag refused by the
+   * rate limit, or whose re-read fails, keeps its cached token (so its stamps stay a miss).
+   * Failed re-reads are one `version` error. Without any re-read, `current` as it is, at once.
+   */
+  private async recheck(
+    target: Target,
+    current: ReadonlyMap<string, string | undefined>,
+    suspects: ReadonlySet<string>,
+  ): Promise<ReadonlyMap<string, string | undefined>> {
+    const reads: (readonly [string, Promise<string | undefined>])[] = [];
+    for (const name of suspects) {
+      const read = this.tokens.recheck(target, 'tag', name);
+      if (read !== undefined) reads.push([name, read]);
+    }
+    if (reads.length === 0) return current;
+    const updated = new Map(current);
+    const failures: unknown[] = [];
+    await Promise.all(
+      reads.map(([name, read]) =>
+        read.then(
+          (token) => {
+            updated.set(name, token);
+          },
+          (error: unknown) => {
+            failures.push(error);
+          },
+        ),
+      ),
+    );
+    if (failures.length > 0) this.reportError(target.name, 'version', failures[0]);
+    return updated;
   }
 
   /**

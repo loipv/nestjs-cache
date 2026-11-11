@@ -33,11 +33,12 @@ export type BatchPutOptions<T> = WritePolicy<T> & { tags?: BatchTagOption<T> } &
 
 /**
  * A read entry. `tags` is set only by a read that defers the tag check (`EngineIO.readMany`):
- * the stamp still to check. `uncertain` marks a tagged entry whose tag tokens could not be read
- * (spec 3.2 step 4): a miss that is loaded without writing.
+ * the stamp still to check, and `touched` is then the entry's store key when that read extended
+ * its TTL with `getAndTouch` (deleted if the check finds it invalid). `uncertain` marks a tagged
+ * entry whose tag tokens could not be read (spec 3.2 step 4): a miss loaded without writing.
  */
 export type Lookup =
-  | { found: true; value: unknown; stale: boolean; tags?: TagStamp }
+  | { found: true; value: unknown; stale: boolean; tags?: TagStamp; touched?: string }
   | { found: false; uncertain?: true };
 
 /** Checks the stamp of a read entry against the current tag tokens (`EngineTags.verify`). */
@@ -141,11 +142,17 @@ export async function decode(
   }
   const { tags } = envelope;
   const deferred = hasTags(tags) && verify === undefined ? tags : undefined;
+  // `getAndTouch` extended the entry's TTL before its tags could be checked.
+  const extended = touched && reSetTtl === undefined;
   if (hasTags(tags) && verify !== undefined) {
     const check = await verify(tags);
-    // A tag miss leaves the entry in the store: the next write replaces it (spec 3.2).
+    // A tag miss leaves the entry in the store: the next write replaces it (spec 3.2). Only an
+    // entry this read just extended, and that is known invalid, is deleted (spec 3.3).
     if (check === 'uncertain') return { found: false, uncertain: true };
-    if (check === 'invalid') return { found: false };
+    if (check === 'invalid') {
+      if (extended) await deleteInvalid(ctx, { name, store }, [key]);
+      return { found: false };
+    }
   }
   // Only a touching reader re-sets, and only a fresh entry: an expired one returned above, so
   // maxTtl still bounds a sliding entry, and a stale one is reloaded (getOrSet) or only read
@@ -158,8 +165,27 @@ export async function decode(
     }
   }
   const lookup: Lookup = { found: true, value: unwrap(envelope), stale: state === 'stale' };
-  if (deferred !== undefined) lookup.tags = deferred;
+  if (deferred !== undefined) {
+    lookup.tags = deferred;
+    if (extended) lookup.touched = key;
+  }
   return lookup;
+}
+
+/**
+ * Deletes entries a tag check found invalid after a `getAndTouch` read extended them (spec
+ * 3.3). Best effort: a failure is one `delete` error, never the caller's.
+ */
+export async function deleteInvalid(
+  ctx: EnvelopeContext,
+  { name, store }: Target,
+  keys: readonly string[],
+): Promise<void> {
+  try {
+    await store.delete(keys);
+  } catch (error) {
+    ctx.reportError(name, 'delete', error);
+  }
 }
 
 /**
