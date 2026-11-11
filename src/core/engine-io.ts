@@ -187,8 +187,9 @@ export class EngineIO {
 
   /**
    * `lookups` from `readMany` with their tag stamps checked: one `currentMany` for all their tags
-   * and at most one `version` error (spec 3.2). The invalid entries a `getAndTouch` read extended
-   * are deleted with one `store.delete` (spec 3.3). Synchronous when no entry is tagged, so an
+   * and at most one `version` error (spec 3.2). The store-confirmed invalid entries a
+   * `getAndTouch` read extended are deleted with one `store.delete` (spec 3.3, T4-C); an
+   * `unconfirmed` one is a plain miss. Synchronous when no entry is tagged, so an
    * untagged batch gains no await.
    */
   checkStamps(target: Target, lookups: readonly Lookup[]): readonly Lookup[] | Promise<Lookup[]> {
@@ -203,8 +204,11 @@ export class EngineIO {
         if (!lookup.found || lookup.tags === undefined) return lookup;
         const check = checks[next++];
         if (check === 'valid') return { found: true, value: lookup.value, stale: lookup.stale };
+        // Only a store-confirmed mismatch deletes (T4-C); `unconfirmed` is a plain miss.
         if (check === 'invalid' && lookup.touched !== undefined) extended.push(lookup.touched);
-        return check === 'invalid' ? { found: false } : { found: false, uncertain: true };
+        return check === 'invalid' || check === 'unconfirmed'
+          ? { found: false }
+          : { found: false, uncertain: true };
       });
       if (extended.length === 0) return checked;
       return deleteInvalid(this.envelope, target, extended).then(() => checked);

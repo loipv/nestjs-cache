@@ -147,10 +147,11 @@ export async function decode(
   if (hasTags(tags) && verify !== undefined) {
     const check = await verify(tags);
     // A tag miss leaves the entry in the store: the next write replaces it (spec 3.2). Only an
-    // entry this read just extended, and that is known invalid, is deleted (spec 3.3).
+    // entry this read just extended, and that a store read confirmed invalid, is deleted (spec
+    // 3.3, T4-C); an `unconfirmed` miss may rest on this instance's out-of-date tokens.
     if (check === 'uncertain') return { found: false, uncertain: true };
-    if (check === 'invalid') {
-      if (extended) await deleteInvalid(ctx, { name, store }, [key]);
+    if (check !== 'valid') {
+      if (check === 'invalid' && extended) await deleteInvalid(ctx, { name, store }, [key]);
       return { found: false };
     }
   }

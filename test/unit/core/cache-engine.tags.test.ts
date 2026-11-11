@@ -1125,6 +1125,8 @@ describe('CacheEngine tags: re-reading mismatched tokens and deleting invalid sl
     emitted.length = 0;
     store.calls.length = 0;
     expect(await engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    // Past cacheTtl the batch reads `t` from the store: its mismatch is store-confirmed (T4-C).
+    vi.setSystemTime(1_000);
     expect(await engine.getMany({}, ['a', 'b', 'u'], sliding)).toEqual([undefined, undefined, 'v']);
     expect(store.calls.filter((c) => c.op === 'delete')).toEqual([
       { op: 'delete', args: [['app:k']] },
@@ -1156,6 +1158,7 @@ describe('CacheEngine tags: re-reading mismatched tokens and deleting invalid sl
     emitted.length = 0;
     store.failNext('delete');
     expect(await engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    vi.setSystemTime(11_000);
     store.failNext('delete');
     expect(await engine.getMany({}, ['a'], sliding)).toEqual([undefined]);
     expect(events(emitted)).toEqual(['error:delete', 'miss', 'error:delete', 'miss']);
@@ -1170,5 +1173,59 @@ describe('CacheEngine tags: re-reading mismatched tokens and deleting invalid sl
     expect(await plain.engine.getMany({}, ['s'], sliding)).toEqual([undefined]);
     expect(await plain.engine.get({ key: 'f' })).toBeUndefined();
     expect(plain.store.calls.some((c) => c.op === 'delete')).toBe(false);
+  });
+  it('an invalid entry confirmed against the store is deleted', async () => {
+    /* T4-C: a sliding (getAndTouch) entry is deleted only when its mismatch rests on a token read
+       from the store in this call. Here the confirming read is a re-read of a token served from
+       the cache (single key), then a plain store read once the cached token expired (batch). */
+    const store = new TouchStore();
+    const { engine } = setup(store);
+    const sliding = { strategy: 'sliding' as const, tags: ['t'] };
+    await engine.set({ key: 'k' }, 'v', sliding);
+    await engine.set({ key: 'm' }, 'v', sliding);
+    await engine.invalidateTags(['t']);
+    store.calls.length = 0;
+    expect(await engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    vi.setSystemTime(1_000);
+    expect(await engine.getMany({}, ['m'], sliding)).toEqual([undefined]);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([
+      { op: 'delete', args: [['app:k']] },
+      { op: 'delete', args: [['app:m']] },
+    ]);
+    expect([store.data.has('app:k'), store.data.has('app:m')]).toEqual([false, false]);
+  });
+
+  it('an out-of-date instance whose re-read budget is used up does not delete a newer entry (miss only)', async () => {
+    /* T4-C: B re-read `t` (budget used for cacheTtl) and caches T2; A then invalidates again
+       (T3) and writes entries stamped T3. B's check differs only from its process-cached T2,
+       which it may not re-read: a plain miss as in 0.7, and A's newer entries are not deleted
+       on the single-key or batch sliding path. Once B's cached token expires it reads T3 and
+       the entries are hits. */
+    const { store, a, b } = pair(1_000, new TouchStore());
+    const sliding = { strategy: 'sliding' as const, tags: ['t'] };
+    await b.engine.set({ key: 'warm' }, 'v', sliding);
+    await a.engine.invalidateTags(['t']);
+    await a.engine.set({ key: 'probe' }, 'p', sliding);
+    expect(await b.engine.get({ key: 'probe' }, sliding)).toBe('p');
+    await a.engine.invalidateTags(['t']);
+    await a.engine.set({ key: 'k' }, 'new', sliding);
+    await a.engine.setMany(
+      {},
+      [
+        ['x', 1],
+        ['y', 2],
+      ],
+      sliding,
+    );
+    b.emitted.length = 0;
+    store.calls.length = 0;
+    expect(await b.engine.get({ key: 'k' }, sliding)).toBeUndefined();
+    expect(await b.engine.getMany({}, ['x', 'y'], sliding)).toEqual([undefined, undefined]);
+    expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    expect(['k', 'x', 'y'].map((key) => store.data.has(`app:${key}`))).toEqual([true, true, true]);
+    expect(events(b.emitted)).toEqual(['miss', 'miss', 'miss']);
+    vi.setSystemTime(1_000);
+    expect(await b.engine.get({ key: 'k' }, sliding)).toBe('new');
+    expect(await b.engine.getMany({}, ['x', 'y'], sliding)).toEqual([1, 2]);
   });
 });
