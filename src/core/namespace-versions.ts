@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CacheStore } from '../stores/cache-store.interface.js';
-import type { Target } from './engine-io.js';
+import type { Target } from './engine-keys.js';
 import { fullKey } from './key-builder.js';
 
 /** 30 days; the version key outlives any data written under its token. */
