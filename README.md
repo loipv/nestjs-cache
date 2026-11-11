@@ -205,20 +205,21 @@ export class UserService {
 }
 ```
 
-| Option                 | Decorator                 | Meaning                                                                           |
-| ---------------------- | ------------------------- | --------------------------------------------------------------------------------- |
-| `key`                  | all three                 | Template or callback (see Dynamic keys). `@CacheEvict` also accepts an array      |
-| `namespace`            | all three                 | Key group; the unit for bulk eviction                                             |
-| `store`                | all three                 | Store name, defaults to `default`                                                 |
-| `ttl`                  | `@Cacheable`, `@CachePut` | Overrides `defaults.ttl`                                                          |
-| `strategy`             | `@Cacheable`, `@CachePut` | `'fixed'` (default), `'swr'` or `'sliding'` (see Expiry strategies)               |
-| `staleTtl`, `maxTtl`   | `@Cacheable`, `@CachePut` | Strategy parameters (`swr` needs `staleTtl`; `sliding` accepts `maxTtl`)          |
-| `lock`                 | `@Cacheable`              | `true`/`false` overrides `defaults.lock.enabled` (see Distributed lock)           |
-| `cacheNull`, `nullTtl` | `@Cacheable`, `@CachePut` | Per-method override of the defaults                                               |
-| `condition`            | `@Cacheable`, `@CachePut` | Receives the method arguments; `false` skips the cache                            |
-| `unless`               | `@Cacheable`, `@CachePut` | Receives the result; `true` prevents storing it                                   |
-| `allEntries`           | `@CacheEvict`             | Clear the whole namespace; requires `namespace` and cannot be combined with `key` |
-| `beforeInvocation`     | `@CacheEvict`             | `true`: evict before the method runs. Default: evict after it succeeds            |
+| Option                 | Decorator                 | Meaning                                                                                         |
+| ---------------------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `key`                  | all three                 | Template or callback (see Dynamic keys). `@CacheEvict` also accepts an array                    |
+| `namespace`            | all three                 | Key group; the unit for bulk eviction                                                           |
+| `store`                | all three                 | Store name, defaults to `default`                                                               |
+| `ttl`                  | `@Cacheable`, `@CachePut` | Overrides `defaults.ttl`                                                                        |
+| `strategy`             | `@Cacheable`, `@CachePut` | `'fixed'` (default), `'swr'` or `'sliding'` (see Expiry strategies)                             |
+| `staleTtl`, `maxTtl`   | `@Cacheable`, `@CachePut` | Strategy parameters (`swr` needs `staleTtl`; `sliding` accepts `maxTtl`)                        |
+| `lock`                 | `@Cacheable`              | `true`/`false` overrides `defaults.lock.enabled` (see Distributed lock)                         |
+| `cacheNull`, `nullTtl` | `@Cacheable`, `@CachePut` | Per-method override of the defaults                                                             |
+| `condition`            | `@Cacheable`, `@CachePut` | Receives the method arguments; `false` skips the cache                                          |
+| `unless`               | `@Cacheable`, `@CachePut` | Receives the result; `true` prevents storing it                                                 |
+| `allEntries`           | `@CacheEvict`             | Clear the whole namespace; requires `namespace` and cannot be combined with `key`               |
+| `beforeInvocation`     | `@CacheEvict`             | `true`: evict before the method runs. Default: evict after it succeeds                          |
+| `tags`                 | all three, `@HttpCache`   | Tags to stamp (`@Cacheable`, `@CachePut`, `@HttpCache`) or invalidate (`@CacheEvict`); see Tags |
 
 Behaviour:
 
@@ -323,6 +324,7 @@ class CacheService {
   set<T>(key: string, value: T, options?: WriteOptions): Promise<void>;
   delete(key: string | readonly string[], options?: KeyOptions): Promise<void>;
   clear(namespace: string, options?: { store?: string }): Promise<void>;
+  invalidateTags(tags: readonly string[], options?: { store?: string }): Promise<void>;
   getOrSet<T>(key: string, loader: () => Promise<T>, options?: GetOrSetOptions<T>): Promise<T>;
   getMany<T>(
     keys: readonly string[],
@@ -400,6 +402,106 @@ await cache.clear('users'); // one SET of a new token; no SCAN
   longer moves the token in L1 only.
 - Remaining risk: an instance that missed another instance's `clear` just before an outage keeps the old token during
   the outage. The stale data comes from L1 only, so it lasts at most `l1Ttl`.
+
+## Tags
+
+A tag groups entries across keys and namespaces so that one call invalidates all of them. Tag an entry when you write
+it, then call `invalidateTags` (or use `@CacheEvict({ tags })`); every entry carrying that tag becomes a miss.
+
+```ts
+import { Cacheable, CacheEvict, CacheService } from '@loipv/nestjs-cache';
+
+@Injectable()
+export class ProductsService {
+  constructor(private readonly cache: CacheService) {}
+
+  // Templates use the key syntax and honour escapeKeyArgs.
+  @Cacheable({ namespace: 'products', key: 'product:{0}', tags: ['product:{0}', 'catalog'] })
+  find(id: string) {
+    return this.repo.find(id);
+  }
+
+  // A callback of the result and the arguments; annotate its parameters.
+  @Cacheable({
+    namespace: 'products',
+    key: 'list:{0}',
+    tags: (result: Product[], category: string) => [
+      `category:${category}`,
+      ...result.map((p) => `product:${p.id}`),
+    ],
+  })
+  list(category: string) {
+    return this.repo.list(category);
+  }
+
+  @CacheEvict({ tags: ['product:{0}'] })
+  update(id: string, dto: UpdateProductDto) {
+    return this.repo.update(id, dto);
+  }
+
+  // Or invalidate directly.
+  async clearCatalog() {
+    await this.cache.invalidateTags(['catalog']);
+  }
+}
+```
+
+Declaring tags:
+
+- `@Cacheable` and `@CachePut`: `tags` is an array of templates (same syntax as `key`, honours `escapeKeyArgs`) or a
+  callback `(result, ...args) => string[]`. `tags: []` means no tags. Callbacks are checked against the decorated
+  method, not inferred from it, so annotate their parameters.
+- `@HttpCache`: `tags` is an array of fixed strings (not templates) or `(body, req: HttpCacheRequest) => string[]`.
+- `CacheService.set` and `getOrSet`: fixed strings or `(value) => string[]`. `setMany` and `getOrSetMany`: fixed
+  strings or `(value, key) => string[]` (the types `WriteManyOptions<T>` and `GetOrSetManyOptions<T>` are exported).
+
+```ts
+await cache.set('user:1', user, { namespace: 'users', tags: ['tenant:7'] });
+await cache.invalidateTags(['tenant:7']);
+```
+
+Invalidating:
+
+- `CacheService.invalidateTags(tags, { store? })` works per store. It rejects with `CacheConfigError` for an empty
+  list, an empty string, a non-array, more than 32 tags or an unknown store. If writing a tag token fails it still
+  tries every tag, then rejects with the first error.
+- `@CacheEvict({ tags })` takes templates over the arguments or `(...args) => string[]`. Use it alone or with
+  `key`/`allEntries` (the keys or namespace are evicted first, then the tags), and with `beforeInvocation`. It never
+  rejects the call: token-write failures are `error` events only, and a key error and a tag error do not block each
+  other. `@CacheEvict()` with no options keeps its 0.6 meaning (evicts the default key); `@CacheEvict({ tags: [] })`
+  is a `CacheConfigError`.
+
+Limits and errors:
+
+- At most 32 tags per entry after de-duplication, and tag strings must be non-empty.
+- An invalid runtime tag list (for example a callback that returns an empty string) emits one `error` event with
+  `operation: 'tag'`; the entry is not written and the caller still gets the value.
+- A token read or write failure emits an `error` event with `operation: 'version'`.
+
+Consistency and cost:
+
+- Tags are scoped per store; one tag can span several namespaces in the same store.
+- The instance that invalidates sees it immediately; other instances see it within `versioning.cacheTtl` (default
+  1000 ms), the same setting that governs versioned namespaces.
+- Each tag has a version key `<prefix>:__tag__:<tag>` with a 30-day TTL. Reads cost no extra round-trip while the tag
+  tokens are cached in the process; up to 10 000 tag tokens are kept per process (the least recently refreshed is
+  evicted first).
+- Invalidated entries are not deleted. They become misses and leave the store when their TTL expires.
+
+Write timing:
+
+- Tags known before the load (arrays and templates, and `@CachePut` arrays) take their tokens before the loader or
+  method runs, so an invalidation during the load is never missed.
+- Tags from a callback on the result are computed after the load. An invalidation that happens during that load can
+  be missed until the entry's TTL; prefer argument tags when you need strictness.
+
+Outages and upgrades:
+
+- If tag tokens cannot be read, a store with `getStrict` (such as `tieredStore`) uses the last known tokens. Any other
+  store treats a tagged entry as a miss, and `getOrSet` loads without writing and without the distributed lock.
+- With `strategy: 'swr'`, an entry invalidated by a tag is a hard miss; it is never served stale.
+- Rolling deploy: instances still on 0.6 ignore the `tags` field and can serve invalidated entries until they are
+  upgraded.
 
 ## Batch operations
 
@@ -967,7 +1069,8 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.4 - Versioned namespaces and batches (done):** O(1) `clear` for opt-in versioned namespaces, `getMany`/`setMany`/`getOrSetMany`, `escapeKeyArgs`, lock keys under the prefix, and an optional `ping`.
 - **0.5 - Redis Cluster and node-redis (done):** Redis Cluster through ioredis, `nodeRedisAdapter` for `redis` v5 (standalone and cluster), `CacheStore.getStrict`/`setStrict`, `RedisClientAdapter.scanIterator`, and the tiered-store fix for versioned namespaces while L2 is down.
 - **0.6 - HTTP caching (done):** `@HttpCache` and `HttpCacheInterceptor` for opt-in route caching on Express and Fastify, and a [migration guide](docs/migration-from-cache-manager.md) from `@nestjs/cache-manager`.
-- **0.7 - Tags (planned):** cache tags.
+- **0.7 - Tags (done):** `tags` on `@Cacheable`, `@CachePut`, `@HttpCache` and the `CacheService` writes, `CacheService.invalidateTags` and `@CacheEvict({ tags })`.
+- **0.8 - Planned:** Redis Sentinel and replica reads, serializers and compression, and an swr `softTimeout`.
 
 ## Releasing
 
