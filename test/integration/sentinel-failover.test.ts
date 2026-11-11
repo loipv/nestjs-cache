@@ -83,14 +83,36 @@ async function eventually(attempt: () => Promise<void>, timeoutMs: number): Prom
   }
 }
 
+/** Runs `close`, failing once `ms` have passed so a hanging close cannot stall the teardown. */
+async function closeWithin(close: () => Promise<void>, ms = 5_000): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      close(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`close timed out after ${String(ms)} ms`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe.each(ADAPTERS)('Sentinel failover (integration) on %s', (adapterName) => {
-  let handle: RedisSentinelHandle;
+  let handle: RedisSentinelHandle | undefined;
   const clients: Client[] = [];
   const apps: TestingModule[] = [];
   const caches: CacheService[] = [];
 
+  function started(): RedisSentinelHandle {
+    if (handle === undefined) throw new Error('the Sentinel set did not start');
+    return handle;
+  }
+
   async function startInstance(): Promise<CacheService> {
-    const client = await connect(adapterName, handle);
+    const client = await connect(adapterName, started());
     clients.push(client);
     const ref = await Test.createTestingModule({
       imports: [
@@ -120,12 +142,15 @@ describe.each(ADAPTERS)('Sentinel failover (integration) on %s', (adapterName) =
   });
 
   afterAll(async () => {
-    try {
-      for (const app of apps) await app.close();
-      for (const client of clients) await client.close();
-    } finally {
-      await handle.stop();
-    }
+    // Every close is bounded and settled, so the containers are stopped even when one fails or
+    // hangs; the first failure is rethrown at the end. Apps close before the clients they use.
+    const results = await Promise.allSettled(apps.map((app) => closeWithin(() => app.close())));
+    results.push(
+      ...(await Promise.allSettled(clients.map((client) => closeWithin(() => client.close())))),
+    );
+    results.push(...(await Promise.allSettled([handle?.stop()])));
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed !== undefined) throw failed.reason;
   });
 
   const tieredTitle = hasHostPubSub(adapterName)
@@ -137,7 +162,7 @@ describe.each(ADAPTERS)('Sentinel failover (integration) on %s', (adapterName) =
     await a.set('before', { n: 1 });
     expect(await b.get('before')).toEqual({ n: 1 });
 
-    await handle.failover();
+    await started().failover();
 
     await eventually(async () => {
       await a.set('after', { n: 2 });
