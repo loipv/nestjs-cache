@@ -122,7 +122,8 @@ CacheModule.forRoot({
 
 - **Versions.** Cluster mode needs ioredis 5.6.0 or later (sharded Pub/Sub) and Redis 7 or later. The adapter creates
   its subscriber with `duplicate([], { shardedSubscribers: true })`, so you do not set `shardedSubscribers` yourself.
-  On ioredis below 5.6.0, `SSUBSCRIBE` fails with a `MOVED` error, reported as an `error` event with
+  On ioredis below 5.6.0, `SSUBSCRIBE` fails with a `MOVED` redirection error or, on versions whose
+  `Cluster` lacks `ssubscribe`, a `TypeError`; either way it is reported as an `error` event with
   `operation: 'subscribe'`. The peer range stays `^5.0.0 || ^6.0.0`.
 - **Batches.** `getMany`/`setMany` (`MGET`) and `delete` (`UNLINK`) split their keys per hash slot, so keys in
   different slots work, at one command per slot.
@@ -164,7 +165,7 @@ The same cluster rules apply (Redis 7+, per-slot batches, `clear` scans every ma
   `error` events with `operation: 'subscribe'`.
 - If the client's reconnect strategy gives up (ioredis `retryStrategy` returning `null`, node-redis
   `reconnectStrategy` returning `false` or an `Error`), the invalidation subscription is not retried and L1 sync stays
-  off for that instance until restart; the error is reported once. With the default strategies the subscriber keeps
+  off for that instance until restart; the failure is reported (possibly twice: once from the client's error event and once from the failed subscribe). With the default strategies the subscriber keeps
   retrying.
 
 ## Decorators
@@ -321,11 +322,11 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - If the token cannot be read or written, an `error` event with `operation: 'version'` is emitted. On a plain store
   (not tiered) a `get` is then a miss without a `miss` event, `getOrSet` runs the loader without writing the result,
   and `set` and `delete` do nothing.
-- On a `tieredStore`, a failed version read falls back to the last token this process knew, with one `version` error
-  per failure; the next call reads the store again. With no known token the loader runs and nothing is cached. A failed
-  `clear` (L2 down) reports a `version` error and leaves the token unchanged, so it no longer moves the token in L1
-  only. With a plain Redis store the fallback means the data read fails too, so you see the `version` error plus a
-  `get` error.
+- On a `tieredStore` (and on any store implementing `getStrict`), a failed version read falls back to the last token
+  this process knew, with one `version` error per failure; the next call reads the store again. With no known token the
+  loader runs and nothing is cached. A plain store keeps the 0.4 behaviour: one `version` error, the loader runs, and
+  nothing is cached. A failed `clear` (L2 down) reports a `version` error and leaves the token unchanged, so it no
+  longer moves the token in L1 only.
 - Remaining risk: an instance that missed another instance's `clear` just before an outage keeps the old token during
   the outage. The stale data comes from L1 only, so it lasts at most `l1Ttl`.
 
@@ -809,17 +810,17 @@ p95, lock wait p95 and breaker state.
 
 Cache failures never reach the caller. The only exception is `CacheConfigError`.
 
-| Situation                                                    | Behaviour                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                                                                                                                                                                    |
-| Store write fails                                            | The result is still returned, `error` is emitted                                                                                                                                                                                                   |
-| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                                                                                                                                                            |
-| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field                                                                                                                                             |
-| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped                                                                                                                                                     |
-| Namespace version cannot be read or written                  | `error` with `operation: 'version'`; `get` is a miss without a `miss` event, `getOrSet` loads without writing, `set` and `delete` do nothing; a tiered store uses the last known token instead (see [Versioned namespaces](#versioned-namespaces)) |
-| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                                                                                                                        |
-| The original method throws                                   | The error reaches the caller, nothing is stored                                                                                                                                                                                                    |
-| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                                                                                                                                                                   |
+| Situation                                                    | Behaviour                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store read fails                                             | Treated as a miss, the original method runs, `error` is emitted                                                                                                                                                                                                                    |
+| Store write fails                                            | The result is still returned, `error` is emitted                                                                                                                                                                                                                                   |
+| Delete or clear fails                                        | No exception, `error` is emitted, logged at error level                                                                                                                                                                                                                            |
+| Envelope unreadable or unknown `v`                           | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field                                                                                                                                                                             |
+| Key cannot be built or is empty                              | Cache skipped, `error` with `operation: 'key'`; in a delete list only the empty key is skipped                                                                                                                                                                                     |
+| Namespace version cannot be read or written                  | `error` with `operation: 'version'`; `get` is a miss without a `miss` event, `getOrSet` loads without writing, `set` and `delete` do nothing; a tiered store (or any store with `getStrict`) uses the last known token instead (see [Versioned namespaces](#versioned-namespaces)) |
+| Lock acquire or release fails, or a background refresh fails | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                                                                                                                                                        |
+| The original method throws                                   | The error reaches the caller, nothing is stored                                                                                                                                                                                                                                    |
+| `CircuitOpenError` from a breaker                            | Never reaches callers and never emits `error`; read = miss, write/delete skipped                                                                                                                                                                                                   |
 
 `CacheConfigError` is thrown only in these cases:
 
@@ -862,7 +863,7 @@ event and does not reach the caller.
 - **Default keys use the class name.** Minifiers that rename classes change the default keys. `Map`/`Set` arguments are ignored by the default key, which makes different caches collide; use an explicit `key`.
 - **Default keys see only an argument's own enumerable data.** Arguments whose state lives in `#private` fields, getters or `Error` objects (and `-0` vs `0`, a `Date` vs its ISO string) can produce the same default key, so give those methods an explicit `key`. Template keys render strings raw, so `{0}:{1}` with `'a:b','c'` equals `'a','b:c'`. Choose separators that cannot appear in your values.
 - **Two-tier staleness.** With a two-tier store, another instance can still serve stale data from L1 for up to `l1Ttl` if an invalidation message is lost, there is no bus, or the L2 circuit breaker is open (publishing is skipped).
-- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is down, a two-tier store falls back to the last known token (one `version` error per failed read); with no known token the loader runs and nothing is cached. A `clear` while L2 is down fails and leaves the token unchanged. An instance that missed another instance's `clear` just before the outage keeps the old token during it, so stale data is limited to L1 and lasts at most `l1Ttl`. Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
+- **Versioned namespaces.** Another instance sees a `clear` within `versioning.cacheTtl` (default 1 s) and can serve pre-clear data until then. A sub-namespace such as `users:admin` does not follow a versioned `users`. Old entries stay in Redis until their TTL expires. On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old token for up to `l1Ttl` (the version key is cached in L1), not only `versioning.cacheTtl`. While L2 is down, a two-tier store (or any store with `getStrict`) falls back to the last known token (one `version` error per failed read); with no known token the loader runs and nothing is cached. A `clear` while L2 is down fails and leaves the token unchanged. An instance that missed another instance's `clear` just before the outage keeps the old token during it, so stale data is limited to L1 and lasts at most `l1Ttl`. Turning `versioned: true` on for a namespace that already has entries starts it cold; the old entries expire by their TTL.
 - **`sliding` in `getMany`.** It calls `getAndTouch` for every key, one command per key, so it does not use `MGET`.
 - **Decorators need Nest-instantiated classes.** Decorators only work on classes that NestJS instantiates, and the module using them must be able to see `CacheModule` (`isGlobal: true` is recommended).
 - **Call `CacheModule.forRoot`/`forRootAsync` once** and use `isGlobal: true`. Each call creates an independent cache, and binds and closes its own stores.

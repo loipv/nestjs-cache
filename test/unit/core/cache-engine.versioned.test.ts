@@ -268,6 +268,26 @@ describe('CacheEngine versioned namespaces', () => {
     expect(store.getStrict).toHaveBeenCalledTimes(reads + 2);
   });
 
+  it('a plain store (no getStrict) does not fall back to the last known token', async () => {
+    /* F-1: a store without getStrict keeps the 0.4 behaviour. The namespace was warmed, cacheTtl
+       passes and the version read rejects: the loader runs, nothing is written, and exactly one
+       version error is reported. */
+    const { engine, store, emitted } = setup();
+    const loader = vi.fn(async () => 'v');
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect('getStrict' in store).toBe(false);
+    vi.advanceTimersByTime(1_000);
+    store.failNext('get');
+    store.calls.length = 0;
+    emitted.length = 0;
+    expect(await engine.getOrSet(REF, loader)).toBe('v');
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(store.calls.filter((c) => c.op === 'set')).toEqual([]);
+    const errors = emitted.filter((e) => e.event === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.payload).toMatchObject({ store: 'default', operation: 'version' });
+  });
+
   it('a failed version read with no known token loads without caching', async () => {
     /* The very first version read fails: the loader runs, nothing is written (neither the
        version key nor the entry), and one version error is reported. */

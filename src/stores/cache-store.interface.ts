@@ -101,6 +101,8 @@ export interface CacheStore {
   /**
    * Optional. Like `get`, but rejects instead of degrading when the durable tier cannot be read.
    * Stores whose `get` already rejects on failure (memory, Redis) need not implement it.
+   * Implementing it also opts the store into the version-token fallback (a failed version read
+   * reuses the last token this process knew).
    */
   getStrict?(key: string): Promise<string | undefined>;
   /**

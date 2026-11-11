@@ -139,15 +139,18 @@ export class EngineIO {
   }
 
   /**
-   * `<ns>@<v>`. When the version read fails it reports one `version` error, then uses the last
-   * token this process knew (even past `cacheTtl`) for this call only, so the next call reads the
-   * store again; `undefined` when no token was ever known. Never rejects. Deletes do not use it.
+   * `<ns>@<v>`. When the version read fails it reports one `version` error. A store with
+   * `getStrict` then uses the last token this process knew (even past `cacheTtl`) for this call
+   * only, so the next call reads the store again; `undefined` when no token was ever known, and
+   * always for a store without `getStrict`. Never rejects. Deletes do not use it.
    */
   private async versionedNamespace(target: Target, namespace: string): Promise<string | undefined> {
     try {
       return `${namespace}@${await this.versions.current(target, namespace)}`;
     } catch (error) {
       this.reportError(target.name, 'version', error);
+      // Only stores with getStrict (tiered, or a breaker over one) opt into the fallback.
+      if (target.store.getStrict === undefined) return undefined;
       const known = this.versions.cached(target, namespace);
       return known === undefined ? undefined : `${namespace}@${known}`;
     }
