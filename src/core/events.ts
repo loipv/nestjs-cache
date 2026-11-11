@@ -3,6 +3,7 @@ export type BreakerState = 'closed' | 'open' | 'half-open';
 /** How much the library logs: nothing, errors and warnings (the default), or also one debug line per event. */
 export type CacheLogLevel = 'off' | 'error' | 'debug';
 
+/** The operation an `error` event reports as failed. */
 export type CacheOperation =
   | 'get'
   | 'set'
@@ -16,9 +17,10 @@ export type CacheOperation =
   | 'lock'
   | 'version'
   /** An invalid tag list (a throwing tag callback included); the entry is not written. */
-  | 'tag'
-  /** Only used in logs, for a failing metrics update; an `error` event never carries it. */
-  | 'metrics';
+  | 'tag';
+
+/** Internal: the operations `CacheLogger` logs; `'metrics'` is a failing metrics update. */
+export type LogOperation = CacheOperation | 'metrics';
 
 /** Internal: reports a cache failure as an `error` event; `EngineIO.reportError`. */
 export type ReportError = (
@@ -70,11 +72,20 @@ type SinkArgs =
 
 type Listener<E extends keyof CacheEventMap> = (payload: CacheEventMap[E]) => void;
 
+/**
+ * The cache event bus, provided by `CacheModule`: inject it and subscribe with `on`. Only the
+ * library emits events.
+ */
 export class CacheEvents {
   private readonly listeners = new Map<keyof CacheEventMap, Set<{ fn: unknown }>>();
 
   constructor(private readonly onListenerError?: (error: unknown) => void) {}
 
+  /**
+   * Calls `listener` with the payload of every `event`, synchronously, in registration order.
+   * A listener that throws is isolated: the module logs it (unless `logging.level` is `'off'`)
+   * and it never reaches the cache call. Returns a function that removes this registration.
+   */
   on<E extends keyof CacheEventMap>(event: E, listener: Listener<E>): () => void {
     // A fresh entry object per registration keeps duplicates of the same function distinct.
     const entry = { fn: listener as unknown };

@@ -79,6 +79,17 @@ for (const p of files) {
   });
 }
 
+// 5. The published declarations carry no member marked `@internal` (`stripInternal`): for
+// example `CacheEvents.emit` and `sinkFor` stay out of the public types.
+for (const p of ['dist/index.d.ts', 'dist/index.d.cts']) {
+  if (!fileSet.has(p)) continue;
+  const dts = readFileSync(join(root, p), 'utf8');
+  if (dts.includes('@internal')) violations.push(`${p} contains a declaration marked @internal`);
+  for (const member of ['emit<E extends keyof CacheEventMap>', 'sinkFor(']) {
+    if (dts.includes(member)) violations.push(`${p} declares the internal member ${member}`);
+  }
+}
+
 if (violations.length > 0) {
   console.error(`check:pack failed with ${violations.length} violation(s):`);
   for (const v of violations) console.error(`  - ${v}`);

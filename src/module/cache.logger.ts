@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import type { CacheLogLevel, CacheOperation } from '../core/events.js';
+import type { CacheLogLevel, LogOperation } from '../core/events.js';
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -22,7 +22,7 @@ export class CacheLogger {
    * Logs at most one line per (store, operation) every 30 000 ms; the next line reports how
    * many were suppressed. `error` for delete and clear, `warn` for every other operation.
    */
-  storeError(store: string, operation: CacheOperation, error: unknown): void {
+  storeError(store: string, operation: LogOperation, error: unknown): void {
     if (this.level === 'off') return;
     const key = `${store}\u0000${operation}`;
     const now = Date.now();

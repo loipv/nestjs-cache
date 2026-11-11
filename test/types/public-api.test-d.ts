@@ -61,3 +61,10 @@ void cache.getOrSetMany(['k'], loadMany, { lock: false });
 // @ts-expect-error getOrSetMany does not support lock: true
 void cache.getOrSetMany(['k'], loadMany, { lock: true });
 expectTypeOf<lib.GetOrSetManyOptions<number>['lock']>().toEqualTypeOf<false | undefined>();
+
+/* 0.9-T6 E-03: CacheOperation lists only what an error event can carry; 'metrics' (used in
+   logs only) is not one of them. */
+export const op: lib.CacheOperation = 'tag';
+// @ts-expect-error 'metrics' is not a CacheOperation
+export const metricsOp: lib.CacheOperation = 'metrics';
+expectTypeOf<lib.CacheEventMap['error']['operation']>().toEqualTypeOf<lib.CacheOperation>();
