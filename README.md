@@ -140,8 +140,9 @@ CacheModule.forRoot({
 ## node-redis
 
 `nodeRedisAdapter` wraps a [`redis`](https://github.com/redis/node-redis) client, cluster or Sentinel (v5 or v6).
-`redis` (`^5.0.0 || ^6.0.0`) is an optional peer dependency. Pass a client that is already `connect()`ed: the adapter only connects the subscriber
-connection it duplicates itself. Cluster mode is detected automatically (the client has `masters`).
+`redis` (`^5.0.0 || ^6.0.0`) is an optional peer dependency. Pass a client that is already `connect()`ed: the
+adapter only connects the subscriber connection it duplicates itself. Cluster mode is detected automatically (the
+client has `masters`).
 
 ```ts
 import { createClient, createCluster } from 'redis';

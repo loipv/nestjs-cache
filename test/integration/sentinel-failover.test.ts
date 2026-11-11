@@ -112,20 +112,26 @@ interface Setup {
 /* The probe needs a live Sentinel set before the cases are declared, so each adapter's set starts
    here and the describe below stops it. Probing publishes only; the topology is unchanged. */
 const SETUPS: Setup[] = [];
-for (const name of ADAPTERS) {
-  const handle = await startRedisSentinel();
-  let reachable = false;
-  try {
-    const probe = await connect(name, handle);
+try {
+  for (const name of ADAPTERS) {
+    const handle = await startRedisSentinel();
+    SETUPS.push({ name, handle, reachable: false });
     try {
-      reachable = await probePubSub(probe.client);
-    } finally {
-      await closeWithin(() => probe.close()).catch(() => undefined);
+      const probe = await connect(name, handle);
+      try {
+        const setup = SETUPS[SETUPS.length - 1];
+        if (setup !== undefined) setup.reachable = await probePubSub(probe.client);
+      } finally {
+        await closeWithin(() => probe.close()).catch(() => undefined);
+      }
+    } catch {
+      // a client that cannot even connect leaves pub/sub unreachable; the cases report the rest
     }
-  } catch {
-    // a client that cannot even connect leaves pub/sub unreachable; the cases report the rest
   }
-  SETUPS.push({ name, handle, reachable });
+} catch (error) {
+  // No afterAll exists yet, so stop the sets already started before failing the file.
+  await Promise.allSettled(SETUPS.map((setup) => setup.handle.stop()));
+  throw error;
 }
 
 describe.each(SETUPS)(
