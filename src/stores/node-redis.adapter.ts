@@ -258,6 +258,15 @@ export function createNodeRedisSubscriber(
   connection.on('error', (error: unknown) => {
     tracker.error(error);
   });
+  if (sharded) {
+    // A cluster re-emits each node client's errors as 'node-error' (error, clientInfo).
+    connection.on('node-error', (error: unknown) => {
+      tracker.error(error);
+    });
+  }
+  // A cluster never emits 'ready', so the cluster (sharded) subscriber never fires onReconnect:
+  // 'node-ready' is registered once per node client and 'node-reconnecting' fires before the
+  // reconnect completes. After a cluster reconnect, L1 staleness is bounded by l1Ttl.
   connection.on('ready', () => {
     tracker.ready();
   });

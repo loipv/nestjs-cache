@@ -261,6 +261,46 @@ describe('nodeRedisAdapter cluster mode', () => {
     await subscriber.close();
     expect(connection.close).toHaveBeenCalledTimes(1);
   });
+
+  /* A cluster re-emits each node client's errors as 'node-error' (error, clientInfo), and its own
+     discovery errors as 'error'. Both reach every onError handler; a throwing handler reaches
+     neither the next handler nor node-redis's emitter. */
+  it('cluster: node-error and error events of the subscriber connection reach onError', () => {
+    const cluster = new FakeNodeRedisCluster();
+    const subscriber = nodeRedisAdapter(cluster.asCluster()).createSubscriber();
+    const connection = cluster.duplicates[0]!;
+    const failing = vi.fn(() => {
+      throw new Error('handler failed');
+    });
+    const onError = vi.fn();
+    subscriber.onError?.(failing);
+    subscriber.onError?.(onError);
+    const nodeError = new Error('ECONNRESET');
+    expect(() =>
+      connection.emit('node-error', nodeError, { host: '127.0.0.1', port: 7000 }),
+    ).not.toThrow();
+    const discoveryError = new Error('ECONNREFUSED');
+    expect(() => connection.emit('error', discoveryError)).not.toThrow();
+    expect(onError.mock.calls).toEqual([[nodeError], [discoveryError]]);
+    expect(failing).toHaveBeenCalledTimes(2);
+  });
+
+  /* 'node-ready' is registered with .once per node client, so it never marks a reconnect: the
+     cluster subscriber fires no onReconnect, whatever node events arrive. */
+  it('cluster: node-ready fires no onReconnect', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    const subscriber = nodeRedisAdapter(cluster.asCluster()).createSubscriber();
+    const connection = cluster.duplicates[0]!;
+    const onReconnect = vi.fn();
+    subscriber.onReconnect(onReconnect);
+    await subscriber.subscribe('ch', vi.fn());
+    for (let i = 0; i < 3; i += 1) {
+      connection.emit('node-ready', { host: '127.0.0.1', port: 7000 });
+      connection.emit('node-reconnecting', { host: '127.0.0.1', port: 7000 });
+    }
+    await flush();
+    expect(onReconnect).not.toHaveBeenCalled();
+  });
 });
 
 describe('nodeRedisAdapter subscriber', () => {
