@@ -1,6 +1,6 @@
 import { RELEASE_SCRIPT } from './redis-client.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
-import { closeWithTimeout, notifyAll } from './subscriber-support.js';
+import { closeWithTimeout, createSubscriptionTracker } from './subscriber-support.js';
 
 /** node-redis's pub/sub listener: it receives the message first, then the channel. */
 type PubSubListener = (message: string, channel: string) => void;
@@ -100,37 +100,19 @@ export function nodeRedisAdapter(client: NodeRedisLike): RedisClientAdapter {
   return adapter;
 }
 
-interface Subscription {
-  status: 'pending' | 'ok' | 'failed';
-  done: Promise<void>;
-}
-
 /**
  * The subscriber over a dedicated, not yet connected node-redis connection. The first `subscribe`
  * connects it; a rejected connect is forgotten, so a later `subscribe` connects again. With
- * `sharded` (a cluster) it sends SSUBSCRIBE, otherwise SUBSCRIBE. node-redis restores confirmed
- * subscriptions after a reconnect; a SUBSCRIBE that rejected is sent again on the next 'ready'.
+ * `sharded` (a cluster) it sends SSUBSCRIBE, otherwise SUBSCRIBE. Retries, reconnects and close
+ * follow the shared `createSubscriptionTracker`: node-redis restores confirmed subscriptions after
+ * a reconnect, and a SUBSCRIBE that rejected is sent again on the next 'ready'.
  */
 export function createNodeRedisSubscriber(
   connection: SubscriberConnection,
   sharded: boolean,
 ): RedisSubscriberAdapter {
-  const handlers = new Map<string, (message: string) => void>();
-  const subscriptions = new Map<string, Subscription>();
-  const reconnectHandlers: Array<() => void> = [];
-  const errorHandlers: Array<(error: unknown) => void> = [];
-  let readyCount = 0;
   let connecting: Promise<unknown> | undefined;
-  let closing: Promise<void> | undefined;
-
-  // One listener for every channel; it runs inside node-redis's reply parser, so it never throws.
-  const deliver: PubSubListener = (message, channel) => {
-    try {
-      handlers.get(channel)?.(message);
-    } catch {
-      // swallowed: a throwing handler must not reach node-redis
-    }
-  };
+  let closed = false;
 
   const connect = (): Promise<unknown> => {
     // The executor turns a synchronous throw into a rejection.
@@ -143,8 +125,17 @@ export function createNodeRedisSubscriber(
     return connecting;
   };
 
+  // One listener for every channel; it runs inside node-redis's reply parser, so it never throws.
+  const deliver: PubSubListener = (message, channel) => {
+    try {
+      tracker.deliver(channel, message);
+    } catch {
+      // swallowed: a throwing handler must not reach node-redis
+    }
+  };
+
   const subscribeCommand = (channel: string): Promise<unknown> => {
-    if (closing !== undefined) {
+    if (closed) {
       return Promise.reject(new Error('nodeRedisAdapter: the subscriber was closed'));
     }
     if (!sharded) return connection.subscribe(channel, deliver);
@@ -156,66 +147,25 @@ export function createNodeRedisSubscriber(
     return connection.sSubscribe(channel, deliver);
   };
 
-  const send = (channel: string): Promise<void> => {
-    const subscription: Subscription = { status: 'pending', done: Promise.resolve() };
-    subscription.done = connect()
-      .then(() => subscribeCommand(channel))
-      .then(
-        () => {
-          subscription.status = 'ok';
-        },
-        (error: unknown) => {
-          subscription.status = 'failed';
-          throw error;
-        },
-      );
-    subscriptions.set(channel, subscription);
-    return subscription.done;
-  };
-
-  // Without an 'error' listener, an error emitted while node-redis reconnects would crash.
-  connection.on('error', (error: unknown) => {
-    notifyAll(errorHandlers, error);
-  });
-  connection.on('ready', () => {
-    readyCount += 1;
-    if (readyCount > 1) notifyAll(reconnectHandlers);
-    if (closing !== undefined) return;
-    for (const [channel, subscription] of subscriptions) {
-      if (subscription.status !== 'failed') continue;
-      // Messages published while the channel was not subscribed are lost: treat it as a reconnect.
-      send(channel).then(
-        () => {
-          notifyAll(reconnectHandlers);
-        },
-        (error: unknown) => {
-          notifyAll(errorHandlers, error);
-        },
-      );
-    }
-  });
-
-  return {
-    subscribe(channel, onMessage) {
-      handlers.set(channel, onMessage);
-      const current = subscriptions.get(channel);
-      if (current !== undefined && current.status !== 'failed') return current.done;
-      return send(channel);
-    },
-    onReconnect(handler) {
-      reconnectHandlers.push(handler);
-    },
-    onError(handler) {
-      errorHandlers.push(handler);
-    },
-    close() {
-      closing ??= closeWithTimeout(
+  const tracker = createSubscriptionTracker({
+    subscribe: (channel) => connect().then(() => subscribeCommand(channel)),
+    close: () => {
+      closed = true;
+      return closeWithTimeout(
         () => connection.close(),
         () => {
           connection.destroy();
         },
       );
-      return closing;
     },
-  };
+  });
+
+  // Without an 'error' listener, an error emitted while node-redis reconnects would crash.
+  connection.on('error', (error: unknown) => {
+    tracker.error(error);
+  });
+  connection.on('ready', () => {
+    tracker.ready();
+  });
+  return tracker.subscriber;
 }

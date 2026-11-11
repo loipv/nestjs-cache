@@ -2,7 +2,7 @@ import { CacheConfigError } from '../errors.js';
 import { mgetBySlot, scanNodes, unlinkBySlot } from './cluster-ops.js';
 import { RELEASE_SCRIPT } from './redis-client.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
-import { closeWithTimeout, notifyAll } from './subscriber-support.js';
+import { closeWithTimeout, createSubscriptionTracker } from './subscriber-support.js';
 
 /** Re-exported for existing imports; the script lives in `redis-client.adapter.ts`. */
 export { RELEASE_SCRIPT };
@@ -176,97 +176,33 @@ async function* scanMasters(
   });
 }
 
-interface Subscription {
-  status: 'pending' | 'ok' | 'failed';
-  done: Promise<void>;
-}
-
 /**
  * The subscriber over a dedicated connection. With `sharded` (a Cluster), it sends SSUBSCRIBE and
- * listens to 'smessage'; otherwise SUBSCRIBE and 'message'. Retries, reconnects and close are
- * shared.
+ * listens to 'smessage'; otherwise SUBSCRIBE and 'message'. Retries, reconnects and close follow
+ * the shared `createSubscriptionTracker`.
  */
 function createSubscriber(
   connection: IoredisLike | IoredisClusterLike,
   sharded: boolean,
 ): RedisSubscriberAdapter {
-  const subscribe = (channel: string): Promise<unknown> =>
-    sharded && isClusterClient(connection)
-      ? connection.ssubscribe(channel)
-      : connection.subscribe(channel);
-  const handlers = new Map<string, (message: string) => void>();
-  /**
-   * The latest SUBSCRIBE per channel. ioredis restores a channel on reconnect only once a
-   * SUBSCRIBE was confirmed, so channels whose SUBSCRIBE failed are sent again on 'ready'.
-   */
-  const subscriptions = new Map<string, Subscription>();
-  const reconnectHandlers: Array<() => void> = [];
-  const errorHandlers: Array<(error: unknown) => void> = [];
-  let readyCount = 0;
-  let closing: Promise<void> | undefined;
-
-  const send = (channel: string): Promise<void> => {
-    const subscription: Subscription = { status: 'pending', done: Promise.resolve() };
-    // The executor turns a synchronous throw into a rejection, so nothing throws into ioredis.
-    const sent = new Promise((resolve) => {
-      resolve(subscribe(channel));
-    });
-    subscription.done = sent.then(
-      () => {
-        subscription.status = 'ok';
-      },
-      (error: unknown) => {
-        subscription.status = 'failed';
-        throw error;
-      },
-    );
-    subscriptions.set(channel, subscription);
-    return subscription.done;
-  };
-
+  const tracker = createSubscriptionTracker({
+    subscribe: (channel) =>
+      sharded && isClusterClient(connection)
+        ? connection.ssubscribe(channel)
+        : connection.subscribe(channel),
+    close: () => closeConnection(connection),
+  });
   // Without an 'error' listener ioredis prints "Unhandled error event" on every failed reconnect.
   connection.on('error', (error: unknown) => {
-    notifyAll(errorHandlers, error);
+    tracker.error(error);
   });
   connection.on(sharded ? 'smessage' : 'message', (channel: string, message: string) => {
-    handlers.get(channel)?.(message);
+    tracker.deliver(channel, message);
   });
   connection.on('ready', () => {
-    readyCount += 1;
-    if (readyCount > 1) notifyAll(reconnectHandlers);
-    if (closing !== undefined) return;
-    for (const [channel, subscription] of subscriptions) {
-      if (subscription.status !== 'failed') continue;
-      // Messages published while the channel was not subscribed are lost: treat it as a reconnect.
-      send(channel).then(
-        () => {
-          notifyAll(reconnectHandlers);
-        },
-        (error: unknown) => {
-          notifyAll(errorHandlers, error);
-        },
-      );
-    }
+    tracker.ready();
   });
-
-  return {
-    subscribe(channel, onMessage) {
-      handlers.set(channel, onMessage);
-      const current = subscriptions.get(channel);
-      if (current !== undefined && current.status !== 'failed') return current.done;
-      return send(channel);
-    },
-    onReconnect(handler) {
-      reconnectHandlers.push(handler);
-    },
-    onError(handler) {
-      errorHandlers.push(handler);
-    },
-    close() {
-      closing ??= closeConnection(connection);
-      return closing;
-    },
-  };
+  return tracker.subscriber;
 }
 
 /** QUIT, or drop the connection if QUIT has not settled in time. Never rejects. */
