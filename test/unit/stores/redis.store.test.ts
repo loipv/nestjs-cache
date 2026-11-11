@@ -19,7 +19,7 @@ describe('RedisStore', () => {
     expect(fake.commands).toContainEqual({ name: 'unlink', args: [['a', 'b']] });
   });
 
-  it('clear scans in batches until the cursor returns to 0', async () => {
+  it('clear keeps the scan loop when the adapter has no scanIterator', async () => {
     const fake = new FakeRedis();
     const store = redisStore({ client: fake });
     for (let i = 0; i < 250; i += 1) fake.data.set(`u:${i}`, 'v');
@@ -32,6 +32,28 @@ describe('RedisStore', () => {
       expect(scan.args[1]).toBe('u:*');
       expect(scan.args[2]).toBe(100);
     }
+  });
+
+  /* An adapter with scanIterator: clear iterates pages, never calls scan, one unlink per non-empty page. */
+  it('clear uses scanIterator when the adapter has it', async () => {
+    const fake = new FakeRedis();
+    const matches: string[] = [];
+    const iterated = Object.assign(fake, {
+      async *scanIterator(match: string, count: number): AsyncIterable<string[]> {
+        await Promise.resolve();
+        matches.push(`${match}|${String(count)}`);
+        yield ['u:1', 'u:2'];
+        yield [];
+        yield ['u:3'];
+      },
+    });
+    await redisStore({ client: iterated }).clear('u:');
+    expect(fake.commands.filter((c) => c.name === 'scan')).toHaveLength(0);
+    expect(fake.commands.filter((c) => c.name === 'unlink')).toEqual([
+      { name: 'unlink', args: [['u:1', 'u:2']] },
+      { name: 'unlink', args: [['u:3']] },
+    ]);
+    expect(matches).toEqual(['u:*|100']);
   });
 
   it('clear escapes the prefix', async () => {

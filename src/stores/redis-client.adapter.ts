@@ -5,7 +5,10 @@ export interface RedisClientAdapter {
   set(key: string, value: string, ttlMs: number): Promise<void>;
   /** GETEX key PX ttlMs */
   getex(key: string, ttlMs: number): Promise<string | undefined>;
-  /** An empty list sends no command. */
+  /**
+   * An empty list sends no command. The keys may belong to several hash slots; a Cluster adapter
+   * must split the command per slot.
+   */
   unlink(keys: readonly string[]): Promise<void>;
   scan(cursor: string, match: string, count: number): Promise<{ cursor: string; keys: string[] }>;
   /**
@@ -22,9 +25,15 @@ export interface RedisClientAdapter {
   ping?(): Promise<void>;
   /**
    * Optional. MGET; resolves the values in key order, `undefined` for a missing key. An empty
-   * list sends no command and resolves `[]`.
+   * list sends no command and resolves `[]`. The keys may belong to several hash slots; a
+   * Cluster adapter must split the command per slot.
    */
   mget?(keys: readonly string[]): Promise<(string | undefined)[]>;
+  /**
+   * Optional. Every key matching `match`, in pages, across every node that holds data (each master
+   * of a cluster). When present, `RedisStore.clear` uses it instead of the `scan` cursor loop.
+   */
+  scanIterator?(match: string, count: number): AsyncIterable<string[]>;
   publish(channel: string, message: string): Promise<void>;
   createSubscriber(): RedisSubscriberAdapter;
 }

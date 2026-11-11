@@ -61,6 +61,12 @@ export class RedisStore implements CacheStore {
 
   async clear(prefix: string): Promise<void> {
     const match = `${escapeGlob(prefix)}*`;
+    if (this.adapter.scanIterator !== undefined) {
+      for await (const keys of this.adapter.scanIterator(match, SCAN_COUNT)) {
+        if (keys.length > 0) await this.adapter.unlink(keys);
+      }
+      return;
+    }
     let cursor = '0';
     do {
       const page = await this.adapter.scan(cursor, match, SCAN_COUNT);
