@@ -266,6 +266,12 @@ class TaggedWriter {
     return id;
   }
 
+  @CachePut({ key: 'none:{0}', tags: [] })
+  async noTags(id: string): Promise<string> {
+    this.calls++;
+    return `v${id}`;
+  }
+
   @CachePut({ key: 'e:{0}', tags: ['{0}'] })
   async emptyTag(id: string): Promise<string> {
     this.calls++;
@@ -315,6 +321,18 @@ describe('@CachePut tags', () => {
     expect(await cache.get('user:1', { namespace: 'users' })).toEqual({ id: '1', name: 'a' });
     await cache.invalidateTags(['user:1']);
     expect(await cache.get('user:1', { namespace: 'users' })).toBeUndefined();
+  });
+
+  it('@CachePut({ tags: [] }) writes the entry with no stamp and no token', async () => {
+    /* An empty tag list means "no tags": the value is cached as in 0.6, the envelope has no
+       tags field and no tag version key is created. */
+    expect(await svc.noTags('1')).toBe('v1');
+    expect(await cache.get('none:1')).toBe('v1');
+    expect(fake.data.has('none:1')).toBe(true);
+    expect(stampAt('none:1')).toBeUndefined();
+    expect(JSON.parse(fake.data.get('none:1')?.value ?? '{}')).not.toHaveProperty('tags');
+    expect([...fake.data.keys()].some((key) => key.includes('__tag__'))).toBe(false);
+    expect(errors).toEqual([]);
   });
 
   it('takes the tag tokens before the method runs (T4-B)', async () => {

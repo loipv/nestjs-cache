@@ -368,6 +368,18 @@ class TagRemover {
 
   @CacheEvict({
     namespace: 'users',
+    key: (id: string): string => {
+      throw new Error(`bad key ${id}`);
+    },
+    tags: ['user:{0}'],
+  })
+  async badKeyWithTags(id: string): Promise<string> {
+    log.push('method');
+    return id;
+  }
+
+  @CacheEvict({
+    namespace: 'users',
     key: 'user:{0}',
     tags: (): string[] => {
       throw new Error('bad tags');
@@ -517,6 +529,15 @@ describe('@CacheEvict tags', () => {
     expect(await svc.keyWithBadTags('1')).toBe('1');
     expect(log).toEqual(['method', { op: 'delete', keys: ['users:user:1'] }]);
     expect(errorOps()).toEqual(['tag']);
+  });
+
+  it('a throwing key callback is one key error and the tags are still invalidated', async () => {
+    /* Keys and tags are evicted independently: the key cannot be built (one 'key' error, no
+       delete), the tags are still invalidated and the method result is returned. */
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    expect(await svc.badKeyWithTags('1')).toBe('1');
+    expect(log).toEqual(['method', { op: 'tag', key: '__tag__:user:1' }]);
+    expect(errorOps()).toEqual(['key']);
   });
 
   it('a failed token write is a version error and the call still resolves', async () => {

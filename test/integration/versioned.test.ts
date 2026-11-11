@@ -140,9 +140,13 @@ describe.each(selectedAdapters())('versioned namespaces (integration) on %s', (a
          clock: its version cache expired and pub/sub dropped the version key from its L1. */
       const [a, b] = apps.map((app) => app.cache) as [CacheService, CacheService];
       await a.set('1', { n: 1 }, { namespace: 'users' });
+      const [oldKey] = await redis.raw.keys('app:users@*');
+      expect(oldKey).toMatch(/^app:users@[0-9a-z]{8}:1$/);
       expect(await b.get('1', { namespace: 'users' })).toEqual({ n: 1 });
       await a.clear('users');
       expect(await a.get('1', { namespace: 'users' })).toBeUndefined();
+      // clear only writes a new token: the old data key is still in Redis (0.3 deleted it)
+      expect(await redis.raw.get(oldKey ?? '')).not.toBeNull();
       await pause(250);
       expect(await b.get('1', { namespace: 'users' })).toBeUndefined();
     });

@@ -175,7 +175,7 @@ describe('compileTemplate escape flag', () => {
     expect(compileTemplate('{0}')([5], true)).toBe('5');
   });
 
-  /* Objects keep their stableStringify output; only string and number leaves are not touched. */
+  /* Objects keep their stableStringify output; the strings inside them are not escaped. */
   it('does not escape stringified objects', () => {
     const render = compileTemplate('{0}');
     expect(render([{ a: 'x:y' }], true)).toBe(render([{ a: 'x:y' }]));

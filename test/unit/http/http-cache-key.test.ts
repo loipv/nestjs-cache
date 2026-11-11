@@ -16,7 +16,7 @@ describe('httpCacheKey', () => {
   it('percent-encodes % and : in the whole key', () => {
     /* colons and percents in path or query never reach the key raw */
     expect(httpCacheKey('/a:b')).toBe('/a%3Ab');
-    expect(httpCacheKey('/a?x=1:2')).not.toContain(':');
+    expect(httpCacheKey('/a?x=1:2')).toBe('/a?x=1%253A2');
     expect(httpCacheKey('/p%20q')).toContain('%2520');
   });
 

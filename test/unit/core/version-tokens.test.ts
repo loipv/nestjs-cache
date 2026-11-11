@@ -281,14 +281,23 @@ describe('VersionTokens', () => {
 
     const first = new Error('first');
     const second = new Error('second');
+    // `a` rejects only after `c` has: the first failing name in input order still wins.
+    let rejectA: (error: Error) => void = () => undefined;
+    const lateA = new Promise<void>((_, reject) => {
+      rejectA = reject;
+    });
     const setStrict = vi.fn((key: string, value: string, ttlMs: number) => {
-      if (key === 'app:__tag__:a') return Promise.reject(first);
+      if (key === 'app:__tag__:a') return lateA;
       if (key === 'app:__tag__:c') return Promise.reject(second);
       store.data.set(key, { value, ttlMs });
       return Promise.resolve();
     });
     const strict = { name: 'default', store: Object.assign(store, { setStrict }) };
-    await expect(tokens.bumpMany(strict, 'tag', ['a', 'b', 'c'])).rejects.toBe(first);
+    const bumped = tokens.bumpMany(strict, 'tag', ['a', 'b', 'c']);
+    const outcome = expect(bumped).rejects.toBe(first);
+    await vi.advanceTimersByTimeAsync(0);
+    rejectA(first);
+    await outcome;
     expect(setStrict.mock.calls.map((c) => c[0])).toEqual([
       'app:__tag__:a',
       'app:__tag__:b',

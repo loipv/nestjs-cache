@@ -253,8 +253,10 @@ describe('NamespaceVersions', () => {
     expect(setStrict).toHaveBeenCalledOnce();
     expect(store.calls.filter((c) => c.op === 'set')).toEqual([]);
     expect(versions.cached(target, 'users')).toBe('abc12345');
-    const bumps = (versions as unknown as { bumps: Map<string, number> }).bumps;
-    expect(bumps.get('default\u0000users')).toBeUndefined();
+    // The failed bump left no trace: a later fresh read caches the stored token normally.
+    store.data.set('app:__version__:users', { value: 'zzz99999', ttlMs: 1 });
+    expect(await versions.fresh(target, 'users')).toBe('zzz99999');
+    expect(versions.cached(target, 'users')).toBe('zzz99999');
   });
 
   it('a failing fresh read rejects and keeps the cached token', async () => {

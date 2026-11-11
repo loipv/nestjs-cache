@@ -58,7 +58,7 @@ describe('CacheEngine distributed lock', () => {
   it('per-call lock: true overrides the default; lock: false overrides enabled', async () => {
     const off = setup({ prefix: 'app' });
     await off.engine.getOrSet({ namespace: 'ns', key: 'a' }, async () => 1, LOCKED);
-    // The lock key is the full cache key; the store adds its own lock prefix.
+    // The lock key is `<prefix>:__lock__:<cache key>`, built by the engine.
     expect(off.lock.acquireCalls).toEqual(['app:__lock__:ns:a']);
 
     const on = setup({ defaults: { lock: { enabled: true } } });

@@ -403,6 +403,51 @@ describe('CacheEngine tags: the write path', () => {
     expect(envelope?.tags).toEqual({ 'v:two': token('v:two') });
   });
 
+  it('coalesced getOrSet waiters on one key take the tag tokens once', async () => {
+    /* Three concurrent getOrSet calls on a key share one flight: the loader runs once and
+       ensureMany (the token take) is called once, not once per waiter. */
+    const { engine } = setup();
+    const ensure = vi.spyOn(engine.tokens, 'ensureMany');
+    const gate = deferred();
+    const loader = vi.fn(async () => {
+      await gate.promise;
+      return 'v';
+    });
+    const calls = [1, 2, 3].map(() => engine.getOrSet({ key: 'k' }, loader, { tags: ['t', 'u'] }));
+    await vi.advanceTimersByTimeAsync(0);
+    gate.resolve();
+    expect(await Promise.all(calls)).toEqual(['v', 'v', 'v']);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(ensure).toHaveBeenCalledOnce();
+  });
+
+  it('an array-tagged swr refresh takes its own tokens before the loader, not the old stamp', async () => {
+    /* The stale entry is stamped with {a}. The refresh runs with tags [a, b]: its write is
+       stamped with both, a at the token taken before the loader (a bump during the load is not
+       absorbed) and b at its own token; copying the previous stamp would carry no b. */
+    const { engine, store, target, token } = setup();
+    const options = { ttl: 100, strategy: 'swr' as const, staleTtl: 1_000 };
+    await engine.getOrSet({ key: 'k' }, async () => 'one', { ...options, tags: ['a'] });
+    const oldA = token('a');
+    vi.setSystemTime(150);
+    const gate = deferred();
+    const loader = async (): Promise<string> => {
+      await gate.promise;
+      return 'two';
+    };
+    expect(await engine.getOrSet({ key: 'k' }, loader, { ...options, tags: ['a', 'b'] })).toBe(
+      'one',
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await engine.tokens.bump(target, 'tag', 'a');
+    gate.resolve();
+    await vi.runAllTimersAsync();
+    const envelope = envelopeOf(store, 'app:k');
+    expect(envelope?.value).toBe('two');
+    expect(envelope?.tags).toEqual({ a: oldA, b: token('b') });
+    expect(token('a')).not.toBe(oldA);
+  });
+
   it('a locked load takes array tokens once it holds the lock', async () => {
     /* The lock path runs the same load: the lock is acquired first, then the tag token is
        read, then the loader runs, and the write carries that token. */
@@ -715,6 +760,26 @@ describe('CacheEngine tags: the read path and invalidateTags', () => {
     expect(otherLoader).toHaveBeenCalledOnce();
     expect(envelopeOf(strict, 'app:k')?.value).toBe('v');
     expect(events(other.emitted)).toEqual(['error:version', 'miss', 'load']);
+  });
+
+  it('with the lock enabled, a failed tag read loads without acquiring the lock', async () => {
+    /* The entry's tags cannot be checked, so nothing will be written: getOrSet loads the value
+       but never calls lock.acquire and emits no `lock` event (the lock would only be held for
+       a write that does not happen). */
+    const lock = new FakeLock();
+    const store = Object.assign(new TagStore(), { lock });
+    const { engine, emitted } = setup(store);
+    await engine.set({ key: 'k' }, 'old', { tags: ['t'] });
+    vi.setSystemTime(1_001);
+    store.failTags = true;
+    emitted.length = 0;
+    const loader = vi.fn(async () => 'new');
+    expect(await engine.getOrSet({ key: 'k' }, loader, { lock: true })).toBe('new');
+    expect(loader).toHaveBeenCalledOnce();
+    expect(lock.acquireCalls).toEqual([]);
+    expect(emitted.some((e) => e.event === 'lock')).toBe(false);
+    expect(events(emitted)).toEqual(['error:version', 'miss', 'load']);
+    expect(envelopeOf(store, 'app:k')?.value).toBe('old');
   });
 
   it('invalidateTags is per store', async () => {
