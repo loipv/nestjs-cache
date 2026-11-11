@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Example app for @loipv/nestjs-cache. Run `npm run example:check` in the repository root: it packs the library and installs the tarball here, which is why the library is not listed below.",
+  "description": "Example app for @loipv/nestjs-cache; README.md says how to run it.",
   "scripts": {
     "build": "tsc -p .",
     "start": "node dist/main.js",
