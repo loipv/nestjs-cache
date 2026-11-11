@@ -8,6 +8,9 @@ export {
 export { Cacheable } from './decorators/cacheable.js';
 export { CachePut } from './decorators/cache-put.js';
 export { CacheEvict } from './decorators/cache-evict.js';
+export { HttpCache } from './http/http-cache.decorator.js';
+export type { HttpCacheOptions, HttpCacheRequest } from './http/http-cache.decorator.js';
+export { HttpCacheInterceptor } from './http/http-cache.interceptor.js';
 export type {
   CacheableOptions,
   CacheEvictOptions,
