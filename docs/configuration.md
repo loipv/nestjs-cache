@@ -123,10 +123,10 @@ const price = await cache.getOrSet('price:1', () => fetchPrice('1'), {
 });
 ```
 
-`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. A refresh counts only once its
-result is written: if the loader resolves `undefined` or `null` (or, in a batch, omits a key) without `cacheNull`,
-nothing is written and the stale entry stays, so the call returns the stale value, as on a timeout. With `cacheNull`
-the empty value is written and returned. A batch shares one window per call. The calls that never load (`@CachePut`,
+`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. A non-empty refreshed value is
+returned when it arrives in time. An empty one (`null`, `undefined`, or a key a batch loader omits) is returned only if
+it was actually written: `cacheNull` is on, and the write was not vetoed by `unless`, a rejected tag list or a failed
+store write. Otherwise the stale value is returned, as on a timeout. A batch shares one window per call. The calls that never load (`@CachePut`,
 `set`, `setMany`, `get` and `getMany`) do not accept it: their option types (`StrategyOptions`) reject it at compile
 time, and a JavaScript caller gets `CacheConfigError`. The load calls take `LoadStrategyOptions`, which adds it.
 On a load call it needs `strategy: 'swr'`: the types allow it only there, and from JavaScript another strategy is a

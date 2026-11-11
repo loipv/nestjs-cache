@@ -37,8 +37,9 @@ Changed:
   `CacheConfigError` at class definition, and on `getOrSet` or `getOrSetMany` the call rejects with it. Before, it was
   ignored. Migration: remove `softTimeout` there, or use `strategy: 'swr'`.
 - `GetOrSetOptions` and `GetOrSetManyOptions` are no longer `WriteOptions & …` / `WriteManyOptions & …`. They have the
-  same fields, with `LoadStrategyOptions`. Migration: a value typed `GetOrSetOptions` that sets `softTimeout` is no
-  longer assignable to `WriteOptions`. Drop `softTimeout` before passing it to `set`.
+  same fields, with `LoadStrategyOptions`. Migration: a value typed `GetOrSetOptions` is no longer assignable to
+  `WriteOptions`, whatever fields it sets (only a fresh object literal without `softTimeout` still is). Type options
+  you share between `getOrSet` and `set` as `WriteOptions`, or pick the fields you pass to `set`.
 - `GetOrSetManyOptions.lock` is typed `false` (was `boolean`). Migration: remove `lock: true` from `getOrSetMany`
   calls. It always rejected with `CacheConfigError`.
 - `CacheEvents.emit` and `CacheEvents.sinkFor` are no longer in the published types. They were marked `@internal`.

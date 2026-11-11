@@ -30,5 +30,17 @@
   {
     "fragment": "- **0.9 - Planned:** replica reads and `redis` v6 support.",
     "reason": "roadmap line rewritten when 0.9 shipped"
+  },
+  {
+    "fragment": "- **`nodeAddressMap` and a tiered store (`redis` before 6.3.1).**",
+    "reason": "Moved to docs/stores.md and reworded to claim only the tested versions: affected with 5.12.1, verified fixed with 6.3.1 (final review M-4)."
+  },
+  {
+    "fragment": "`softTimeout` is accepted by `@Cacheable`, `@HttpCache`, `getOrSet` and `getOrSetMany`. A refresh counts only once its result is written:",
+    "reason": "Moved to docs/configuration.md and corrected: a non-empty refreshed value is returned when it arrives in time, an empty one only if it was written (final review I-3)."
+  },
+  {
+    "fragment": "| Envelope unreadable or unknown `v` | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field |",
+    "reason": "Moved to docs/resilience.md and extended with the 0.9 cleanup under `compressedSerializer(jsonSerializer)` (final review M-6)."
   }
 ]

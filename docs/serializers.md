@@ -60,5 +60,9 @@ CacheModule.forRoot({
 - Compression is synchronous (`node:zlib`) and costs event-loop CPU on large payloads; `brotli` compresses smaller
   and slower than `gzip`.
 - A corrupt or oversized payload is a `deserialize` error and a miss, like any unreadable entry.
+- An unreadable entry this library wrote (a corrupt envelope, or one of another envelope version) is deleted on read
+  under `compressedSerializer(jsonSerializer)` (the default `inner`), as under the plain `jsonSerializer`. A payload
+  that cannot be decompressed is never deleted, since it may not be the library's. With a custom or nested `inner`
+  (another `compressedSerializer`, for example), an unreadable entry is never deleted.
 - Invalid options throw `CacheConfigError` when the serializer is created.
 - `inner` must not produce strings that start with `"\u0000nc1:"`, the prefix the compressed values use.
