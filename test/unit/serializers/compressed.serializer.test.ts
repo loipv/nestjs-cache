@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { brotliCompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { unwrap, wrap } from '../../../src/core/envelope.js';
 import { CacheConfigError } from '../../../src/errors.js';
@@ -79,6 +79,49 @@ describe('compressedSerializer', () => {
         /ERR_BUFFER_TOO_LARGE|larger than/,
       );
     }
+  });
+
+  it('rejects a stray character that only the base64 pattern catches', () => {
+    /* Buffer.from skips the stray '*', so without the pattern check this would decode */
+    const inner = jsonSerializer.serialize(big());
+    const valid = gzipSync(Buffer.from(inner)).toString('base64').replace(/=+$/, '');
+    const stray = `${valid.slice(0, 20)}*${valid.slice(20)}`;
+    expect(stray.length % 4).not.toBe(1);
+    expect(gunzipSync(Buffer.from(stray, 'base64')).toString('utf8')).toBe(inner);
+    expect(() => compressedSerializer().deserialize(GZ + stray)).toThrow(/not valid base64/);
+  });
+
+  it('keeps a payload whose UTF-8 byte length equals the threshold plain', () => {
+    /* the threshold is inclusive: exactly `threshold` bytes is not compressed */
+    const e = wrap('a'.repeat(3000), 0, 10);
+    const raw = jsonSerializer.serialize(e);
+    const threshold = Buffer.byteLength(raw, 'utf8');
+    expect(compressedSerializer({ threshold }).serialize(e)).toBe(raw);
+    expect(
+      compressedSerializer({ threshold: threshold - 1 })
+        .serialize(e)
+        .startsWith(GZ),
+    ).toBe(true);
+  });
+
+  it.each(['gzip', 'brotli'] as const)(
+    'stores a payload above maxDecompressedBytes plain so it stays readable (%s)',
+    (algorithm) => {
+      /* a 5000-byte value with a 2048-byte read limit round-trips instead of failing on read */
+      const s = compressedSerializer({ algorithm, maxDecompressedBytes: 2048 });
+      const out = s.serialize(big());
+      expect(unwrap(s.deserialize(out))).toBe('a'.repeat(5000));
+      expect(out === jsonSerializer.serialize(big())).toBe(true);
+    },
+  );
+
+  it('compresses a payload at exactly maxDecompressedBytes', () => {
+    /* the read limit is inclusive, so a payload of that size is still compressed and readable */
+    const raw = jsonSerializer.serialize(big());
+    const s = compressedSerializer({ maxDecompressedBytes: Buffer.byteLength(raw, 'utf8') });
+    const out = s.serialize(big());
+    expect(out.startsWith(GZ)).toBe(true);
+    expect(unwrap(s.deserialize(out))).toBe('a'.repeat(5000));
   });
 
   it('rejects invalid options with CacheConfigError', () => {

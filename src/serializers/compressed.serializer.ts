@@ -10,7 +10,10 @@ export interface CompressedSerializerOptions {
   algorithm?: 'gzip' | 'brotli';
   /** UTF-8 byte length of the inner string above which compression is tried. Default 1024. */
   threshold?: number;
-  /** Upper bound of a decompressed payload, in bytes. Default 16 MiB. */
+  /**
+   * Upper bound of a decompressed payload, in bytes. Default 16 MiB. Larger payloads are written
+   * uncompressed so they stay readable.
+   */
   maxDecompressedBytes?: number;
 }
 
@@ -54,7 +57,11 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
   return {
     serialize(envelope: CacheEnvelope): string {
       const plain = serializer.serialize(envelope);
-      if (Buffer.byteLength(plain, 'utf8') <= threshold) return plain;
+      const size = Buffer.byteLength(plain, 'utf8');
+      if (size <= threshold) return plain;
+      // A compressed payload above maxDecompressedBytes could never be read back; plain reads
+      // have no such limit.
+      if (size > maxDecompressedBytes) return plain;
       const bytes = Buffer.from(plain, 'utf8');
       const packed = algorithm === 'gzip' ? gzipSync(bytes) : brotliCompressSync(bytes);
       const out = prefix + packed.toString('base64');
