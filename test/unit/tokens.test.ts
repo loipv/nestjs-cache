@@ -16,6 +16,20 @@ describe('tokens and errors', () => {
     expect(CACHE_METADATA).toBe(Symbol.for('@loipv/nestjs-cache:metadata'));
   });
 
+  it('the package index does not export the internal tokens (A-02..A-05)', async () => {
+    /* 0.9: CACHE_ENGINE, CACHE_OPTIONS, CACHE_ENGINE_PROPERTY and CACHE_METADATA are internal;
+       an application injects CacheService instead, so none of them is on the package index. */
+    const index: Record<string, unknown> = await import('../../src/index.js');
+    for (const name of [
+      'CACHE_ENGINE',
+      'CACHE_OPTIONS',
+      'CACHE_ENGINE_PROPERTY',
+      'CACHE_METADATA',
+    ]) {
+      expect(index).not.toHaveProperty(name);
+    }
+  });
+
   it('CACHE_LOGGER is a global-registry symbol', () => {
     expect(CACHE_LOGGER).toBe(Symbol.for('@loipv/nestjs-cache:logger'));
   });

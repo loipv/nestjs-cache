@@ -8,7 +8,8 @@ const { Injectable, Module } = require('@nestjs/common');
 assert.equal(typeof lib.Cacheable, 'function');
 assert.equal(typeof lib.CachePut, 'function');
 assert.equal(typeof lib.CacheEvict, 'function');
-assert.equal(lib.CACHE_ENGINE, Symbol.for('@loipv/nestjs-cache:engine'));
+// The DI tokens are internal (0.9): the package index does not export them.
+assert.equal(lib.CACHE_ENGINE, undefined);
 assert.ok(new lib.CacheConfigError('x') instanceof Error);
 
 class UserService {

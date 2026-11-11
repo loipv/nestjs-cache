@@ -1,10 +1,4 @@
 export { CacheConfigError } from './errors.js';
-export {
-  CACHE_ENGINE,
-  CACHE_ENGINE_PROPERTY,
-  CACHE_METADATA,
-  CACHE_OPTIONS,
-} from './module/tokens.js';
 export { Cacheable } from './decorators/cacheable.js';
 export { CachePut } from './decorators/cache-put.js';
 export { CacheEvict } from './decorators/cache-evict.js';
@@ -85,7 +79,6 @@ export type { CircuitBreakerOptions } from './resilience/circuit-breaker.store.j
 export type {
   CachePrometheusOptions,
   PrometheusClientLike,
-  PrometheusMetricConfig,
   RegistryLike,
 } from './observability/prometheus.types.js';
 export { CachePrometheusModule } from './observability/prometheus.module.js';

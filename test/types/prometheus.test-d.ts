@@ -1,7 +1,9 @@
 import * as promClient from 'prom-client';
 import * as ioClient from '@prometheus-io/client';
-import { construct } from '../../src/observability/prometheus.types.js';
-import type { PrometheusMetricConfig } from '../../src/index.js';
+import {
+  construct,
+  type PrometheusMetricConfig,
+} from '../../src/observability/prometheus.types.js';
 import type {
   CachePrometheusOptions,
   PrometheusClientLike,
