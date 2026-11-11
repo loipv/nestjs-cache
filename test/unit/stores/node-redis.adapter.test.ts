@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CacheConfigError } from '../../../src/errors.js';
+import { keySlot } from '../../../src/stores/key-slot.js';
 import {
   createNodeRedisSubscriber,
   nodeRedisAdapter,
@@ -6,7 +8,7 @@ import {
 import { RELEASE_SCRIPT } from '../../../src/stores/redis-client.adapter.js';
 import type { RedisSubscriberAdapter } from '../../../src/stores/redis-client.adapter.js';
 import { redisStore } from '../../../src/stores/redis.store.js';
-import { FakeNodeRedis } from '../helpers/fake-node-redis.js';
+import { FakeNodeRedis, FakeNodeRedisCluster } from '../helpers/fake-node-redis.js';
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
@@ -137,6 +139,127 @@ describe('nodeRedisAdapter commands', () => {
     const store = redisStore({ client: nodeRedisAdapter(new FakeNodeRedis().asNodeRedis()) });
     expect(store.lock).toBeDefined();
     expect(store.ping).toBeDefined();
+  });
+});
+
+describe('nodeRedisAdapter cluster mode', () => {
+  /* '{a}1' and '{a}2' share the slot of 'a'; '{b}1' is in another slot. One mGet per slot, and
+     the values come back in input order with null mapped to undefined. */
+  it('cluster: per-slot mGet', async () => {
+    expect(keySlot('{a}1')).not.toBe(keySlot('{b}1'));
+    const cluster = new FakeNodeRedisCluster();
+    cluster.mGet.mockImplementation((keys: string[]) =>
+      Promise.resolve(keys.map((key) => (key === '{a}2' ? null : `v:${key}`))),
+    );
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    await expect(adapter.mget?.(['{a}1', '{b}1', '{a}2'])).resolves.toEqual([
+      'v:{a}1',
+      'v:{b}1',
+      undefined,
+    ]);
+    expect(cluster.mGet).toHaveBeenCalledTimes(2);
+    expect(cluster.mGet).toHaveBeenCalledWith(['{a}1', '{a}2']);
+    expect(cluster.mGet).toHaveBeenCalledWith(['{b}1']);
+  });
+
+  /* Keys in two slots: one unlink per slot, each with only that slot's keys. */
+  it('cluster: per-slot unlink', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    cluster.unlink.mockResolvedValue(1);
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    await expect(adapter.unlink(['{a}1', '{b}1', '{a}2'])).resolves.toBeUndefined();
+    expect(cluster.unlink).toHaveBeenCalledTimes(2);
+    expect(cluster.unlink).toHaveBeenCalledWith(['{a}1', '{a}2']);
+    expect(cluster.unlink).toHaveBeenCalledWith(['{b}1']);
+  });
+
+  /* Review Focus 3: empty key lists resolve at once and never reach the cluster client. */
+  it('cluster: empty lists send nothing', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    await expect(adapter.mget?.([])).resolves.toEqual([]);
+    await expect(adapter.unlink([])).resolves.toBeUndefined();
+    expect(cluster.mGet).not.toHaveBeenCalled();
+    expect(cluster.unlink).not.toHaveBeenCalled();
+  });
+
+  /* Three masters: the first has two pages, the second none, the third one. scanIterator gets
+     each master's client from nodeClient, scans it to cursor '0' with MATCH/COUNT and yields the
+     non-empty pages. The cluster's own scan (one random node) is never used. */
+  it('cluster: scanIterator scans every master through nodeClient', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    const [n1, n2, n3] = cluster.masterClients;
+    n1!.scan
+      .mockResolvedValueOnce({ cursor: '5', keys: ['p:1'] })
+      .mockResolvedValueOnce({ cursor: '0', keys: ['p:2'] });
+    n2!.scan.mockResolvedValueOnce({ cursor: '0', keys: [] });
+    n3!.scan.mockResolvedValueOnce({ cursor: '0', keys: ['p:3'] });
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    const pages: string[][] = [];
+    for await (const page of adapter.scanIterator!('p:*', 100)) pages.push(page);
+    expect(pages).toEqual([['p:1'], ['p:2'], ['p:3']]);
+    for (const master of cluster.masters) expect(cluster.nodeClient).toHaveBeenCalledWith(master);
+    expect(n1!.scan.mock.calls).toEqual([
+      ['0', { MATCH: 'p:*', COUNT: 100 }],
+      ['5', { MATCH: 'p:*', COUNT: 100 }],
+    ]);
+    expect(n2!.scan).toHaveBeenCalledWith('0', { MATCH: 'p:*', COUNT: 100 });
+    expect(n3!.scan).toHaveBeenCalledWith('0', { MATCH: 'p:*', COUNT: 100 });
+    expect(cluster.scan).not.toHaveBeenCalled();
+  });
+
+  /* A cluster that knows no master yet (its connect has not finished discovery): scanning zero
+     masters would let clear succeed while deleting nothing, so scanIterator rejects with a plain
+     Error (not a CacheConfigError), RedisStore.clear rejects with it and no UNLINK is sent. */
+  it('cluster: scanIterator and clear reject when no master is known', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    cluster.masters = [];
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    const pages: string[][] = [];
+    const iterating = (async () => {
+      for await (const page of adapter.scanIterator!('*', 100)) pages.push(page);
+    })();
+    await expect(iterating).rejects.toThrow('no cluster master');
+    await expect(iterating).rejects.not.toBeInstanceOf(CacheConfigError);
+    expect(pages).toEqual([]);
+
+    const store = redisStore({ client: adapter });
+    await expect(store.clear('')).rejects.toThrow('no cluster master');
+    expect(cluster.unlink).not.toHaveBeenCalled();
+  });
+
+  /* A cursor scan cannot cover a cluster: scan rejects with a CacheConfigError that points to
+     scanIterator, and sends nothing. */
+  it('cluster: scan rejects with CacheConfigError', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    const scanning = adapter.scan('0', '*', 100);
+    await expect(scanning).rejects.toBeInstanceOf(CacheConfigError);
+    await expect(scanning).rejects.toThrow('scanIterator');
+    expect(cluster.scan).not.toHaveBeenCalled();
+  });
+
+  /* publish goes through SPUBLISH. The subscriber is a cluster duplicate that connects on the
+     first subscribe and sends SSUBSCRIBE, never SUBSCRIBE; the SPUBLISH reaches its handler. */
+  it('cluster: publish uses sPublish and the subscriber uses sSubscribe', async () => {
+    const cluster = new FakeNodeRedisCluster();
+    const adapter = nodeRedisAdapter(cluster.asCluster());
+    const subscriber = adapter.createSubscriber();
+    expect(cluster.duplicate).toHaveBeenCalledTimes(1);
+    const connection = cluster.duplicates[0]!;
+    expect(connection).toBeInstanceOf(FakeNodeRedisCluster);
+    const onMessage = vi.fn();
+    await subscriber.subscribe('ch', onMessage);
+    expect(connection.connect).toHaveBeenCalledTimes(1);
+    expect(connection.sSubscribe).toHaveBeenCalledWith('ch', expect.any(Function));
+    expect(connection.subscribe).not.toHaveBeenCalled();
+
+    await expect(adapter.publish('ch', 'hello')).resolves.toBeUndefined();
+    expect(cluster.sPublish).toHaveBeenCalledWith('ch', 'hello');
+    expect(cluster.publish).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledWith('hello');
+    await subscriber.close();
+    expect(connection.close).toHaveBeenCalledTimes(1);
   });
 });
 

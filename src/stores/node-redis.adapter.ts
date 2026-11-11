@@ -1,3 +1,5 @@
+import { CacheConfigError } from '../errors.js';
+import { mgetBySlot, scanNodes, unlinkBySlot } from './cluster-ops.js';
 import { RELEASE_SCRIPT } from './redis-client.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 import { closeWithTimeout, createSubscriptionTracker } from './subscriber-support.js';
@@ -39,8 +41,24 @@ export interface NodeRedisLike {
 }
 
 /**
- * The connection the subscriber drives. A cluster connection (sharded mode) also has
- * `sSubscribe`.
+ * Structural subset of a node-redis v5 cluster (`createCluster()` from `redis`). Declared by hand
+ * so the library never imports `redis`. `nodeRedisAdapter` runs in cluster mode when the client
+ * has `masters`. Like a single client, it must be connected before it is passed in.
+ */
+export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'duplicate'> {
+  /** The master nodes, passed back to `nodeClient`; `scanIterator` scans each of them. */
+  readonly masters: readonly unknown[];
+  /** The client of one master node. */
+  nodeClient(master: unknown): Promise<Pick<NodeRedisLike, 'scan'>>;
+  sPublish(channel: string, message: string): Promise<unknown>;
+  sSubscribe(channel: string, listener: PubSubListener): Promise<unknown>;
+  /** The subscriber's dedicated connection: a new, unconnected cluster. */
+  duplicate(): NodeRedisClusterLike;
+}
+
+/**
+ * The connection the subscriber drives: a single client, or a cluster (sharded mode), which also
+ * has `sSubscribe`.
  */
 type SubscriberConnection = Pick<
   NodeRedisLike,
@@ -49,8 +67,12 @@ type SubscriberConnection = Pick<
   sSubscribe?(channel: string, listener: PubSubListener): Promise<unknown>;
 };
 
-/** Adapts a connected node-redis v5 client to the cache's `RedisClientAdapter`. */
-export function nodeRedisAdapter(client: NodeRedisLike): RedisClientAdapter {
+/**
+ * Adapts a connected node-redis v5 client or cluster to the cache's `RedisClientAdapter`. A
+ * cluster (spec 3.4) splits `mget`/`unlink` per slot, scans every master through `scanIterator`,
+ * and publishes and subscribes with sharded pub/sub.
+ */
+export function nodeRedisAdapter(client: NodeRedisLike | NodeRedisClusterLike): RedisClientAdapter {
   const adapter: RedisClientAdapter = {
     async get(key) {
       return (await client.get(key)) ?? undefined;
@@ -71,14 +93,40 @@ export function nodeRedisAdapter(client: NodeRedisLike): RedisClientAdapter {
     async deleteIfEquals(key, value) {
       return (await client.eval(RELEASE_SCRIPT, { keys: [key], arguments: [value] })) === 1;
     },
+    ...('masters' in client ? clusterCommands(client) : singleNodeCommands(client)),
+  };
+  // Optional members exist only when the client has them, so `'ping' in adapter` is truthful.
+  if (typeof client.ping === 'function') {
+    adapter.ping = async () => {
+      await client.ping?.();
+    };
+  }
+  return adapter;
+}
+
+type KeyspaceCommands = Pick<
+  RedisClientAdapter,
+  'unlink' | 'mget' | 'scan' | 'publish' | 'createSubscriber' | 'scanIterator'
+>;
+
+/** MGET; `null` becomes `undefined` and the values keep the key order. */
+async function mgetValues(
+  client: Pick<NodeRedisLike, 'mGet'>,
+  keys: readonly string[],
+): Promise<(string | undefined)[]> {
+  if (keys.length === 0) return [];
+  const values = await client.mGet([...keys]);
+  return keys.map((_, index) => values[index] ?? undefined);
+}
+
+function singleNodeCommands(client: NodeRedisLike): KeyspaceCommands {
+  return {
     async unlink(keys) {
       if (keys.length === 0) return;
       await client.unlink([...keys]);
     },
-    async mget(keys) {
-      if (keys.length === 0) return [];
-      const values = await client.mGet([...keys]);
-      return keys.map((_, index) => values[index] ?? undefined);
+    mget(keys) {
+      return mgetValues(client, keys);
     },
     async scan(cursor, match, count) {
       const reply = await client.scan(cursor, { MATCH: match, COUNT: count });
@@ -91,13 +139,59 @@ export function nodeRedisAdapter(client: NodeRedisLike): RedisClientAdapter {
       return createNodeRedisSubscriber(client.duplicate(), false);
     },
   };
-  // Optional members exist only when the client has them, so `'ping' in adapter` is truthful.
-  if (typeof client.ping === 'function') {
-    adapter.ping = async () => {
-      await client.ping?.();
-    };
+}
+
+/** Spec 3.4: multi-key commands per slot, SCAN on every master, sharded pub/sub. */
+function clusterCommands(client: NodeRedisClusterLike): KeyspaceCommands {
+  return {
+    unlink(keys) {
+      return unlinkBySlot(keys, async (slotKeys) => {
+        await client.unlink(slotKeys);
+      });
+    },
+    // A cluster rejects a multi-key command across slots (CROSSSLOT): one MGET per slot.
+    mget(keys) {
+      return mgetBySlot(keys, (slotKeys) => mgetValues(client, slotKeys));
+    },
+    scan() {
+      return Promise.reject(
+        new CacheConfigError(
+          'nodeRedisAdapter: scan is not supported on a Redis cluster client, because one cursor covers one node; use scanIterator, which scans every master',
+        ),
+      );
+    },
+    scanIterator(match, count) {
+      return scanMasters(client, match, count);
+    },
+    async publish(channel, message) {
+      await client.sPublish(channel, message);
+    },
+    createSubscriber() {
+      return createNodeRedisSubscriber(client.duplicate(), true);
+    },
+  };
+}
+
+/**
+ * Reads the masters when iteration starts, so a topology change before `clear` is seen. Rejects
+ * when none is known: scanning zero masters would let `clear` succeed without deleting anything.
+ */
+async function* scanMasters(
+  client: NodeRedisClusterLike,
+  match: string,
+  count: number,
+): AsyncIterable<string[]> {
+  const masters = [...client.masters];
+  if (masters.length === 0) {
+    throw new Error(
+      'nodeRedisAdapter: no cluster master is known yet, so the keyspace cannot be scanned',
+    );
   }
-  return adapter;
+  yield* scanNodes(masters, async (master, cursor) => {
+    const node = await client.nodeClient(master);
+    const reply = await node.scan(cursor, { MATCH: match, COUNT: count });
+    return { cursor: reply.cursor, keys: reply.keys };
+  });
 }
 
 /**

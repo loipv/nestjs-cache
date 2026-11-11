@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
-import type { NodeRedisLike } from '../../../src/stores/node-redis.adapter.js';
+import type {
+  NodeRedisClusterLike,
+  NodeRedisLike,
+} from '../../../src/stores/node-redis.adapter.js';
 
 type Listener = (message: string, channel: string) => void;
 
@@ -39,10 +42,15 @@ export class FakeNodeRedis extends EventEmitter {
   destroy = vi.fn();
 
   duplicate = vi.fn((): NodeRedisLike => {
-    const connection = new FakeNodeRedis();
+    const connection = this.spawn();
     this.duplicates.push(connection);
     return connection.asNodeRedis();
   });
+
+  /** The connection `duplicate` returns: a client of the same kind. */
+  protected spawn(): FakeNodeRedis {
+    return new FakeNodeRedis();
+  }
 
   publishRemote(channel: string, message: string): void {
     for (const listener of this.channels.get(channel) ?? []) listener(message, channel);
@@ -54,6 +62,40 @@ export class FakeNodeRedis extends EventEmitter {
 
   asNodeRedis(): NodeRedisLike {
     return this;
+  }
+}
+
+/**
+ * Stand-in for a node-redis v5 cluster (`createCluster`). `masters` are opaque node objects;
+ * `nodeClient` answers the matching entry of `masterClients`. `sPublish` reaches the sharded
+ * subscriptions of every duplicate, as SPUBLISH reaches every instance's sharded subscriber.
+ */
+export class FakeNodeRedisCluster extends FakeNodeRedis {
+  masters: object[] = [
+    { address: '127.0.0.1:7000' },
+    { address: '127.0.0.1:7001' },
+    { address: '127.0.0.1:7002' },
+  ];
+  /** The node client of each master, in `masters` order. */
+  readonly masterClients = [new FakeNodeRedis(), new FakeNodeRedis(), new FakeNodeRedis()];
+  nodeClient = vi.fn((master: unknown) => {
+    const client = this.masterClients[this.masters.findIndex((known) => known === master)];
+    return client === undefined
+      ? Promise.reject(new Error('unknown master'))
+      : Promise.resolve(client.asNodeRedis());
+  });
+  sPublish = vi.fn((channel: string, message: string) => {
+    for (const connection of this.duplicates) connection.sPublishRemote(channel, message);
+    return Promise.resolve(1);
+  });
+
+  protected override spawn(): FakeNodeRedis {
+    return new FakeNodeRedisCluster();
+  }
+
+  asCluster(): NodeRedisClusterLike {
+    // `duplicate` is typed for the single-node fake, though here it returns a cluster fake.
+    return this as unknown as NodeRedisClusterLike;
   }
 }
 
