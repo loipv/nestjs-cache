@@ -33,13 +33,19 @@ interface Cached {
 /** The tokens of one kind, each map keyed by `<store>\0<name>`. */
 interface KindState {
   readonly cache: Map<string, Cached>;
+  /** In-flight read-or-create calls (`current`, `fresh` does not register). */
   readonly inflight: Map<string, Promise<string>>;
+  /**
+   * In-flight plain reads (`currentMany`), which never create. A read caches its token only
+   * while it is still registered here; a bump or a fresh read unregisters it.
+   */
+  readonly reads: Map<string, Promise<string | undefined>>;
   /** Completed bumps per (store, name): a read that saw one finish caches nothing. */
   readonly bumps: Map<string, number>;
 }
 
 function newState(): KindState {
-  return { cache: new Map(), inflight: new Map(), bumps: new Map() };
+  return { cache: new Map(), inflight: new Map(), reads: new Map(), bumps: new Map() };
 }
 
 function slot(target: Target, name: string): string {
@@ -112,8 +118,9 @@ export class VersionTokens {
     const bumps = state.bumps.get(k) ?? 0;
     const token = await this.read(target, kind, name);
     if ((state.bumps.get(k) ?? 0) === bumps) {
-      // An in-flight cached read started earlier; it must not replace this newer token.
+      // In-flight reads started earlier; they must not replace this newer token.
       state.inflight.delete(k);
+      state.reads.delete(k);
       this.remember(state, k, token);
     }
     return token;
@@ -127,16 +134,18 @@ export class VersionTokens {
     const k = slot(target, name);
     state.bumps.set(k, (state.bumps.get(k) ?? 0) + 1);
     state.inflight.delete(k);
+    state.reads.delete(k);
     this.remember(state, k, token);
   }
 
   /**
    * The tokens of `names` (deduplicated, in first-occurrence order), `undefined` for a missing
-   * or empty key; never creates one. Cached tokens are served without a store call. The others
-   * are read with one `getStrict` each, in parallel, when the store has it, else with one
-   * `getMany` (one `get` each without it), and cached unless a bump completed meanwhile; an
-   * older read still in flight then no longer updates the cache.
-   * Rejects when any store read rejects.
+   * or empty key; never creates one. Cached tokens are served without a store call. A name with
+   * a plain read already in flight (from another `currentMany`) joins it; the others are read
+   * with one `getStrict` each, in parallel, when the store has it, else with one `getMany` (one
+   * `get` each without it). A token read is cached unless a bump or a fresh read completed
+   * meanwhile, and an older read-or-create still in flight then no longer updates the cache; a
+   * missing key is not cached. Rejects when any store read rejects, for every waiter on it.
    */
   async currentMany(
     target: Target,
@@ -145,35 +154,34 @@ export class VersionTokens {
   ): Promise<Map<string, string | undefined>> {
     const state = this.kinds[kind];
     const result = new Map<string, string | undefined>();
-    const missing: string[] = [];
+    const pending: (readonly [string, Promise<string | undefined>])[] = [];
+    const unread: string[] = [];
     const now = Date.now();
     for (const name of names) {
       if (result.has(name)) continue;
-      const cached = state.cache.get(slot(target, name));
+      const k = slot(target, name);
+      const cached = state.cache.get(k);
       if (cached !== undefined && now < cached.until) {
         result.set(name, cached.token);
-      } else {
-        result.set(name, undefined);
-        missing.push(name);
+        continue;
       }
+      result.set(name, undefined);
+      const running = state.reads.get(k);
+      if (running === undefined) unread.push(name);
+      else pending.push([name, running]);
     }
-    if (missing.length === 0) return result;
-    const bumps = missing.map((name) => state.bumps.get(slot(target, name)) ?? 0);
-    const values = await readTokens(
+    const reads = readTokens(
       target.store,
-      missing.map((name) => tokenKey(this.prefix, kind, name)),
+      unread.map((name) => [name, tokenKey(this.prefix, kind, name)] as const),
     );
-    missing.forEach((name, i) => {
-      const token = values[i];
-      if (token === undefined || token === '') return;
+    for (const [name, raw] of reads) {
+      pending.push([name, this.shareRead(state, slot(target, name), raw)]);
+    }
+    for (const [name, token] of await Promise.all(
+      pending.map(async ([name, read]) => [name, await read] as const),
+    )) {
       result.set(name, token);
-      const k = slot(target, name);
-      if ((state.bumps.get(k) ?? 0) === bumps[i]) {
-        // As in `fresh`: an older in-flight read must not replace this token.
-        state.inflight.delete(k);
-        this.remember(state, k, token);
-      }
-    });
+    }
     return result;
   }
 
@@ -206,6 +214,37 @@ export class VersionTokens {
     if (failed !== undefined) throw failed.reason;
   }
 
+  /**
+   * Registers the plain read of `k` so concurrent `currentMany` calls join it. On success a token
+   * is cached while the read is still registered; `''` becomes `undefined`. A rejection is
+   * passed to every waiter and caches nothing.
+   */
+  private shareRead(
+    state: KindState,
+    k: string,
+    raw: Promise<string | undefined>,
+  ): Promise<string | undefined> {
+    const read: Promise<string | undefined> = raw.then(
+      (value) => {
+        const registered = state.reads.get(k) === read;
+        if (registered) state.reads.delete(k);
+        if (value === undefined || value === '') return undefined;
+        if (registered) {
+          // As in `fresh`: an older read-or-create in flight must not replace this token.
+          state.inflight.delete(k);
+          this.remember(state, k, value);
+        }
+        return value;
+      },
+      (error: unknown) => {
+        if (state.reads.get(k) === read) state.reads.delete(k);
+        throw error;
+      },
+    );
+    state.reads.set(k, read);
+    return read;
+  }
+
   private remember(state: KindState, k: string, token: string): void {
     state.cache.set(k, { token, until: Date.now() + this.cacheTtl });
   }
@@ -226,9 +265,20 @@ function readToken(store: CacheStore, key: string): Promise<string | undefined> 
   return store.getStrict === undefined ? store.get(key) : store.getStrict(key);
 }
 
-function readTokens(store: CacheStore, keys: readonly string[]): Promise<(string | undefined)[]> {
-  if (store.getStrict === undefined && store.getMany !== undefined) return store.getMany(keys);
-  return Promise.all(keys.map((key) => readToken(store, key)));
+/**
+ * The read of each `[name, key]` pair: `getStrict` each when the store has it, else one shared
+ * `getMany` (one `get` each without it). No call for an empty list.
+ */
+function readTokens(
+  store: CacheStore,
+  entries: readonly (readonly [name: string, key: string])[],
+): [string, Promise<string | undefined>][] {
+  if (entries.length === 0) return [];
+  if (store.getStrict === undefined && store.getMany !== undefined) {
+    const all = store.getMany(entries.map(([, key]) => key));
+    return entries.map(([name], i) => [name, all.then((values) => values[i])]);
+  }
+  return entries.map(([name, key]) => [name, readToken(store, key)]);
 }
 
 function writeToken(store: CacheStore, key: string, token: string): Promise<void> {

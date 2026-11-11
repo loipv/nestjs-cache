@@ -170,16 +170,36 @@ describe('VersionTokens', () => {
     expect(ops(store, 'set')).toBe(0);
   });
 
-  it('currentMany does not cache a token read while a bump completed', async () => {
-    /* The read sees the old token; a bump finishing during the read keeps its newer token in
-       the cache. The read still returns what it saw. */
-    const { store, tokens, target } = setup();
+  it('currentMany does not cache a token read while a bump or a fresh read completed', async () => {
+    /* The read is held until a bump has finished: it returns the old token it saw, and the
+       cache keeps the bump's newer token. The same holds for a fresh read finishing first. */
+    const { store, tokens } = setup();
     store.data.set('app:__tag__:a', { value: 'old12345', ttlMs: 1 });
-    const pending = tokens.currentMany(target, 'tag', ['a']);
-    await tokens.bump(target, 'tag', 'a');
+    const gates: ReturnType<typeof deferred<undefined>>[] = [];
+    const getStrict = vi.fn(async (key: string) => {
+      const seen = store.data.get(key)?.value;
+      const gate = deferred<undefined>();
+      gates.push(gate);
+      await gate.promise;
+      return seen;
+    });
+    const strict = { name: 'default', store: Object.assign(store, { getStrict }) };
+    const pending = tokens.currentMany(strict, 'tag', ['a']);
+    await tokens.bump(strict, 'tag', 'a');
     const bumped = store.data.get('app:__tag__:a')?.value;
+    gates[0]?.resolve(undefined);
     expect((await pending).get('a')).toBe('old12345');
-    expect(tokens.cached(target, 'tag', 'a')).toBe(bumped);
+    expect(tokens.cached(strict, 'tag', 'a')).toBe(bumped);
+
+    vi.advanceTimersByTime(1000);
+    const again = tokens.currentMany(strict, 'tag', ['a']);
+    store.data.set('app:__tag__:a', { value: 'new12345', ttlMs: 1 });
+    const fresh = tokens.fresh(strict, 'tag', 'a');
+    gates[2]?.resolve(undefined);
+    expect(await fresh).toBe('new12345');
+    gates[1]?.resolve(undefined);
+    expect((await again).get('a')).toBe(bumped);
+    expect(tokens.cached(strict, 'tag', 'a')).toBe('new12345');
   });
 
   it('a currentMany read keeps its token over an older in-flight current read', async () => {
@@ -300,5 +320,114 @@ describe('VersionTokens', () => {
       const bumped = name === 'a:b' || name === 'ключ';
       expect(current.get(name) === ensured.get(name)).toBe(!bumped);
     }
+  });
+
+  it('concurrent currentMany calls for the same cold tag issue one store read', async () => {
+    /* 50 parallel currentMany calls for one uncached tag: one getStrict on a strict store, one
+       getMany on a plain store; every caller gets the token, which is then cached. */
+    const { store, tokens } = setup();
+    store.data.set('app:__tag__:a', { value: 'aaaaaaaa', ttlMs: 1 });
+    const getStrict = vi.fn((key: string) => Promise.resolve(store.data.get(key)?.value));
+    const strict = { name: 'default', store: Object.assign(store, { getStrict }) };
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => tokens.currentMany(strict, 'tag', ['a'])),
+    );
+    expect(results.map((r) => r.get('a'))).toEqual(Array.from({ length: 50 }, () => 'aaaaaaaa'));
+    expect(getStrict).toHaveBeenCalledOnce();
+    expect(tokens.cached(strict, 'tag', 'a')).toBe('aaaaaaaa');
+
+    const plain = setup();
+    plain.store.data.set('app:__tag__:a', { value: 'aaaaaaaa', ttlMs: 1 });
+    const getMany = vi.fn((keys: readonly string[]) =>
+      Promise.resolve(keys.map((key) => plain.store.data.get(key)?.value)),
+    );
+    const many = { name: 'default', store: Object.assign(plain.store, { getMany }) };
+    const plainResults = await Promise.all(
+      Array.from({ length: 50 }, () => plain.tokens.currentMany(many, 'tag', ['a'])),
+    );
+    expect(new Set(plainResults.map((r) => r.get('a')))).toEqual(new Set(['aaaaaaaa']));
+    expect(getMany.mock.calls).toEqual([[['app:__tag__:a']]]);
+    expect(plain.store.calls).toEqual([]);
+  });
+
+  it('overlapping currentMany calls share reads for the common names only', async () => {
+    /* [a, b] and then [b, c] while the first read is in flight: the second call joins the
+       read of b and reads only c, so the store sees getMany([a, b]) and getMany([c]). */
+    const { store, tokens } = setup();
+    store.data.set('app:__tag__:a', { value: 'aaaaaaaa', ttlMs: 1 });
+    store.data.set('app:__tag__:b', { value: 'bbbbbbbb', ttlMs: 1 });
+    const gates: ReturnType<typeof deferred<undefined>>[] = [];
+    const getMany = vi.fn(async (keys: readonly string[]) => {
+      const gate = deferred<undefined>();
+      gates.push(gate);
+      await gate.promise;
+      return keys.map((key) => store.data.get(key)?.value);
+    });
+    const target = { name: 'default', store: Object.assign(store, { getMany }) };
+    const first = tokens.currentMany(target, 'tag', ['a', 'b']);
+    const second = tokens.currentMany(target, 'tag', ['b', 'c']);
+    expect(getMany.mock.calls).toEqual([[['app:__tag__:a', 'app:__tag__:b']], [['app:__tag__:c']]]);
+    for (const gate of gates) gate.resolve(undefined);
+    expect(await first).toEqual(
+      new Map([
+        ['a', 'aaaaaaaa'],
+        ['b', 'bbbbbbbb'],
+      ]),
+    );
+    expect(await second).toEqual(
+      new Map([
+        ['b', 'bbbbbbbb'],
+        ['c', undefined],
+      ]),
+    );
+    expect([...(await second).keys()]).toEqual(['b', 'c']);
+  });
+
+  it('a missing tag (undefined) is not cached', async () => {
+    /* Concurrent reads of a missing tag share one read and all see undefined; nothing is
+       cached, so a token created afterwards (by another instance) is seen by the next call. */
+    const { store, tokens, target } = setup();
+    const [x, y] = await Promise.all([
+      tokens.currentMany(target, 'tag', ['a']),
+      tokens.currentMany(target, 'tag', ['a']),
+    ]);
+    expect(x.get('a')).toBeUndefined();
+    expect(y.get('a')).toBeUndefined();
+    expect(ops(store, 'get', 'app:__tag__:a')).toBe(1);
+    expect(tokens.cached(target, 'tag', 'a')).toBeUndefined();
+    store.data.set('app:__tag__:a', { value: 'aaaaaaaa', ttlMs: 1 });
+    expect((await tokens.currentMany(target, 'tag', ['a'])).get('a')).toBe('aaaaaaaa');
+    expect(ops(store, 'get', 'app:__tag__:a')).toBe(2);
+  });
+
+  it('a rejected read rejects every waiter and is not cached', async () => {
+    /* One getStrict rejects: the three concurrent callers sharing it all reject with that
+       error, nothing is cached, and the next call reads the store again. */
+    const { store, tokens } = setup();
+    store.data.set('app:__tag__:a', { value: 'aaaaaaaa', ttlMs: 1 });
+    const boom = new Error('l2 down');
+    const getStrict = vi
+      .fn((key: string) => Promise.resolve(store.data.get(key)?.value))
+      .mockImplementationOnce(() => Promise.reject(boom));
+    const target = { name: 'default', store: Object.assign(store, { getStrict }) };
+    const waiters = Array.from({ length: 3 }, () => tokens.currentMany(target, 'tag', ['a']));
+    for (const waiter of waiters) await expect(waiter).rejects.toBe(boom);
+    expect(getStrict).toHaveBeenCalledOnce();
+    expect(tokens.cached(target, 'tag', 'a')).toBeUndefined();
+    expect((await tokens.currentMany(target, 'tag', ['a'])).get('a')).toBe('aaaaaaaa');
+    expect(getStrict).toHaveBeenCalledTimes(2);
+  });
+
+  it('currentMany does not join an in-flight create', async () => {
+    /* A current call is creating the missing token: currentMany issues its own plain read
+       instead of joining the create, sees no token, and writes nothing itself. */
+    const { store, tokens, target } = setup();
+    const creating = tokens.current(target, 'tag', 'a');
+    const current = await tokens.currentMany(target, 'tag', ['a']);
+    expect(current.get('a')).toBeUndefined();
+    const created = await creating;
+    expect(ops(store, 'get', 'app:__tag__:a')).toBe(3);
+    expect(ops(store, 'set', 'app:__tag__:a')).toBe(1);
+    expect(tokens.cached(target, 'tag', 'a')).toBe(created);
   });
 });
