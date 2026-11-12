@@ -277,9 +277,9 @@ export class AsyncTracedAppModule {}
 
 ### Spans
 
-Every call into the cache engine starts one span of kind `INTERNAL`, made active while the call runs. Redis command
-spans from your own ioredis or redis auto-instrumentation therefore nest under the cache span; the library does not
-instrument the Redis client.
+Every call into the cache engine starts one span with the tracer's default kind (`INTERNAL` in OpenTelemetry), made
+active while the call runs. Redis command spans from your own ioredis or redis auto-instrumentation therefore nest under
+the cache span; the library does not instrument the Redis client.
 
 | Span                   | Entry point      | Called by                                      |
 | ---------------------- | ---------------- | ---------------------------------------------- |
@@ -318,8 +318,8 @@ Child spans:
 | `cache.result`                              | `get`, `getOrSet`           | `hit`, `stale`, `miss` or `bypass` (empty key, a key that cannot be built, or a version error)                     |
 | `cache.load.joined`                         | `getOrSet` on a miss        | `true` when the call shares another call's load                                                                    |
 | `cache.keys`                                | batch calls, `delete`       | the number of keys (see below)                                                                                     |
-| `cache.hits`, `cache.stale`, `cache.misses` | `getMany`, `getOrSetMany`   | the number of distinct keys in each outcome                                                                        |
-| `cache.tags`                                | `invalidateTags`            | the number of tags                                                                                                 |
+| `cache.hits`, `cache.stale`, `cache.misses` | `getMany`, `getOrSetMany`   | the number of distinct keys in each outcome, always set (0 when none)                                              |
+| `cache.tags`                                | `invalidateTags`            | the number of distinct tags                                                                                        |
 | `cache.written`                             | `set`, `put`                | `false` when nothing was written: `unless` skipped it, a tag failed, the key was empty, or a store or version error |
 | `cache.lock.acquired`                       | `cache.lock`                | `true` or `false`                                                                                                  |
 
@@ -345,6 +345,9 @@ span-derived labels.
 - A failed `swr` refresh is the exception. A refresh whose loader fails is a swallowed `refresh` error, yet it marks
   `cache.refresh` and its `cache.load` with status `ERROR`, because the refresh itself failed. The span of the request
   that triggered it is untouched: that request already got its stale value.
+- A span records each error once. When the same error both sets status `ERROR` and is swallowed on one span, for
+  example a failed token write that `invalidateTags` then rejects with, or a failed refresh loader on `cache.refresh`,
+  that span has one exception, the `cache.error` event and status `ERROR`.
 - `CircuitOpenError` records nothing, as with the `error` event.
 - A tracer or span that throws never reaches the caller and never makes a function run twice. The call carries on as if
   tracing were off, and the failure is logged at `error` level under the operation `tracing`, throttled like other
