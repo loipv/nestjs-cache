@@ -679,6 +679,88 @@ describe('circuitBreakerStore', () => {
   });
 });
 
+describe('circuitBreakerStore clear is not timed out', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function slowClear(inner: FakeStore): Deferred<undefined> {
+    const d = deferred<undefined>();
+    vi.spyOn(inner, 'clear').mockImplementationOnce(() => d.promise);
+    return d;
+  }
+
+  it('a clear slower than 3x timeout succeeds, emits nothing and is not a failure', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, timeout: 100 });
+    const sink = makeSink();
+    b.bind(sink);
+    const d = slowClear(inner);
+    const p = b.clear('p');
+    await vi.advanceTimersByTimeAsync(300);
+    d.resolve(undefined);
+    await expect(p).resolves.toBeUndefined();
+    expect(b.state).toBe('closed');
+    expect(sink.emit).not.toHaveBeenCalled();
+  });
+
+  it('a rejecting clear still counts as a failure', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, timeout: 100 });
+    const d = slowClear(inner);
+    const p = b.clear('p');
+    const assertion = expect(p).rejects.toThrow('boom');
+    await vi.advanceTimersByTimeAsync(300);
+    d.reject(new Error('boom'));
+    await assertion;
+    expect(b.state).toBe('open');
+  });
+
+  it('an open circuit rejects clear with CircuitOpenError', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, timeout: 100 });
+    await openWithOneFailure(inner, b);
+    await expect(b.clear('p')).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(inner.calls.some((c) => c.op === 'clear')).toBe(false);
+  });
+
+  it('a half-open probe that is a clear is not timed out; success closes the circuit', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1000, timeout: 100 });
+    await openWithOneFailure(inner, b);
+    await vi.advanceTimersByTimeAsync(1000);
+    const d = slowClear(inner);
+    const p = b.clear('p');
+    expect(b.state).toBe('half-open');
+    await expect(b.get('k')).rejects.toBeInstanceOf(CircuitOpenError);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(b.state).toBe('half-open');
+    d.resolve(undefined);
+    await expect(p).resolves.toBeUndefined();
+    expect(b.state).toBe('closed');
+  });
+
+  it('a half-open probe that is a clear reopens the circuit when it fails', async () => {
+    const inner = new FakeStore();
+    const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1000, timeout: 100 });
+    await openWithOneFailure(inner, b);
+    await vi.advanceTimersByTimeAsync(1000);
+    const d = slowClear(inner);
+    const p = b.clear('p');
+    const assertion = expect(p).rejects.toThrow('boom');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(b.state).toBe('half-open');
+    d.reject(new Error('boom'));
+    await assertion;
+    expect(b.state).toBe('open');
+  });
+});
+
 describe('circuitBreakerStore timers (real)', () => {
   afterEach(() => {
     vi.restoreAllMocks();

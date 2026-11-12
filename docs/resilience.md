@@ -100,12 +100,12 @@ const store = tieredStore({
 - Defaults: `failureThreshold` 5 (an integer `>= 1`), `openDuration` 10_000, `timeout` 500. `timeout` and
   `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
   otherwise `circuitBreakerStore` throws `CacheConfigError`. `circuitBreakerStore(...)` returns a `CircuitBreakerStore`, its options are
-  typed `CircuitBreakerOptions`, and `breaker` events carry a `BreakerState`.
+  typed `CircuitBreakerStoreOptions`, and `breaker` events carry a `BreakerState`.
 - Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`,
   `lock.acquire` and `lock.release`. `invalidation`, `bind` and `close` are passed through. The breaker has the
   optional ones (`getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping` and `lock`) only if the wrapped
   store does.
-- `clear` is guarded by the breaker `timeout`. For big namespaces (Redis `SCAN`/`UNLINK` loops) use a larger `timeout`, otherwise `@CacheEvict({ allEntries: true })` can trip the breaker.
+- `clear` is not subject to `timeout`: a large clear (Redis `SCAN`/`UNLINK` loops) may run as long as it needs. The breaker still admits or rejects it by state (an open circuit rejects it with `CircuitOpenError`; in half-open it can be the single probe), and its real outcome counts once: success closes a half-open circuit, failure reopens it.
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
   state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
 - `CircuitOpenError` never reaches your code and never emits `error`: reads count as a miss, writes are skipped, and

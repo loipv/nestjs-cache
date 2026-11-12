@@ -77,7 +77,7 @@ export {
   CircuitBreakerStore,
   CircuitOpenError,
 } from './resilience/circuit-breaker.store.js';
-export type { CircuitBreakerOptions } from './resilience/circuit-breaker.store.js';
+export type { CircuitBreakerStoreOptions } from './resilience/circuit-breaker.store.js';
 export type {
   CachePrometheusAsyncOptions,
   CachePrometheusOptions,

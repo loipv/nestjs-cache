@@ -114,3 +114,8 @@ export const tracingAsync: lib.CacheTracingAsyncOptions = {
 expectTypeOf<Index>().not.toHaveProperty('CacheTracing');
 // @ts-expect-error CacheTracing is internal, not exported
 export type Tracing = lib.CacheTracing;
+
+/* 1.0 G-07: the options type is CircuitBreakerStoreOptions; the old name is gone. */
+expectTypeOf<lib.CircuitBreakerStoreOptions>().toHaveProperty('timeout');
+// @ts-expect-error the old name is not exported
+export type OldBreakerOptions = lib.CircuitBreakerOptions;

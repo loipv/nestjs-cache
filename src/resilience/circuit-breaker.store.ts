@@ -8,12 +8,12 @@ import type {
 } from '../stores/cache-store.interface.js';
 
 /** Options of `circuitBreakerStore`. */
-export interface CircuitBreakerOptions {
+export interface CircuitBreakerStoreOptions {
   /** Consecutive failures that open the circuit. Integer >= 1; defaults to 5. */
   failureThreshold?: number;
   /** How long the circuit stays open before a probe is allowed, in ms. Defaults to 10_000. */
   openDuration?: number;
-  /** Per-operation timeout in ms; a timeout counts as a failure. Defaults to 500. */
+  /** Per-operation timeout in ms; a timeout counts as a failure. Does not apply to `clear`. Defaults to 500. */
   timeout?: number;
 }
 
@@ -68,8 +68,9 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
  * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
- * `LockHandle.release` are guarded: each races a timeout, and
- * `failureThreshold` consecutive failures open the circuit so calls reject with
+ * `LockHandle.release` are guarded: each races a timeout, except `clear`, which is admitted and
+ * recorded like the others but never times out (a large clear may run long; as the half-open probe
+ * its real outcome closes or reopens the circuit). `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.
  * `invalidation`, `bind` and `close` are forwarded unchanged.
  */
@@ -107,7 +108,7 @@ export class CircuitBreakerStore implements CacheStore {
   private generation = 0;
   private sink: CacheEventSink | undefined;
 
-  constructor(inner: CacheStore, options: CircuitBreakerOptions = {}) {
+  constructor(inner: CacheStore, options: CircuitBreakerStoreOptions = {}) {
     this.failureThreshold = positiveInteger(
       'failureThreshold',
       options.failureThreshold,
@@ -183,7 +184,9 @@ export class CircuitBreakerStore implements CacheStore {
   }
 
   clear(prefix: string): Promise<void> {
-    return this.guard(() => this.inner.clear(prefix));
+    // Not raced against `timeout`: a large clear legitimately runs long. Admission and outcome
+    // recording are the same as for every other call.
+    return this.guard(() => this.inner.clear(prefix), false);
   }
 
   bind(sink: CacheEventSink): void {
@@ -200,10 +203,11 @@ export class CircuitBreakerStore implements CacheStore {
   }
 
   /**
-   * Admits the call or rejects it with `CircuitOpenError`, then races it against the timeout.
-   * The first outcome (result, rejection or timeout) settles the call and is recorded once.
+   * Admits the call or rejects it with `CircuitOpenError`, then races it against the timeout
+   * (unless `timed` is false, as for `clear`). The first outcome (result, rejection or timeout)
+   * settles the call and is recorded once.
    */
-  private guard<T>(call: () => Promise<T>): Promise<T> {
+  private guard<T>(call: () => Promise<T>, timed = true): Promise<T> {
     if (this.current === 'half-open') return Promise.reject(new CircuitOpenError());
     if (this.current === 'open') {
       if (Date.now() - this.openedAt < this.openDuration) {
@@ -218,6 +222,19 @@ export class CircuitBreakerStore implements CacheStore {
     const pending = new Promise<T>((resolve) => {
       resolve(call());
     });
+
+    if (!timed) {
+      return pending.then(
+        (value) => {
+          this.record(true, admitted);
+          return value;
+        },
+        (error: unknown) => {
+          this.record(false, admitted);
+          throw error;
+        },
+      );
+    }
 
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -293,7 +310,7 @@ export class CircuitBreakerStore implements CacheStore {
 /** Wraps `store` with a circuit breaker. Throws `CacheConfigError` for invalid options. */
 export function circuitBreakerStore(
   store: CacheStore,
-  options?: CircuitBreakerOptions,
+  options?: CircuitBreakerStoreOptions,
 ): CircuitBreakerStore {
   return new CircuitBreakerStore(store, options);
 }
