@@ -13,7 +13,10 @@ export interface CircuitBreakerStoreOptions {
   failureThreshold?: number;
   /** How long the circuit stays open before a probe is allowed, in ms. Defaults to 10_000. */
   openDuration?: number;
-  /** Per-operation timeout in ms; a timeout counts as a failure. Does not apply to `clear`. Defaults to 500. */
+  /**
+   * Per-operation timeout in ms; a timeout counts as a failure. Does not apply to `clear`.
+   * Defaults to 500.
+   */
   timeout?: number;
 }
 
@@ -68,9 +71,10 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
  * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
- * `LockHandle.release` are guarded: each races a timeout, except `clear`, which is admitted and
- * recorded like the others but never times out (a large clear may run long; as the half-open probe
- * its real outcome closes or reopens the circuit). `failureThreshold` consecutive failures open the circuit so calls reject with
+ * `LockHandle.release` are guarded: each races a timeout, except `clear`. `clear` runs only
+ * while the circuit is closed (open or half-open it rejects with `CircuitOpenError`, and it is
+ * never the half-open probe); it is not bounded by `timeout`, so set a command or socket timeout
+ * on the client. Its real outcome is recorded once. `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.
  * `invalidation`, `bind` and `close` are forwarded unchanged.
  */
@@ -184,8 +188,9 @@ export class CircuitBreakerStore implements CacheStore {
   }
 
   clear(prefix: string): Promise<void> {
-    // Not raced against `timeout`: a large clear legitimately runs long. Admission and outcome
-    // recording are the same as for every other call.
+    // Never the half-open probe: an untimed probe that hangs would pin the circuit half-open.
+    if (this.current !== 'closed') return Promise.reject(new CircuitOpenError());
+    // Not raced against `timeout`: a large clear legitimately runs long. Its outcome is recorded.
     return this.guard(() => this.inner.clear(prefix), false);
   }
 

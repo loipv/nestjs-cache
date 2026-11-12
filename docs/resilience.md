@@ -105,7 +105,10 @@ const store = tieredStore({
   `lock.acquire` and `lock.release`. `invalidation`, `bind` and `close` are passed through. The breaker has the
   optional ones (`getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping` and `lock`) only if the wrapped
   store does.
-- `clear` is not subject to `timeout`: a large clear (Redis `SCAN`/`UNLINK` loops) may run as long as it needs. The breaker still admits or rejects it by state (an open circuit rejects it with `CircuitOpenError`; in half-open it can be the single probe), and its real outcome counts once: success closes a half-open circuit, failure reopens it.
+- `clear` runs only while the circuit is closed: when it is open or half-open, `clear` rejects with
+  `CircuitOpenError` without calling the store, and it is never the half-open probe. It is not subject to `timeout`
+  (a large Redis `SCAN`/`UNLINK` clear may run as long as it needs), so set a command or socket timeout on the Redis
+  client. Its real outcome counts once, like any other call.
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
   state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
 - `CircuitOpenError` never reaches your code and never emits `error`: reads count as a miss, writes are skipped, and

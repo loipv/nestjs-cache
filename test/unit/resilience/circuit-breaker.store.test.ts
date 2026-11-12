@@ -729,35 +729,30 @@ describe('circuitBreakerStore clear is not timed out', () => {
     expect(inner.calls.some((c) => c.op === 'clear')).toBe(false);
   });
 
-  it('a half-open probe that is a clear is not timed out; success closes the circuit', async () => {
+  it('in half-open clear rejects without calling the store and a get can still probe', async () => {
     const inner = new FakeStore();
     const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1000, timeout: 100 });
     await openWithOneFailure(inner, b);
     await vi.advanceTimersByTimeAsync(1000);
-    const d = slowClear(inner);
-    const p = b.clear('p');
+    const d = hangNextGet(inner);
+    const probe = b.get('k');
     expect(b.state).toBe('half-open');
-    await expect(b.get('k')).rejects.toBeInstanceOf(CircuitOpenError);
-    await vi.advanceTimersByTimeAsync(300);
+    await expect(b.clear('p')).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(inner.calls.some((c) => c.op === 'clear')).toBe(false);
     expect(b.state).toBe('half-open');
-    d.resolve(undefined);
-    await expect(p).resolves.toBeUndefined();
+    d.resolve('v');
+    await expect(probe).resolves.toBe('v');
     expect(b.state).toBe('closed');
   });
 
-  it('a half-open probe that is a clear reopens the circuit when it fails', async () => {
+  it('an open circuit past openDuration still rejects clear and does not go half-open', async () => {
     const inner = new FakeStore();
     const b = circuitBreakerStore(inner, { failureThreshold: 1, openDuration: 1000, timeout: 100 });
     await openWithOneFailure(inner, b);
     await vi.advanceTimersByTimeAsync(1000);
-    const d = slowClear(inner);
-    const p = b.clear('p');
-    const assertion = expect(p).rejects.toThrow('boom');
-    await vi.advanceTimersByTimeAsync(300);
-    expect(b.state).toBe('half-open');
-    d.reject(new Error('boom'));
-    await assertion;
+    await expect(b.clear('p')).rejects.toBeInstanceOf(CircuitOpenError);
     expect(b.state).toBe('open');
+    expect(inner.calls.some((c) => c.op === 'clear')).toBe(false);
   });
 });
 
