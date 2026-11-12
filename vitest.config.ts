@@ -22,6 +22,8 @@ export default defineConfig({
           name: 'unit-traced',
           include: ['test/unit/core/cache-engine*.test.ts'],
           env: { CACHE_TEST_TRACING: '1' },
+          // Checks after every test that each span of the installed FakeTracer ended once.
+          setupFiles: ['test/unit/helpers/traced-setup.ts'],
         },
       },
       {

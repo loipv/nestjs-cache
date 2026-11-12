@@ -6,6 +6,11 @@ import type { LockProvider } from '../../../src/stores/cache-store.interface.js'
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
+import type {
+  SpanLike,
+  SpanOptionsLike,
+  TracerLike,
+} from '../../../src/observability/tracing.types.js';
 import { FakeTracer, type FakeSpan } from '../helpers/fake-tracer.js';
 
 const SWR = { ttl: 100, strategy: 'swr', staleTtl: 1_000 } as const;
@@ -341,8 +346,8 @@ describe('CacheEngine tracing: writes and errors', () => {
     tracers = [];
   });
 
-  it('cache.written is false for an unless veto, a skipped tag list or a store error', async () => {
-    const { engine, store, tracer } = traced();
+  it('cache.written is false for an unless veto, a skipped tag list, a store error, an empty key or a failed version read', async () => {
+    const { engine, store, tracer } = traced({ namespaces: { users: { versioned: true } } });
     await engine.put({ key: 'a' }, 1, { unless: () => true });
     await engine.put({ key: 'b' }, 1, { tags: [''] });
     await engine.set({ key: 'c' }, 1, { tags: [''] });
@@ -352,10 +357,16 @@ describe('CacheEngine tracing: writes and errors', () => {
     await engine.put({ key: 'e' }, 1);
     await engine.set({ key: 'f' }, 1);
     await engine.put({ key: 'g' }, 1);
+    await engine.set({ key: '' }, 1);
+    await engine.put({ key: '' }, 1);
+    store.failNext('get');
+    await engine.set({ namespace: 'users', key: 'h' }, 1);
+    store.failNext('get');
+    await engine.put({ namespace: 'users', key: 'i' }, 1);
     const written = (name: string) =>
       tracer.spans(name).map((span) => span.attributes['cache.written']);
-    expect(written('cache.put')).toEqual([false, false, false, true]);
-    expect(written('cache.set')).toEqual([false, false, true]);
+    expect(written('cache.put')).toEqual([false, false, false, true, false, false]);
+    expect(written('cache.set')).toEqual([false, false, true, false, false]);
     // The swallowed errors leave the status unset.
     expect(tracer.spans().every((span) => span.status === undefined)).toBe(true);
   });
@@ -414,6 +425,39 @@ describe('CacheEngine tracing: writes and errors', () => {
     expect(errorOperations(main)).toEqual(['get']);
     expect(main.status).toBeUndefined();
     expect(main.attributes['cache.result']).toBe('miss');
+  });
+
+  it('a nested call whose span fails to start never writes onto the outer span', async () => {
+    const inner = new FakeTracer();
+    tracers.push(inner);
+    // Fails only for `cache.get`: the nested call falls back to running untraced.
+    const selective: TracerLike = {
+      startActiveSpan<F extends (span: SpanLike) => unknown>(
+        name: string,
+        options: SpanOptionsLike,
+        fn: F,
+      ): ReturnType<F> {
+        if (name === 'cache.get') throw new Error('fake tracer: cache.get failed');
+        return inner.startActiveSpan(name, options, fn);
+      },
+      startSpan: (name, options) => inner.startSpan(name, options),
+    };
+    const { engine, store } = makeEngine({ tracer: selective });
+    await engine.set({ key: 'other' }, 'x');
+    const failure = new Error('read failed');
+    const value = await engine.getOrSet({ key: 'k' }, async () => {
+      store.failNext('get', failure);
+      const missed = await engine.get<string>({ key: 'gone' });
+      const hit = await engine.get<string>({ key: 'other' });
+      return `${String(missed)}/${String(hit)}`;
+    });
+    expect(value).toBe('undefined/x');
+    const main = inner.span('cache.getOrSet');
+    expect(main.attributes['cache.result']).toBe('miss');
+    expect(main.exceptions).toEqual([]);
+    expect(main.events).toEqual([]);
+    expect(main.status).toBeUndefined();
+    expect(inner.spans('cache.get')).toEqual([]);
   });
 
   it('a CircuitOpenError records nothing', async () => {

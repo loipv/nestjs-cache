@@ -26,6 +26,17 @@ export interface TracingTestOptions {
 }
 
 /**
+ * The `FakeTracer`s `makeEngine` installed under `CACHE_TEST_TRACING=1`, since the last
+ * `takeInstalledTracers` call. The `unit-traced` setup file checks them after every test.
+ */
+const installed: FakeTracer[] = [];
+
+/** Returns and forgets the tracers `makeEngine` installed (see `installed`). */
+export function takeInstalledTracers(): FakeTracer[] {
+  return installed.splice(0);
+}
+
+/**
  * An engine over a `FakeStore`. With `tracer`, the engine traces into it. With
  * `CACHE_TEST_TRACING=1` (the `unit-traced` project) and no `tracer`, a fresh `FakeTracer` that
  * records keys is installed, so the existing tests also run with tracing on.
@@ -46,7 +57,9 @@ export function makeEngine(options: CacheModuleOptions & TracingTestOptions = {}
   if (tracer !== undefined) {
     tracing.use({ tracer, recordKeys: recordKeys ?? false });
   } else if (process.env.CACHE_TEST_TRACING === '1') {
-    tracing.use({ tracer: new FakeTracer(), recordKeys: recordKeys ?? true });
+    const installedTracer = new FakeTracer();
+    installed.push(installedTracer);
+    tracing.use({ tracer: installedTracer, recordKeys: recordKeys ?? true });
   }
   const engine = new CacheEngine(resolveOptions({ ...cacheOptions, stores }), events, tracing);
   const emitted: { event: keyof CacheEventMap; payload: unknown }[] = [];

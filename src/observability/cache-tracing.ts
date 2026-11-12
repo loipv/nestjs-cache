@@ -131,7 +131,11 @@ export class CacheTracing {
   ): Promise<T> {
     const on = this.on;
     if (on === undefined) return fn();
-    return this.scoped(on, name, base, { attributes: attributesOf(base) }, kind, fn);
+    // If the tracer fails, `fn` runs untraced outside any scope, so a nested call never writes
+    // onto the span of the call it runs in.
+    return this.scoped(on, name, base, { attributes: attributesOf(base) }, kind, fn, () =>
+      on.als.exit(fn),
+    );
   }
 
   /**
@@ -276,7 +280,7 @@ export class CacheTracing {
     options: SpanOptionsLike,
     kind: 'single' | 'batch',
     fn: () => Promise<T>,
-    untraced: () => Promise<T> = fn,
+    untraced: () => Promise<T>,
   ): Promise<T> {
     return this.activate(on.tracer, base.store, name, options, untraced, (span) => {
       const scope: Scope = {

@@ -292,10 +292,17 @@ export class CacheEngine {
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl, undefined, 'set');
-    if (this.emptyKey(target, ref.key)) return;
+    if (this.emptyKey(target, ref.key)) {
+      this.tracing.set('cache.written', false);
+      return;
+    }
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
-    if (key === undefined) return;
+    // A version failure is already reported; nothing is written.
+    if (key === undefined) {
+      this.tracing.set('cache.written', false);
+      return;
+    }
     this.tracing.key(key.full);
     // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
     const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
@@ -351,10 +358,17 @@ export class CacheEngine {
     checkDuration('nullTtl', options.nullTtl);
     checkBoolean('cacheNull', options.cacheNull);
     const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
-    if (this.emptyKey(target, ref.key)) return;
+    if (this.emptyKey(target, ref.key)) {
+      this.tracing.set('cache.written', false);
+      return;
+    }
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
-    if (key === undefined) return;
+    // A version failure is already reported; nothing is written.
+    if (key === undefined) {
+      this.tracing.set('cache.written', false);
+      return;
+    }
     this.tracing.key(key.full);
     const written = await this.io.store(target, ref, key, value, options, strategy, true, taken);
     this.tracing.set('cache.written', written);
