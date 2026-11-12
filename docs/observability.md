@@ -1,7 +1,7 @@
 # Events and observability
 
-This page describes the cache events and the optional Prometheus metrics, `@nestjs/terminus` health check, logging and
-sample Grafana dashboard.
+This page describes the cache events and the optional Prometheus metrics, `@nestjs/terminus` health check, logging,
+sample Grafana dashboard and OpenTelemetry tracing.
 
 [Back to the README](../README.md) · See also: [error behaviour](resilience.md#error-behaviour),
 [security](security.md)
@@ -226,3 +226,122 @@ Debug lines have the form `Cache <event> <store> <key or namespace>[ <detail>]`.
 open Dashboards, New, Import, upload the file and pick your Prometheus datasource for `DS_PROMETHEUS`. It assumes the
 default `cache_` prefix and has a `store` variable. Panels: hit ratio, requests by result, errors by operation, load
 p95, lock wait p95 and breaker state.
+
+## Tracing
+
+`CacheTracingModule` traces cache calls through an OpenTelemetry tracer that you pass in. Tracing is opt-in: without
+the module nothing is traced and the call paths are unchanged. The library has no dependency on OpenTelemetry; it
+relies on the structural types `TracerLike`, `SpanLike`, `SpanOptionsLike` and `SpanContextLike`, which a tracer from
+`@opentelemetry/api` satisfies. Install and configure the SDK yourself. With only `@opentelemetry/api` and no SDK
+registered, the spans are non-recording and tracing costs next to nothing.
+
+Like `CachePrometheusModule`, it needs a global `CacheModule`: call `CacheModule.forRoot({ isGlobal: true })`. Register
+it once; a second registration, or invalid options, throws `CacheConfigError` at startup.
+
+```ts
+import { Module } from '@nestjs/common';
+import { trace } from '@opentelemetry/api';
+import { CacheModule, CacheTracingModule } from '@loipv/nestjs-cache';
+
+@Module({
+  imports: [
+    CacheModule.forRoot({ isGlobal: true }),
+    CacheTracingModule.forRoot({
+      tracer: trace.getTracer('my-app'),
+      recordKeys: false, // optional, defaults to false
+    }),
+  ],
+})
+export class TracedAppModule {}
+```
+
+`forRootAsync({ imports, inject, useFactory })` (`CacheTracingAsyncOptions`) takes a factory that returns the same
+options (`CacheTracingOptions`):
+
+```ts
+import { Module } from '@nestjs/common';
+import { trace } from '@opentelemetry/api';
+import { CacheModule, CacheTracingModule } from '@loipv/nestjs-cache';
+
+@Module({
+  imports: [
+    CacheModule.forRoot({ isGlobal: true }),
+    CacheTracingModule.forRootAsync({
+      useFactory: () => ({ tracer: trace.getTracer('my-app'), recordKeys: true }),
+    }),
+  ],
+})
+export class AsyncTracedAppModule {}
+```
+
+### Spans
+
+Every call into the cache engine starts one span of kind `INTERNAL`, made active while the call runs. Redis command
+spans from your own ioredis or redis auto-instrumentation therefore nest under the cache span; the library does not
+instrument the Redis client.
+
+| Span                   | Entry point      | Called by                                      |
+| ---------------------- | ---------------- | ---------------------------------------------- |
+| `cache.get`            | `get`            | `CacheService`                                 |
+| `cache.getOrSet`       | `getOrSet`       | `@Cacheable`, `@HttpCache`, `CacheService`     |
+| `cache.set`            | `set`            | `CacheService`                                 |
+| `cache.put`            | `put`            | `@CachePut`                                    |
+| `cache.delete`         | `delete`         | `@CacheEvict`, `CacheService`                  |
+| `cache.clear`          | `clear`          | `@CacheEvict({ allEntries })`, `CacheService`  |
+| `cache.invalidateTags` | `invalidateTags` | `@CacheEvict({ tags })`, `CacheService`        |
+| `cache.getMany`        | `getMany`        | `CacheService`                                 |
+| `cache.setMany`        | `setMany`        | `CacheService`                                 |
+| `cache.getOrSetMany`   | `getOrSetMany`   | `CacheService`                                 |
+
+Child spans:
+
+- **`cache.load`** wraps your loader (the batch loader too) and is active while it runs, so the database or HTTP spans
+  it makes nest under it. Only the call that owns the single-flight has a `cache.load`; a call that joins another
+  call's load has none and gets `cache.load.joined = true` on its main span.
+- **`cache.lock`** covers the distributed lock wait, from the start of `acquire` until the lock is obtained, times out
+  or fails, so its duration is the `waitedMs` of the `lock` event. It is not made active: Redis spans issued during the
+  wait nest under the main span, not under `cache.lock`. When the wait ends with a value written by another instance,
+  the main span has `cache.result = hit`.
+- **`cache.refresh`** is the background refresh of `swr`, for single and batch calls. It is a new root span with a link
+  to the span that triggered it, not a child, because a refresh usually ends after its triggering span, even with
+  `softTimeout`. It holds its own `cache.lock` and `cache.load` and carries `cache.store` and `cache.namespace`. A
+  refresh that joins a flight already running has no new `cache.refresh`.
+
+### Attributes
+
+| Attribute                                   | On                          | Value                                                                                                              |
+| ------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `cache.store`                               | every span                  | the store name                                                                                                     |
+| `cache.namespace`                           | spans with a namespace      | the namespace                                                                                                      |
+| `cache.key`                                 | with `recordKeys: true`     | the full key (prefix and version included); an array for batch calls and `delete`; the tag names for `invalidateTags` |
+| `cache.result`                              | `get`, `getOrSet`           | `hit`, `stale`, `miss` or `bypass` (empty key, a key that cannot be built, or a version error)                     |
+| `cache.load.joined`                         | `getOrSet` on a miss        | `true` when the call shares another call's load                                                                    |
+| `cache.keys`                                | batch calls, `delete`       | the number of keys (see below)                                                                                     |
+| `cache.hits`, `cache.stale`, `cache.misses` | `getMany`, `getOrSetMany`   | the number of distinct keys in each outcome                                                                        |
+| `cache.tags`                                | `invalidateTags`            | the number of tags                                                                                                 |
+| `cache.written`                             | `set`, `put`                | `false` when `unless` skipped the write, a tag failed, or a store error meant nothing was written                  |
+| `cache.lock.acquired`                       | `cache.lock`                | `true` or `false`                                                                                                  |
+
+On `getMany`, `setMany` and `getOrSetMany`, `cache.keys` counts the keys as you passed them, duplicates included. On
+`delete` it counts the valid keys: empty keys are dropped first. `cache.hits`, `cache.stale` and `cache.misses` count
+distinct keys, so with duplicate keys they need not add up to `cache.keys`.
+
+### Keys, PII and cardinality
+
+`recordKeys` is off by default, because keys often hold user ids, emails or other personal data, and a span attribute
+leaves the process. Turn it on only when your keys are safe to export. The value is the full key, so it also includes
+the store prefix and the namespace version. Keys have high cardinality: do not turn them into metric dimensions or
+span-derived labels.
+
+### Errors
+
+- An error that reaches the caller (a loader that throws, `CacheConfigError`, a rejected `invalidateTags`) is recorded
+  with `recordException` and status `ERROR` on the span where it happened, for example `cache.load`, and on the main
+  span.
+- An error the library swallows, that is, one that emits the `error` event, is recorded with `recordException` and a
+  `cache.error` event carrying `cache.error.operation` (a `CacheOperation`) on the running cache span. The status stays
+  unset, because the caller still gets a result.
+- `CircuitOpenError` records nothing, as with the `error` event.
+- A tracer or span that throws never reaches the caller and never makes a function run twice. The call carries on as if
+  tracing were off, and the failure is logged at `error` level under the operation `tracing`, throttled like other
+  store errors.

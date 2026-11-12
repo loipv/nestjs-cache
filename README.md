@@ -67,6 +67,7 @@ with tags, `@HttpCache`, optional Redis and Prometheus is in [`examples/basic`](
 - [Resilience](docs/resilience.md): the distributed lock, the circuit breaker, and how errors are handled.
 - [Events and observability](docs/observability.md): events, Prometheus metrics, the `@nestjs/terminus` health check,
   logging and a sample Grafana dashboard.
+- [Tracing](docs/observability.md#tracing): opt-in OpenTelemetry spans for every cache call, with `CacheTracingModule`.
 - [Security](docs/security.md) and [Caveats](docs/caveats.md).
 - [Migrating from `@nestjs/cache-manager`](docs/migration-from-cache-manager.md).
 
@@ -97,7 +98,8 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.7 - Tags (done):** `tags` on `@Cacheable`, `@CachePut`, `@HttpCache` and the `CacheService` writes, `CacheService.invalidateTags` and `@CacheEvict({ tags })`.
 - **0.8 - Compression, Sentinel and `softTimeout` (done):** `compressedSerializer` (gzip and brotli), swr `softTimeout`, Redis Sentinel (ioredis and node-redis), and the tag token re-read.
 - **0.9 - Redis v6, docs and example (done):** `redis` v6 support, the docs split into `docs/`, an [example app](examples/basic/README.md), and an API tidy-up (see the changelog for the breaking changes).
-- **1.0 - API freeze (planned):** the public API is frozen and follows semver from there.
+- **0.10 - Tracing (done):** opt-in OpenTelemetry tracing (`CacheTracingModule`).
+- **1.0 - API freeze (planned):** the public API is frozen and follows semver from there. Replica reads come after 1.0.
 - **After 1.0 - Replica reads (planned):** reads from Redis replicas.
 
 ## Changelog and releasing
