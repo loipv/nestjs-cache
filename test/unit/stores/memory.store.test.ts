@@ -227,3 +227,81 @@ describe('MemoryStore batch', () => {
     await store.setMany([]);
   });
 });
+
+describe('MemoryStore reserved key prefixes (version tokens)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('data writes never evict a key under a reserved prefix', async () => {
+    const s = memoryStore({ maxEntries: 2 });
+    s.reserveKeyPrefixes(['app:__version__:', 'app:__tag__:']);
+    await s.set('app:__version__:users', 'tok1', 1e6);
+    await s.set('app:__tag__:t', 'tok2', 1e6);
+    for (let i = 0; i < 10; i++) await s.set(`app:k${String(i)}`, 'v', 1e6);
+    expect(await s.get('app:__version__:users')).toBe('tok1');
+    expect(await s.get('app:__tag__:t')).toBe('tok2');
+    // data keeps its own bound
+    expect(await s.getMany(['app:k7', 'app:k8', 'app:k9'])).toEqual([undefined, 'v', 'v']);
+  });
+
+  it('reserved keys are bounded by maxEntries among themselves, LRU first', async () => {
+    const s = memoryStore({ maxEntries: 2 });
+    s.reserveKeyPrefixes(['app:__tag__:']);
+    await s.set('app:__tag__:a', '1', 1e6);
+    await s.set('app:__tag__:b', '2', 1e6);
+    await s.get('app:__tag__:a');
+    await s.set('app:__tag__:c', '3', 1e6);
+    expect(await s.getMany(['app:__tag__:a', 'app:__tag__:b', 'app:__tag__:c'])).toEqual([
+      '1',
+      undefined,
+      '3',
+    ]);
+  });
+
+  it('get, getAndTouch, getMany, delete and clear reach reserved keys', async () => {
+    const s = memoryStore();
+    s.reserveKeyPrefixes(['app:__version__:']);
+    await s.setMany([
+      { key: 'app:__version__:users', value: 't', ttlMs: 1_000 },
+      { key: 'app:x', value: 'v', ttlMs: 1_000 },
+    ]);
+    expect(await s.getMany(['app:__version__:users', 'app:x'])).toEqual(['t', 'v']);
+    expect(await s.getAndTouch('app:__version__:users', 5_000)).toBe('t');
+    vi.advanceTimersByTime(2_000);
+    expect(await s.get('app:__version__:users')).toBe('t');
+    expect(await s.get('app:x')).toBeUndefined();
+    await s.delete(['app:__version__:users']);
+    expect(await s.get('app:__version__:users')).toBeUndefined();
+    await s.set('app:__version__:a', 't', 1e6);
+    await s.set('app:y', 'v', 1e6);
+    await s.clear('app:');
+    expect(await s.getMany(['app:__version__:a', 'app:y'])).toEqual([undefined, undefined]);
+    await s.set('app:__version__:b', 't', 1e6);
+    await s.clear('');
+    expect(await s.get('app:__version__:b')).toBeUndefined();
+  });
+
+  it('moves keys already stored under a newly reserved prefix', async () => {
+    const s = memoryStore({ maxEntries: 1 });
+    await s.set('app:__version__:users', 'tok', 1e6);
+    s.reserveKeyPrefixes(['app:__version__:']);
+    await s.set('app:k', 'v', 1e6);
+    expect(await s.get('app:__version__:users')).toBe('tok');
+    expect(await s.get('app:k')).toBe('v');
+  });
+
+  it('ignores empty and repeated prefixes', async () => {
+    const s = memoryStore({ maxEntries: 1 });
+    s.reserveKeyPrefixes(['', 'p:']);
+    s.reserveKeyPrefixes(['p:']);
+    await s.set('p:a', '1', 1e6);
+    await s.set('x', '2', 1e6);
+    await s.set('y', '3', 1e6);
+    expect(await s.getMany(['p:a', 'x', 'y'])).toEqual(['1', undefined, '3']);
+  });
+});

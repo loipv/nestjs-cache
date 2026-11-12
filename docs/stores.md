@@ -48,7 +48,13 @@ Every module option is listed in [Configuration](configuration.md#module-options
 `redisStore({ client, channel? })` (`RedisStoreOptions`) accepts an ioredis instance (or a `RedisClientAdapter`). The default
 Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (the store uses `GETEX`).
 
-`memoryStore({ maxEntries? })` is an LRU store (`MemoryStoreOptions`); `maxEntries` defaults to `1_000`.
+`memoryStore({ maxEntries? })` is an LRU store (`MemoryStoreOptions`); `maxEntries` defaults to `1_000`. The version
+tokens of namespaces and tags (`<prefix>:__version__:*`, `<prefix>:__tag__:*`) are kept in a second LRU of the same
+size, so data writes never evict them; a store used as a `tieredStore` L1 does not need this and keeps one LRU.
+
+On Redis, the token keys are ordinary keys with a 30-day TTL. When Redis runs out of memory under an eviction policy
+(`allkeys-*` or `volatile-*`), it can evict a token key; the token is then re-created and every entry of that namespace
+or tag misses. Give Redis headroom, or use `noeviction` for a cache that relies on versioned namespaces or tags.
 
 `tieredStore({ l1, l2, l1Ttl?, invalidation? })` reads L1 first, then L2 (refilling L1 with `l1Ttl`).
 Writes go to L2, then L1 with `min(ttl, l1Ttl)`, then an invalidation message is published.

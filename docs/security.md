@@ -23,7 +23,8 @@ This page lists what to watch for when the cache runs on a shared or untrusted R
   unbounded.
 - **The lock is advisory.** A load that runs longer than `lock.ttl` lets another instance load too, and a waiter that
   does not get the lock or see the value within `waitTimeout` loads without the lock.
-- **`memoryStore` is bounded by entry count, not bytes.** Size `maxEntries` for your largest values.
+- **`memoryStore` is bounded by entry count, not bytes.** Size `maxEntries` for your largest values. Version tokens
+  of namespaces and tags are counted apart, up to `maxEntries` more (small) entries.
 - **`strategy: 'sliding'` refreshes the key's TTL before the value is checked.** Keep untrusted input out of keys that
   could name foreign keys on a shared Redis; a `prefix` prevents this.
 - **Cached values are replayed verbatim** to every reader until they expire. Validate data before it is cached.

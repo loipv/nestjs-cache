@@ -26,6 +26,11 @@ export function tokenKey(prefix: string | undefined, kind: TokenKind, name: stri
   return fullKey(prefix, KIND_NAMESPACE[kind], name);
 }
 
+/** The key prefixes of the tokens under `prefix`: `<prefix>:__version__:`, `<prefix>:__tag__:`. */
+export function tokenKeyPrefixes(prefix: string | undefined): string[] {
+  return [tokenKey(prefix, 'ns', ''), tokenKey(prefix, 'tag', '')].map((k) => `${k}:`);
+}
+
 /** 8 base36 characters derived from a random UUID. */
 export function newVersionToken(): string {
   const n = BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 12)}`);

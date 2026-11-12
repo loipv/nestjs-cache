@@ -188,8 +188,9 @@ Consistency and cost:
 - Tag token keys live 30 days. The TTL is set only when the key is created and on `invalidateTags` or
   `@CacheEvict({ tags })`; reads and writes never refresh it. A tag that has not been invalidated for 30 days gets a new
   token on its next use, however busy it is: every entry tagged with it misses, including entries written just before
-  with a short `ttl` (a miss, never stale data). They live in the same store, count toward `memoryStore` `maxEntries`,
-  and one key per distinct tag accumulates in Redis. Bound tags built from untrusted input.
+  with a short `ttl` (a miss, never stale data). They live in the same store (in `memoryStore`, in a separate LRU
+  of `maxEntries` tokens, see [stores](./stores.md)), and one key per distinct tag accumulates in Redis. Bound tags
+  built from untrusted input.
 - On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old tag
   token for up to `l1Ttl` plus `versioning.cacheTtl` (the tag token key is cached in L1), not only
   `versioning.cacheTtl`.

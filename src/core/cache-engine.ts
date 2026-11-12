@@ -2,6 +2,7 @@ import type { LoadStrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
 import { CacheTracing } from '../observability/cache-tracing.js';
+import { MemoryStore } from '../stores/memory.store.js';
 import {
   EMPTY_STRATEGY,
   EngineIO,
@@ -25,7 +26,7 @@ import { isReservedNamespace, keyErrorOf } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
-import { VersionTokens } from './version-tokens.js';
+import { tokenKeyPrefixes, VersionTokens } from './version-tokens.js';
 
 export type { BatchPutOptions, KeyRef, PutOptions } from './engine-io.js';
 export type { BatchLoader, BatchScope } from './engine-batch.js';
@@ -174,6 +175,13 @@ export class CacheEngine {
       options.versionCacheTtl,
       tokens,
     );
+    // A memory store keeps the tokens apart from its data LRU, so data writes never evict them
+    // (an evicted token is re-created and empties its namespace or tag). A tiered L1 is not
+    // told: a token it drops is read again from L2.
+    const reserved = tokenKeyPrefixes(options.prefix);
+    for (const store of options.stores.values()) {
+      if (store instanceof MemoryStore) store.reserveKeyPrefixes(reserved);
+    }
     this.io = new EngineIO(options, events, versions, tokens, tracing);
     this.load = new EngineLoad(this.io, options.defaults, tracing);
     this.batch = new EngineBatch(options, this.io, this.load, tracing);

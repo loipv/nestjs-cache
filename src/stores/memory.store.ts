@@ -16,38 +16,18 @@ const DEFAULT_MAX_ENTRIES = 1_000;
 /** At capacity, expired entries are swept at most this often (ms); otherwise the LRU goes. */
 const SWEEP_INTERVAL_MS = 1_000;
 
-/** In-process LRU store on Map insertion order. Expiry is lazy; no timers. */
-export class MemoryStore implements CacheStore {
-  private readonly entries = new Map<string, Entry>();
-  private readonly maxEntries: number;
+/** One LRU on Map insertion order, bounded by entry count. Expiry is lazy; no timers. */
+class Partition {
+  readonly entries = new Map<string, Entry>();
   private lastSweepAt = Number.NEGATIVE_INFINITY;
 
-  constructor(options: MemoryStoreOptions = {}) {
-    const max = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-    if (!Number.isInteger(max) || max < 1) {
-      throw new CacheConfigError(`maxEntries must be an integer >= 1, got ${String(max)}`);
-    }
-    this.maxEntries = max;
-  }
-
-  ping(): Promise<void> {
-    return Promise.resolve();
-  }
-
-  get(key: string): Promise<string | undefined> {
-    return Promise.resolve(this.read(key, undefined));
-  }
-
-  /** Reads the entry and resets its TTL to `ttlMs`; a live hit also becomes most recently used. */
-  getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
-    return Promise.resolve(this.read(key, ttlMs));
-  }
+  constructor(private readonly maxEntries: number) {}
 
   /**
    * Removes an expired entry; moves a live one to most recently used and, given `touchTtl`,
    * resets its TTL.
    */
-  private read(key: string, touchTtl: number | undefined): string | undefined {
+  read(key: string, touchTtl: number | undefined): string | undefined {
     const entry = this.entries.get(key);
     if (entry === undefined) return undefined;
     this.entries.delete(key);
@@ -58,11 +38,11 @@ export class MemoryStore implements CacheStore {
     return entry.value;
   }
 
-  set(key: string, value: string, ttlMs: number): Promise<void> {
-    const now = Date.now();
+  write(key: string, entry: Entry): void {
     if (this.entries.has(key)) {
       this.entries.delete(key);
     } else if (this.entries.size >= this.maxEntries) {
+      const now = Date.now();
       // A full scan on every insert at capacity is O(n); between sweeps the LRU head is evicted.
       if (now - this.lastSweepAt >= SWEEP_INTERVAL_MS) {
         this.lastSweepAt = now;
@@ -75,12 +55,90 @@ export class MemoryStore implements CacheStore {
         if (oldest.done !== true) this.entries.delete(oldest.value);
       }
     }
-    this.entries.set(key, { value, expiresAt: now + ttlMs });
+    this.entries.set(key, entry);
+  }
+
+  clear(prefix: string): void {
+    if (prefix === '') {
+      this.entries.clear();
+      return;
+    }
+    for (const key of this.entries.keys()) {
+      if (key.startsWith(prefix)) this.entries.delete(key);
+    }
+  }
+}
+
+/**
+ * In-process LRU store on Map insertion order. Expiry is lazy; no timers.
+ *
+ * The version tokens of namespaces and tags live in a second LRU with the same `maxEntries`, so
+ * data writes never evict them. An evicted token would be re-created with a new value, and every
+ * entry of its namespace or tag would then read as a miss.
+ */
+export class MemoryStore implements CacheStore {
+  private readonly data: Partition;
+  private readonly tokens: Partition;
+  private reservedPrefixes: readonly string[] = [];
+
+  constructor(options: MemoryStoreOptions = {}) {
+    const max = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    if (!Number.isInteger(max) || max < 1) {
+      throw new CacheConfigError(`maxEntries must be an integer >= 1, got ${String(max)}`);
+    }
+    this.data = new Partition(max);
+    this.tokens = new Partition(max);
+  }
+
+  /** The data entries in LRU order, oldest first. */
+  private get entries(): Map<string, Entry> {
+    return this.data.entries;
+  }
+
+  /**
+   * @internal Called by the engine with the token key prefixes of its `prefix`
+   * (`<prefix>:__version__:` and `<prefix>:__tag__:`). Keys under them go to the token LRU, and
+   * entries already stored under them move there.
+   */
+  reserveKeyPrefixes(prefixes: readonly string[]): void {
+    const added = prefixes.filter((p) => p !== '' && !this.reservedPrefixes.includes(p));
+    if (added.length === 0) return;
+    this.reservedPrefixes = [...this.reservedPrefixes, ...new Set(added)];
+    for (const [key, entry] of this.data.entries) {
+      if (added.some((p) => key.startsWith(p))) {
+        this.data.entries.delete(key);
+        this.tokens.write(key, entry);
+      }
+    }
+  }
+
+  private partitionOf(key: string): Partition {
+    for (const prefix of this.reservedPrefixes) {
+      if (key.startsWith(prefix)) return this.tokens;
+    }
+    return this.data;
+  }
+
+  ping(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  get(key: string): Promise<string | undefined> {
+    return Promise.resolve(this.partitionOf(key).read(key, undefined));
+  }
+
+  /** Reads the entry and resets its TTL to `ttlMs`; a live hit also becomes most recently used. */
+  getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
+    return Promise.resolve(this.partitionOf(key).read(key, ttlMs));
+  }
+
+  set(key: string, value: string, ttlMs: number): Promise<void> {
+    this.partitionOf(key).write(key, { value, expiresAt: Date.now() + ttlMs });
     return Promise.resolve();
   }
 
   getMany(keys: readonly string[]): Promise<(string | undefined)[]> {
-    return Promise.resolve(keys.map((key) => this.read(key, undefined)));
+    return Promise.resolve(keys.map((key) => this.partitionOf(key).read(key, undefined)));
   }
 
   /** Writes every entry in one synchronous step, so no other task can interleave between them. */
@@ -90,18 +148,13 @@ export class MemoryStore implements CacheStore {
   }
 
   delete(keys: readonly string[]): Promise<void> {
-    for (const key of keys) this.entries.delete(key);
+    for (const key of keys) this.partitionOf(key).entries.delete(key);
     return Promise.resolve();
   }
 
   clear(prefix: string): Promise<void> {
-    if (prefix === '') {
-      this.entries.clear();
-    } else {
-      for (const key of this.entries.keys()) {
-        if (key.startsWith(prefix)) this.entries.delete(key);
-      }
-    }
+    this.data.clear(prefix);
+    this.tokens.clear(prefix);
     return Promise.resolve();
   }
 }
