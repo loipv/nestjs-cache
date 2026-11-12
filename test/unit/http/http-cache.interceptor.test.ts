@@ -551,16 +551,16 @@ describe('HttpCacheInterceptor tags', () => {
   }
 
   it('@HttpCache({ tags }) with a fixed array stamps the strings as they are', async () => {
-    /* Spec 2.1: an @HttpCache tags array is fixed strings, not templates; invalidating one of
-       them makes the next GET run the handler again. */
+    /* An @HttpCache tags array is fixed strings; invalidating one of them makes the next GET
+       run the handler again. */
     const t = setup();
-    const target = route({ tags: ['items', 'user:{0}'] });
+    const target = route({ tags: ['items', 'user:0'] });
     const next = t.nextOf(() => ({ a: 1 }));
     await t.run(target, get('/items'), next);
-    expect(Object.keys(stampAt(t.store, 'http:/items') ?? {})).toEqual(['items', 'user:{0}']);
+    expect(Object.keys(stampAt(t.store, 'http:/items') ?? {})).toEqual(['items', 'user:0']);
     await t.run(target, get('/items'), next);
     expect(next.calls).toBe(1);
-    await t.engine.invalidateTags(['user:{0}']);
+    await t.engine.invalidateTags(['user:0']);
     await t.run(target, get('/items'), next);
     expect(next.calls).toBe(2);
   });

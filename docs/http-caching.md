@@ -55,7 +55,10 @@ export class UsersController {
   not on the host (for example `@Controller({ host })` multi-tenant routes), headers such as `Accept`,
   `Accept-Language` or a version header, or cookies: anything else that changes the body must go into a key callback,
   or the route must not be cached.
-- **Key callback:** `key` is a fixed string, or `(req) => string | undefined` where `req` is
+- **Literals:** a string `key` and the strings in `tags` are literals, not templates: one containing `{` or `}` throws
+  `CacheConfigError` when the decorator runs (use a callback instead). A class-level `@HttpCache` must not have a
+  string `key`, because every route would share it; give each method its own key or use a callback.
+- **Key callback:** `key` is a literal string (method level only), or `(req) => string | undefined` where `req` is
   `{ method, url, defaultKey, path, query, params, headers }` and `defaultKey` is the default key above. Returning
   `undefined` skips the cache for that request, for example
   `key: (req) => (req.headers.authorization ? undefined : req.defaultKey)` caches only anonymous requests. A callback

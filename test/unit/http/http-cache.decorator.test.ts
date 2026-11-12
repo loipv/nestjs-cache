@@ -133,17 +133,16 @@ describe('@HttpCache', () => {
     }).toThrow(/^C: tags/);
   });
 
-  it('accepts tags that look like templates: @HttpCache arrays are fixed strings', () => {
-    /* Spec 2.1: '{' is a fixed tag here, so it is no template error. The array is copied
-       into the load options; a callback is kept for the interceptor. */
+  it('copies a tags array into the load options and keeps a tags callback', () => {
+    /* The array is copied into the load options; a callback is kept for the interceptor. */
     class C {
-      @HttpCache({ tags: ['{', 'user:{0}'] })
+      @HttpCache({ tags: ['a', 'user:0'] })
       m(): void {}
       @HttpCache({ tags: () => ['x'] })
       n(): void {}
     }
     const meta = Reflect.getMetadata(HTTP_CACHE_METADATA, C.prototype.m) as HttpCacheMetadata;
-    expect(meta.loadOptions.tags).toEqual(['{', 'user:{0}']);
+    expect(meta.loadOptions.tags).toEqual(['a', 'user:0']);
     const fn = Reflect.getMetadata(HTTP_CACHE_METADATA, C.prototype.n) as HttpCacheMetadata;
     expect(fn.loadOptions.tags).toBeUndefined();
     expect(typeof fn.tags).toBe('function');
@@ -169,4 +168,33 @@ describe('@HttpCache softTimeout needs swr (F-3)', () => {
       }).toThrow(new CacheConfigError(`C: ${message}`));
     },
   );
+});
+
+describe('@HttpCache literal keys and tags', () => {
+  it('rejects template-like string keys and tags', () => {
+    expect(() => {
+      onMethod({ key: 'user:{id}' });
+    }).toThrow(/^C\.m: key is not a template; use a key callback/);
+    expect(() => {
+      onMethod({ tags: ['t:{x}'] });
+    }).toThrow(/^C\.m: tags are not templates; use a tags callback/);
+  });
+  it('rejects a class-level string key', () => {
+    expect(() => {
+      onClass({ key: 'x' });
+    }).toThrow(
+      /^C: a class-level key would be shared by every route; put the key on each method or use a callback/,
+    );
+  });
+  it('allows callbacks and plain method-level keys', () => {
+    expect(() => {
+      onClass({ key: () => 'k' });
+    }).not.toThrow();
+    expect(() => {
+      onMethod({ key: 'plain' });
+    }).not.toThrow();
+    expect(() => {
+      onMethod({ tags: () => ['t:{x}'] });
+    }).not.toThrow();
+  });
 });

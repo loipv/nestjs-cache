@@ -103,7 +103,25 @@ function validate(
       `${describeMethod(target, method)}: key must be a non-empty string or a function, got ${typeof key}`,
     );
   }
+  if (typeof key === 'string' && method === CLASS_LEVEL) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: a class-level key would be shared by every route; put the key on each method or use a callback`,
+    );
+  }
+  if (typeof key === 'string' && /[{}]/.test(key)) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: key is not a template; use a key callback`,
+    );
+  }
   assertTags(target, method, options?.tags);
+  if (
+    Array.isArray(options?.tags) &&
+    (options.tags as unknown[]).some((t) => typeof t === 'string' && /[{}]/.test(t))
+  ) {
+    throw new CacheConfigError(
+      `${describeMethod(target, method)}: tags are not templates; use a tags callback`,
+    );
+  }
   assertFunction(target, method, 'unless', options?.unless);
 }
 
