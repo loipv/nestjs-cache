@@ -155,7 +155,8 @@ export function wrapMethod(
 /**
  * Compiles a key spec at declaration time; a malformed template throws here. The built
  * function throws for a key that cannot be built and, unless `allowEmpty` is set, for one
- * that renders empty. `@CacheEvict` allows it: the engine drops empty or reserved keys from a delete.
+ * that renders empty. `@CacheEvict` allows it: the engine drops empty or reserved keys from a
+ * delete.
  */
 export function compileKey(
   spec: KeySpec<never[]> | undefined,

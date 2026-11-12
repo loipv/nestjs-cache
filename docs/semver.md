@@ -26,7 +26,7 @@ contract covers, what it leaves out, and which kind of change is a major, a mino
   `circuit_breaker_state`. Span names, attribute names and value meanings, the `cache.error` event and the span status
   code.
 - **Environment.** `engines.node`, the peer dependency ranges and the TypeScript minimum (5.4, with the published
-  `.d.ts` checked against it with `skipLibCheck: false`).
+  `.d.ts` and `.d.cts` checked against it with `skipLibCheck: false`).
 
 ## Persisted and wire formats
 

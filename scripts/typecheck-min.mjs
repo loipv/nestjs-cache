@@ -1,6 +1,7 @@
 // Type-checks the built `dist/index.d.ts` and `dist/index.d.cts` with the minimum supported
-// TypeScript (TS_MIN), through test/types-min. That compiler is installed on demand into node_modules/.cache (git-ignored), not
-// as a dependency, so it never competes with the repo's own `tsc`. Run `npm run build` first.
+// TypeScript (TS_MIN), through test/types-min. That compiler is installed on demand into
+// node_modules/.cache (git-ignored), not as a dependency, so it never competes with the repo's
+// own `tsc`. Run `npm run build` first.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -19,7 +20,7 @@ function installedVersion() {
 
 if (installedVersion() !== TS_MIN) {
   const install = spawnSync(
-    'npm',
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
     [
       'install',
       '--prefix',
@@ -29,7 +30,7 @@ if (installedVersion() !== TS_MIN) {
       '--ignore-scripts',
       `typescript@${TS_MIN}`,
     ],
-    { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' },
+    { cwd: root, stdio: 'inherit' },
   );
   if (install.status !== 0 || installedVersion() !== TS_MIN) {
     console.error(`typecheck:min: could not install typescript@${TS_MIN}`);

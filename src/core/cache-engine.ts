@@ -387,7 +387,8 @@ export class CacheEngine {
 
   /**
    * `get` for several keys of one namespace: one store read for the batch (per key under
-   * `sliding`), results in input order. A duplicate is read once; an empty or reserved key is `undefined`.
+   * `sliding`), results in input order. A duplicate is read once; an empty or reserved key is
+   * `undefined`.
    */
   getMany<T>(
     scope: BatchScope,

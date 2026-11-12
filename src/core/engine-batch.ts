@@ -173,8 +173,8 @@ export class EngineBatch {
   }
 
   /**
-   * The batch items of `keys` (unique, neither empty nor reserved) in `scope`, with one version read for a
-   * versioned namespace; `undefined` after a version failure (already reported). With
+   * The batch items of `keys` (unique, neither empty nor reserved) in `scope`, with one version
+   * read for a versioned namespace; `undefined` after a version failure (already reported). With
    * `recordKeys`, their full keys are the call's `cache.key`, set without an added tick.
    */
   private async batchItems(
