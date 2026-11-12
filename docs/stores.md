@@ -55,8 +55,8 @@ Writes go to L2, then L1 with `min(ttl, l1Ttl)`, then an invalidation message is
 `l1Ttl` defaults to `10_000`. A received invalidation message longer than 1 MiB (1_048_576 characters) is not parsed:
 it clears the whole L1. So does a message with a string `origin` and a body that is not a list of keys or a prefix
 (a malformed body, or a format from a newer version), because L1 cannot tell what became stale; a message without a
-string `origin` is ignored. A custom invalidation bus gets the same treatment: `{ origin, prefix: 42 }` clears the
-whole L1.
+string `origin` is ignored. A custom invalidation bus gets the same treatment for the body: `{ origin, prefix: 42 }` and
+`{ origin, keys, prefix }` clear the whole L1. A custom-bus message without a string `origin` is still processed.
 
 ## Redis Cluster
 

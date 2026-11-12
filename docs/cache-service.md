@@ -67,9 +67,10 @@ const user = await cache.getOrSet('user:1', () => repo.find('1'), {
 `''` with `CacheConfigError`. A `namespace` that starts with `__` is reserved and also rejects with `CacheConfigError`. `T` is your assertion; the library does not
 validate stored data at runtime.
 
-An empty key is a key error (`error` with `operation: 'key'`): `get` returns `undefined`, `getOrSet` runs the loader
-without caching, and `set` does nothing. `delete` drops the empty keys, emits one `error` event and still deletes
-the others; `delete('')` alone does nothing.
+An empty key, or a reserved key (one that starts with `__` when the namespace is missing or `''`), is a key error
+(`error` with `operation: 'key'`): `get` returns `undefined`, `getOrSet` runs the loader without caching, and `set`
+does nothing. `delete` drops the invalid keys, emits one `error` event and still deletes the others; `delete('')` alone
+does nothing. With a non-empty namespace, a key such as `__x` is valid.
 
 ## Batch operations
 
@@ -106,8 +107,8 @@ const users = await cache.getOrSetMany<User>(
 );
 ```
 
-- Results are in input order. A key read twice in one call is read and loaded once. An empty key gives `undefined`
-  and one `error` event with `operation: 'key'`. `[]` makes no store call.
+- Results are in input order. A key read twice in one call is read and loaded once. An empty or reserved key (see above) gives
+  `undefined` and one `error` event with `operation: 'key'`. `[]` makes no store call.
 - The loader receives only the misses and returns a `Map`. A requested key missing from the `Map` is treated as an
   `undefined` result and follows `cacheNull` (a stored marker reads back as `undefined`). Keys in the `Map` that were not requested are ignored: not cached, not
   returned. An error from the loader, or a return value that is not a `Map`, reaches the caller.

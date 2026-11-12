@@ -20,9 +20,10 @@ nothing and the newer commit's run takes over. Nothing is released while CI on `
 
 One-time setup for maintainers, in this order:
 
-1. Publish 1.0.0 by hand from the version commit and push its tag. npm only allows a trusted publisher once the package
-   exists. Do this before the release workflow first runs on `main`, or that run will try to publish the unpublished
-   version and fail.
+1. Publish 1.0.0 by hand from the head of the release branch (the commit that will be merged) and push the `v1.0.0`
+   tag from that commit, **before** merging. npm only allows a trusted publisher once the package exists, and
+   `release.yml` would otherwise try to publish 1.0.0 from `main` on the merge and fail. Then merge the pull request
+   **without squashing** (a merge commit or a rebase), so the tagged commit stays in `main`'s history.
 
    ```bash
    npm run build && npm publish

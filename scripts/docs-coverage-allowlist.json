@@ -94,5 +94,21 @@
   {
     "fragment": "```bash npm run build && npm publish git tag v0.3.0 && git push origin v0.3.0 ```",
     "reason": "Moved to RELEASING.md, where the tag is now v1.0.0 because 0.1.0 to 0.3.0 were never published."
+  },
+  {
+    "fragment": "- If a key cannot be built (unserializable argument, a callback that throws, a template or callback that renders an empty string), the cache is skipped",
+    "reason": "Reworded in 1.0 to cover the reserved-key rule (P-02) and the @HttpCache decoration-time checks (C-02/C-03); see docs/cache-service.md, docs/decorators.md and docs/namespaces-and-tags.md."
+  },
+  {
+    "fragment": "An empty key is a key error (`error` with `operation: 'key'`): `get` returns `undefined`, `getOrSet` runs the loader without caching",
+    "reason": "Reworded in 1.0 to cover the reserved-key rule (P-02) and the @HttpCache decoration-time checks (C-02/C-03); see docs/cache-service.md, docs/decorators.md and docs/namespaces-and-tags.md."
+  },
+  {
+    "fragment": "- `@HttpCache`: `tags` is an array of fixed strings (not templates) or `(body, req: HttpCacheRequest) => string[]`.",
+    "reason": "Reworded in 1.0 to cover the reserved-key rule (P-02) and the @HttpCache decoration-time checks (C-02/C-03); see docs/cache-service.md, docs/decorators.md and docs/namespaces-and-tags.md."
+  },
+  {
+    "fragment": "- Results are in input order. A key read twice in one call is read and loaded once. An empty key gives `undefined` and one `error` event with `operation: 'key'`",
+    "reason": "Reworded in 1.0 to cover the reserved-key rule (P-02) and the @HttpCache decoration-time checks (C-02/C-03); see docs/cache-service.md, docs/decorators.md and docs/namespaces-and-tags.md."
   }
 ]

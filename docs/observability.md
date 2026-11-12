@@ -315,16 +315,16 @@ Child spans:
 | `cache.store`                               | every span                  | the store name                                                                                                     |
 | `cache.namespace`                           | spans with a namespace      | the namespace                                                                                                      |
 | `cache.key`                                 | with `recordKeys: true`     | the full key (prefix and version included); an array for batch calls and `delete`; the tag names for `invalidateTags` |
-| `cache.result`                              | `get`, `getOrSet`           | `hit`, `stale`, `miss` or `bypass` (empty key, a key that cannot be built, or a version error)                     |
+| `cache.result`                              | `get`, `getOrSet`           | `hit`, `stale`, `miss` or `bypass` (empty or reserved key, a key that cannot be built, or a version error)                     |
 | `cache.load.joined`                         | `getOrSet` on a miss        | `true` when the call shares another call's load                                                                    |
 | `cache.keys`                                | batch calls, `delete`       | the number of keys (see below)                                                                                     |
 | `cache.hits`, `cache.stale`, `cache.misses` | `getMany`, `getOrSetMany`   | the number of distinct keys in each outcome, always set (0 when none)                                              |
 | `cache.tags`                                | `invalidateTags`            | the number of distinct tags                                                                                        |
-| `cache.written`                             | `set`, `put`                | `false` when nothing was written: `unless` skipped it, a tag failed, the key was empty, or a store or version error |
+| `cache.written`                             | `set`, `put`                | `false` when nothing was written: `unless` skipped it, a tag failed, the key was empty or reserved, or a store or version error |
 | `cache.lock.acquired`                       | `cache.lock`                | `true` or `false`                                                                                                  |
 
 On `getMany`, `setMany` and `getOrSetMany`, `cache.keys` counts the keys as you passed them, duplicates included. On
-`delete` it counts the valid keys: empty keys are dropped first. `cache.hits`, `cache.stale` and `cache.misses` count
+`delete` it counts the valid keys: empty and reserved keys are dropped first. `cache.hits`, `cache.stale` and `cache.misses` count
 distinct keys, so with duplicate keys they need not add up to `cache.keys`.
 
 ### Keys, PII and cardinality

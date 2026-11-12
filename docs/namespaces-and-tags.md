@@ -133,7 +133,7 @@ Declaring tags:
 - `@Cacheable` and `@CachePut`: `tags` is an array of templates (same syntax as `key`, honours `escapeKeyArgs`) or a
   callback `(result, ...args) => string[]`. `tags: []` means no tags. Callbacks are checked against the decorated
   method, not inferred from it, so annotate their parameters.
-- `@HttpCache`: `tags` is an array of fixed strings (not templates) or `(body, req: HttpCacheRequest) => string[]`.
+- `@HttpCache`: `tags` is an array of fixed strings (not templates; a `{` or `}` throws `CacheConfigError` at decoration) or `(body, req: HttpCacheRequest) => string[]`.
 - `CacheService.set` and `getOrSet`: fixed strings or `(value) => string[]`. `setMany` and `getOrSetMany`: fixed
   strings or `(value, key) => string[]` (the types `WriteManyOptions<T>` and `GetOrSetManyOptions<T>` are exported).
 

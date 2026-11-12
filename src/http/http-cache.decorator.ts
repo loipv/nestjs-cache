@@ -42,7 +42,11 @@ export type HttpCacheOptions = LoadStrategyOptions & {
   lock?: boolean;
   cacheNull?: boolean;
   nullTtl?: number;
-  /** A string is a fixed key. A callback derives the key per request; `undefined` skips caching that request. */
+  /**
+   * A string is a fixed key, not a template: a non-empty string without `{` or `}`, and only on a
+   * method (a class-level string throws `CacheConfigError` at decoration). A callback derives the
+   * key per request; `undefined` skips caching that request.
+   */
   key?: string | ((req: HttpCacheRequest) => string | undefined);
   /** Returns `true` to keep the body out of the cache. */
   unless?: (body: unknown) => boolean;

@@ -39,7 +39,7 @@ frozen in 1.x:
   key with no namespace (or with the empty namespace) that starts with `__` is a key error.
 - **Version and tag token keys:** the key shapes, and the fact that a token key expires. The exact TTL (30 days
   today) is not covered.
-- **The lock:** the key `<prefix>:__lock__:<namespace>[@<token>]:<key>`, a random UUID as value, `SET NX PX`, and a
+- **The lock:** the key `[<prefix>:]__lock__:[<namespace>[@<token>]:]<key>`, a random UUID as value, `SET NX PX`, and a
   token-checked release.
 - **The envelope:** `v: 1` and its fields (`value`, `storedAt`, `expiresAt`, `staleAt`, `nil`, `tags`). Forward rules:
   - A field that older readers can ignore is added without changing `v`. A custom `Serializer` must therefore
@@ -51,7 +51,9 @@ frozen in 1.x:
 - **The invalidation message:** JSON `{ origin, keys }` or `{ origin, prefix }` on the channel `nestjs-cache:invalidate`
   (the channel default). Forward rule: new message kinds may be added in a minor, and a 1.x node handles one it does not
   recognise safely: a message with a string `origin` and an unrecognised body clears all of L1. A message without a
-  string `origin` is ignored. Custom buses must pass messages through as opaque data.
+  string `origin` is ignored. A new message kind must not look like either current shape (`{ origin, keys }` or `{ origin, prefix }`), because
+  1.x nodes ignore extra fields on those shapes and would handle it as a partial match. Custom buses must pass messages
+  through as opaque data.
 - **Default decorator keys:** `<Class>.<method>[:<first 16 hex of sha1(stableStringify(args))>]`. The output of
   `stableStringify` is frozen in 1.x, so a change to it would change every default key. The `@HttpCache` default key
   (`escape(path[?sortedQuery])` in the namespace `http`) is frozen too.

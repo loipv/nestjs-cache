@@ -4,7 +4,7 @@
 
 ### Major Changes
 
-- 5e8d49e: First release on npm.
+- First release on npm.
 
   `@loipv/nestjs-cache` 1.0.0 is the first published version. The public API is frozen and follows
   [semver](https://github.com/loipv/nestjs-cache/blob/main/docs/semver.md) from here.
