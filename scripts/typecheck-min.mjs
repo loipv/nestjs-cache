@@ -19,19 +19,25 @@ function installedVersion() {
 }
 
 if (installedVersion() !== TS_MIN) {
-  const install = spawnSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    [
-      'install',
-      '--prefix',
-      prefix,
-      '--no-save',
-      '--no-package-lock',
-      '--ignore-scripts',
-      `typescript@${TS_MIN}`,
-    ],
-    { cwd: root, stdio: 'inherit' },
-  );
+  // `npm run` sets npm_execpath to npm's JS entry point, which runs without a shell on every
+  // platform (Node refuses to spawn a `.cmd` file without one).
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli && process.platform === 'win32') {
+    console.error('typecheck:min: run it through `npm run typecheck:min`');
+    process.exit(1);
+  }
+  const installArgs = [
+    'install',
+    '--prefix',
+    prefix,
+    '--no-save',
+    '--no-package-lock',
+    '--ignore-scripts',
+    `typescript@${TS_MIN}`,
+  ];
+  const install = npmCli
+    ? spawnSync(process.execPath, [npmCli, ...installArgs], { cwd: root, stdio: 'inherit' })
+    : spawnSync('npm', installArgs, { cwd: root, stdio: 'inherit' });
   if (install.status !== 0 || installedVersion() !== TS_MIN) {
     console.error(`typecheck:min: could not install typescript@${TS_MIN}`);
     process.exit(1);
