@@ -111,6 +111,15 @@ export async function settleWithin<T>(pending: Promise<T>, ms: number): Promise<
   }
 }
 
+/** A batch loader's result; throws a `TypeError` unless it is a Map. */
+function asMap<T>(loaded: unknown): ReadonlyMap<string, T> {
+  if (!(loaded instanceof Map)) {
+    const got = loaded === null ? 'null' : typeof loaded;
+    throw new TypeError(`The getOrSetMany loader must resolve a Map, got ${got}.`);
+  }
+  return loaded as ReadonlyMap<string, T>;
+}
+
 /** A flight's outcome as a refresh result; never rejects. */
 function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
   return flight.then(
@@ -247,7 +256,13 @@ export class EngineLoad {
     let batch: Promise<LoadedMany<T>> | undefined;
     return items.map((item) =>
       this.singleFlight.run<Outcome<unknown>>(this.flightKey(plan.target, item.key), async () => {
-        batch ??= this.loadMany(plan, own, refreshing);
+        // Traced, a refresh is one root `cache.refresh` span for the batch's own items.
+        batch ??=
+          refreshing && this.tracing.enabled
+            ? this.tracing.root({ store: plan.target.name, namespace: plan.namespace }, () =>
+                this.loadMany(plan, own, true),
+              )
+            : this.loadMany(plan, own, refreshing);
         const { loaded, written } = await batch;
         const { key } = item.ref;
         return this.outcome({ value: loaded.get(key), written: written.has(key) });
@@ -301,20 +316,19 @@ export class EngineLoad {
     const { target, namespace, loader } = plan;
     const ref = { namespace, key: keys[0] ?? '' };
     const started = Date.now();
-    let loaded: unknown;
+    let loaded: ReadonlyMap<string, T>;
     try {
-      loaded = await loader([...keys]);
-      if (!(loaded instanceof Map)) {
-        const got = loaded === null ? 'null' : typeof loaded;
-        throw new TypeError(`The getOrSetMany loader must resolve a Map, got ${got}.`);
-      }
+      // Traced, `cache.load` covers the Map check too, so a non-Map marks it `ERROR`.
+      loaded = this.tracing.enabled
+        ? await this.tracing.child('cache.load', async () => asMap<T>(await loader([...keys])))
+        : asMap<T>(await loader([...keys]));
     } catch (error) {
       this.io.emitLoad(target.name, ref, started, false, keys);
       if (refreshing) this.io.reportError(target.name, 'refresh', error);
       throw error;
     }
     this.io.emitLoad(target.name, ref, started, true, keys);
-    return loaded as ReadonlyMap<string, T>;
+    return loaded;
   }
 
   private flightKey(target: Target, key: ResolvedKey): string {

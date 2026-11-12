@@ -102,6 +102,11 @@ export class CacheTracing {
     return this.on !== undefined;
   }
 
+  /** Whether `cache.key` is recorded; lets a caller skip building a key list for `key`. */
+  get recordKeys(): boolean {
+    return this.on?.recordKeys === true;
+  }
+
   /** Registers the tracer; throws `CacheConfigError` for invalid options or a second call. */
   use(options: CacheTracingOptions): void {
     if (this.on !== undefined) {

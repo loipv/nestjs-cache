@@ -1,4 +1,5 @@
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
+import type { CacheTracing } from '../observability/cache-tracing.js';
 import {
   EMPTY_STRATEGY,
   isEmpty,
@@ -30,6 +31,7 @@ export class EngineBatch {
     private readonly options: ResolvedCacheOptions,
     private readonly io: EngineIO,
     private readonly load: EngineLoad,
+    private readonly tracing: CacheTracing,
   ) {}
 
   /** `CacheEngine.getMany` after validation. */
@@ -159,7 +161,8 @@ export class EngineBatch {
 
   /**
    * The batch items of `keys` (unique, non-empty) in `scope`, with one version read for a
-   * versioned namespace; `undefined` after a version failure (already reported).
+   * versioned namespace; `undefined` after a version failure (already reported). With
+   * `recordKeys`, their full keys are the call's `cache.key`, set without an added tick.
    */
   private async batchItems(
     target: Target,
@@ -175,6 +178,7 @@ export class EngineBatch {
       const resolvedKey = resolved[i];
       if (resolvedKey !== undefined) items.push({ ref: { ...scope, key }, key: resolvedKey });
     });
+    if (this.tracing.recordKeys) this.tracing.key(items.map((item) => item.key.full));
     return items;
   }
 }

@@ -163,7 +163,7 @@ export class CacheEngine {
     );
     this.io = new EngineIO(options, events, versions, tokens, tracing);
     this.load = new EngineLoad(this.io, options.defaults, tracing);
-    this.batch = new EngineBatch(options, this.io, this.load);
+    this.batch = new EngineBatch(options, this.io, this.load, tracing);
   }
 
   hasStore(name: string): boolean {
@@ -374,7 +374,21 @@ export class CacheEngine {
    * `get` for several keys of one namespace: one store read for the batch (per key under
    * `sliding`), results in input order. A duplicate is read once; an empty key is `undefined`.
    */
-  async getMany<T>(
+  getMany<T>(
+    scope: BatchScope,
+    keys: readonly string[],
+    options?: LoadStrategyOptions,
+  ): Promise<(T | undefined)[]> {
+    if (!this.tracing.enabled) return this.getManyImpl<T>(scope, keys, options);
+    return this.tracing.span(
+      'cache.getMany',
+      { store: scope.store ?? 'default', namespace: scope.namespace },
+      () => this.getManyImpl<T>(scope, keys, options),
+      'batch',
+    );
+  }
+
+  private async getManyImpl<T>(
     scope: BatchScope,
     keys: readonly string[],
     options: LoadStrategyOptions = {},
@@ -383,6 +397,7 @@ export class CacheEngine {
     this.checkNamespace(scope.namespace);
     const strategy = strategyOf(options, undefined, undefined, 'getMany');
     checkKeys(keys);
+    this.tracing.set('cache.keys', keys.length);
     return this.batch.getMany(target, scope, keys, strategy);
   }
 
@@ -390,9 +405,23 @@ export class CacheEngine {
    * `set` for several entries, written with one store call. A repeated key is written once,
    * with its last value; empty keys are dropped and reported once as a key error.
    */
-  async setMany<T>(
+  setMany<T>(
     scope: BatchScope,
     entries: readonly (readonly [key: string, value: NoInfer<T>])[],
+    options?: BatchSetOptions<T>,
+  ): Promise<void> {
+    if (!this.tracing.enabled) return this.setManyImpl<T>(scope, entries, options);
+    return this.tracing.span(
+      'cache.setMany',
+      { store: scope.store ?? 'default', namespace: scope.namespace },
+      () => this.setManyImpl<T>(scope, entries, options),
+      'batch',
+    );
+  }
+
+  private async setManyImpl<T>(
+    scope: BatchScope,
+    entries: readonly (readonly [key: string, value: T])[],
     options: BatchSetOptions<T> = {},
   ): Promise<void> {
     const target = this.io.resolve(scope.store);
@@ -401,6 +430,7 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl, undefined, 'setMany');
     checkEntries(entries);
+    this.tracing.set('cache.keys', entries.length);
     await this.batch.setMany(target, scope, entries, requested, ttl, options.tags);
   }
 
@@ -411,7 +441,22 @@ export class CacheEngine {
    * ignored. Stale `swr` keys are refreshed in the background with one more loader call.
    * Results are in input order, duplicates included; an empty key is `undefined`. Never locks.
    */
-  async getOrSetMany<T>(
+  getOrSetMany<T>(
+    scope: BatchScope,
+    keys: readonly string[],
+    loader: BatchLoader<T>,
+    options?: BatchLoadOptions<T>,
+  ): Promise<(T | undefined)[]> {
+    if (!this.tracing.enabled) return this.getOrSetManyImpl(scope, keys, loader, options);
+    return this.tracing.span(
+      'cache.getOrSetMany',
+      { store: scope.store ?? 'default', namespace: scope.namespace },
+      () => this.getOrSetManyImpl(scope, keys, loader, options),
+      'batch',
+    );
+  }
+
+  private async getOrSetManyImpl<T>(
     scope: BatchScope,
     keys: readonly string[],
     loader: BatchLoader<T>,
@@ -428,6 +473,7 @@ export class CacheEngine {
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl);
     checkKeys(keys);
+    this.tracing.set('cache.keys', keys.length);
     return this.batch.getOrSetMany(target, scope, keys, loader, options, strategy, ttl);
   }
 
