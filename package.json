@@ -1,6 +1,6 @@
 {
   "name": "@loipv/nestjs-cache",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Decorator-based caching for NestJS: Redis (ioredis or node-redis, Cluster, Sentinel) and two-tier stores, tags, stale-while-revalidate, stampede protection, HTTP caching and Prometheus metrics",
   "license": "MIT",
   "repository": {
