@@ -233,7 +233,8 @@ p95, lock wait p95 and breaker state.
 the module nothing is traced and the call paths are unchanged. The library has no dependency on OpenTelemetry; it
 relies on the structural types `TracerLike`, `SpanLike`, `SpanOptionsLike` and `SpanContextLike`, which a tracer from
 `@opentelemetry/api` satisfies. Install and configure the SDK yourself. With only `@opentelemetry/api` and no SDK
-registered, the spans are non-recording and tracing costs next to nothing.
+registered, the spans are still created, through the API's no-op tracer: they are non-recording and export nothing, and
+the cache behaves exactly as without tracing.
 
 Like `CachePrometheusModule`, it needs a global `CacheModule`: call `CacheModule.forRoot({ isGlobal: true })`. Register
 it once; a second registration, or invalid options, throws `CacheConfigError` at startup.
@@ -319,7 +320,7 @@ Child spans:
 | `cache.keys`                                | batch calls, `delete`       | the number of keys (see below)                                                                                     |
 | `cache.hits`, `cache.stale`, `cache.misses` | `getMany`, `getOrSetMany`   | the number of distinct keys in each outcome                                                                        |
 | `cache.tags`                                | `invalidateTags`            | the number of tags                                                                                                 |
-| `cache.written`                             | `set`, `put`                | `false` when `unless` skipped the write, a tag failed, or a store error meant nothing was written                  |
+| `cache.written`                             | `set`, `put`                | `false` when nothing was written: `unless` skipped it, a tag failed, the key was empty, or a store or version error |
 | `cache.lock.acquired`                       | `cache.lock`                | `true` or `false`                                                                                                  |
 
 On `getMany`, `setMany` and `getOrSetMany`, `cache.keys` counts the keys as you passed them, duplicates included. On
@@ -341,6 +342,9 @@ span-derived labels.
 - An error the library swallows, that is, one that emits the `error` event, is recorded with `recordException` and a
   `cache.error` event carrying `cache.error.operation` (a `CacheOperation`) on the running cache span. The status stays
   unset, because the caller still gets a result.
+- A failed `swr` refresh is the exception. A refresh whose loader fails is a swallowed `refresh` error, yet it marks
+  `cache.refresh` and its `cache.load` with status `ERROR`, because the refresh itself failed. The span of the request
+  that triggered it is untouched: that request already got its stale value.
 - `CircuitOpenError` records nothing, as with the `error` event.
 - A tracer or span that throws never reaches the caller and never makes a function run twice. The call carries on as if
   tracing were off, and the failure is logged at `error` level under the operation `tracing`, throttled like other
