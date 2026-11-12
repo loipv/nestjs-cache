@@ -67,6 +67,8 @@ expectTypeOf<lib.GetOrSetManyOptions<number>['lock']>().toEqualTypeOf<false | un
 export const op: lib.CacheOperation = 'tag';
 // @ts-expect-error 'metrics' is not a CacheOperation
 export const metricsOp: lib.CacheOperation = 'metrics';
+// @ts-expect-error 'tracing' (logs only) is not a CacheOperation
+export const tracingOp: lib.CacheOperation = 'tracing';
 expectTypeOf<lib.CacheEventMap['error']['operation']>().toEqualTypeOf<lib.CacheOperation>();
 
 /* 0.9-T6 G-08: the breaker factory is circuitBreakerStore, paired with CircuitBreakerStore. */

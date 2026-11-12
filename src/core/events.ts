@@ -20,8 +20,11 @@ export type CacheOperation =
   /** An invalid tag list (a throwing tag callback included); the entry is not written. */
   | 'tag';
 
-/** Internal: the operations `CacheLogger` logs; `'metrics'` is a failing metrics update. */
-export type LogOperation = CacheOperation | 'metrics';
+/**
+ * Internal: the operations `CacheLogger` logs; `'metrics'` is a failing metrics update and
+ * `'tracing'` a throwing tracer or span method.
+ */
+export type LogOperation = CacheOperation | 'metrics' | 'tracing';
 
 /** Internal: reports a cache failure as an `error` event; `EngineIO.reportError`. */
 export type ReportError = (

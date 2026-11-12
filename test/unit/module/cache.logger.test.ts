@@ -35,11 +35,16 @@ describe('CacheLogger', () => {
     for (let i = 0; i < 3; i++) logger.storeError('default', 'get', new Error('down'));
     logger.storeError('default', 'metrics', new Error('bad label'));
     logger.storeError('default', 'delete', 'plain');
+    logger.storeError('default', 'tracing', new Error('tracer down'));
+    logger.storeError('default', 'tracing', new Error('tracer down'));
     expect(s.warn.mock.calls).toEqual([
       ['Cache get failed on store "default": down'],
       ['Cache metrics failed on store "default": bad label'],
     ]);
-    expect(s.error.mock.calls).toEqual([['Cache delete failed on store "default": plain']]);
+    expect(s.error.mock.calls).toEqual([
+      ['Cache delete failed on store "default": plain'],
+      ['Cache tracing failed on store "default": tracer down'],
+    ]);
     vi.advanceTimersByTime(30_000);
     logger.storeError('default', 'get', new Error('down'));
     expect(s.warn).toHaveBeenLastCalledWith(

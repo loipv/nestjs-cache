@@ -20,7 +20,8 @@ export class CacheLogger {
 
   /**
    * Logs at most one line per (store, operation) every 30 000 ms; the next line reports how
-   * many were suppressed. `error` for delete and clear, `warn` for every other operation.
+   * many were suppressed. `error` for delete, clear and tracing, `warn` for every other
+   * operation.
    */
   storeError(store: string, operation: LogOperation, error: unknown): void {
     if (this.level === 'off') return;
@@ -37,8 +38,11 @@ export class CacheLogger {
         : '';
     this.throttle.set(key, { windowStart: now, suppressed: 0 });
     const text = `Cache ${operation} failed on store "${store}": ${messageOf(error)}${suffix}`;
-    if (operation === 'delete' || operation === 'clear') this.logger.error(text);
-    else this.logger.warn(text);
+    if (operation === 'delete' || operation === 'clear' || operation === 'tracing') {
+      this.logger.error(text);
+    } else {
+      this.logger.warn(text);
+    }
   }
 
   error(message: string): void {
