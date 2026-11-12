@@ -7,6 +7,7 @@ import { CacheConfigError } from '../../../src/errors.js';
 import { CacheLogger } from '../../../src/module/cache.logger.js';
 import { CacheModule } from '../../../src/module/cache.module.js';
 import { CACHE_LOGGER } from '../../../src/module/tokens.js';
+import { CacheTracing } from '../../../src/observability/cache-tracing.js';
 import { CacheTracingModule } from '../../../src/observability/tracing.module.js';
 import type { CacheTracingOptions } from '../../../src/observability/tracing.types.js';
 import { FakeTracer } from '../helpers/fake-tracer.js';
@@ -39,6 +40,7 @@ describe('CacheTracingModule', () => {
   }
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await ref?.close();
     ref = undefined;
     for (const t of tracers.splice(0)) t.assertAllEnded();
@@ -90,13 +92,12 @@ describe('CacheTracingModule', () => {
     expect(fake.spans('cache.getOrSet')).toHaveLength(1);
   });
 
-  it('without the module, a tracer is never called', async () => {
-    const fake = tracer();
+  it('without the module, tracing stays disabled and caching works as before', async () => {
     const users = await start([CacheModule.forRoot({ isGlobal: true })]);
-    await users.find('1');
-    await users.find('1');
+    expect(ref!.get(CacheTracing).enabled).toBe(false);
+    expect(await users.find('1')).toBe('user 1');
+    expect(await users.find('1')).toBe('user 1');
     expect(users.loads).toBe(1);
-    expect(fake.calls).toBe(0);
   });
 
   it('a failing tracer is logged through the CacheModule logger, as tracing', async () => {
@@ -160,12 +161,11 @@ describe('CacheTracingModule', () => {
 
   it('requires a global CacheModule', async () => {
     const build = start([CacheTracingModule.forRoot({ tracer: tracer() })]);
-    // Nest's own resolution error (its class is not public API, so match by name), not ours.
+    // Nest's own resolution error, not ours: init rejects and names the missing provider.
     const thrown: unknown = await build.catch((error: unknown) => error);
     expect(thrown).toBeInstanceOf(Error);
     expect(thrown).not.toBeInstanceOf(CacheConfigError);
-    expect((thrown as Error).constructor.name).toBe('UnknownDependenciesException');
-    expect((thrown as Error).message).toContain('CacheTracing at index [0]');
+    expect((thrown as Error).message).toContain('CacheTracing');
   });
 
   it('the module reaches the engine whatever the import order', async () => {

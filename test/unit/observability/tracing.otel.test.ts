@@ -91,6 +91,7 @@ describe('tracing with the OpenTelemetry SDK', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await ref?.close();
     ref = undefined;
     await app?.close();
@@ -222,6 +223,7 @@ describe('tracing with the OpenTelemetry API and no SDK registered', () => {
   }
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
