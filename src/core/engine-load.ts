@@ -170,9 +170,21 @@ export class EngineLoad {
       if (joining) this.tracing.set('cache.load.joined', true);
       return joined.value;
     }
-    // The flight was a refresh that skipped its load: another instance holds the lock.
-    const own = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
-    return own.loaded ? own.value : (await this.missTask(plan)).value;
+    // The flight was a refresh that skipped its load: another instance holds the lock. A miss
+    // that joins another miss's flight here shares its load, with the same rule as above.
+    const sharing = this.tracing.enabled && this.singleFlight.has(flightKey);
+    let own: Outcome<T>;
+    try {
+      own = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
+    } catch (error) {
+      if (sharing) this.tracing.set('cache.load.joined', true);
+      throw error;
+    }
+    if (own.loaded) {
+      if (sharing) this.tracing.set('cache.load.joined', true);
+      return own.value;
+    }
+    return (await this.missTask(plan)).value;
   }
 
   /**

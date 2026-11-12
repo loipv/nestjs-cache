@@ -165,7 +165,7 @@ describe('CacheTracingModule', () => {
     const thrown: unknown = await build.catch((error: unknown) => error);
     expect(thrown).toBeInstanceOf(Error);
     expect(thrown).not.toBeInstanceOf(CacheConfigError);
-    expect((thrown as Error).message).toContain('CacheTracing');
+    expect((thrown as Error).message).toContain('CacheTracing at index [0]');
   });
 
   it('the module reaches the engine whatever the import order', async () => {

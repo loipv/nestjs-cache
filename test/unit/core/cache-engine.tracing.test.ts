@@ -183,6 +183,45 @@ describe('CacheEngine tracing: single-key calls', () => {
     expect(children(tracer, miss)).toEqual(['cache.lock', 'cache.load']);
   });
 
+  it('misses sharing the load that follows a skipped refresh are marked joined', async () => {
+    const inner = new FakeLock();
+    // acquire settles after 10 ms, so the refresh flight is still open when the misses arrive.
+    const slow: LockProvider = {
+      acquire: (key, ttlMs) =>
+        delayed(10, undefined).then((): Promise<LockHandle | undefined> =>
+          inner.acquire(key, ttlMs),
+        ),
+    };
+    const { engine, tracer } = traced({
+      stores: { default: lockingStore(slow) },
+      defaults: { lock: { waitTimeout: 200 } },
+    });
+    const opts = { ...SWR, lock: true };
+    await engine.set({ key: 'k' }, 'old', SWR);
+    vi.setSystemTime(150);
+    inner.held.add('__lock__:k');
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'new', opts)).toBe('old');
+    await engine.delete({}, ['k']);
+    const loader = vi.fn(async () => 'missed');
+    const misses = Promise.all([
+      engine.getOrSet({ key: 'k' }, loader, opts),
+      engine.getOrSet({ key: 'k' }, loader, opts),
+      engine.getOrSet({ key: 'k' }, loader, opts),
+    ]);
+    await vi.advanceTimersByTimeAsync(310);
+    expect(await misses).toEqual(['missed', 'missed', 'missed']);
+    expect(loader).toHaveBeenCalledOnce();
+    const [, owner, ...joiners] = tracer.spans('cache.getOrSet');
+    // All three joined the skipped refresh; the first then loads, the other two share its load.
+    expect(owner!.attributes).not.toHaveProperty('cache.load.joined');
+    expect(children(tracer, owner!)).toEqual(['cache.lock', 'cache.load']);
+    expect(joiners).toHaveLength(2);
+    for (const joiner of joiners) {
+      expect(joiner.attributes['cache.load.joined']).toBe(true);
+      expect(children(tracer, joiner)).toEqual([]);
+    }
+  });
+
   it('a miss joining a load that fails is still marked joined', async () => {
     const { engine, tracer } = traced();
     const failure = new Error('shared load failed');
