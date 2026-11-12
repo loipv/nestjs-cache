@@ -1,4 +1,10 @@
-import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  gunzipSync,
+  gzipSync,
+} from 'node:zlib';
 import { CacheConfigError } from '../errors.js';
 import { hasOwnVersion, isNewerEnvelope, type CacheEnvelope } from '../core/envelope.js';
 import { jsonSerializer, type Serializer } from './json.serializer.js';
@@ -9,6 +15,12 @@ export interface CompressedSerializerOptions {
   inner?: Serializer;
   /** Algorithm used for writes; reads follow the prefix of the stored value. Default `'gzip'`. */
   algorithm?: 'gzip' | 'brotli';
+  /**
+   * Compression level: 0-9 for gzip (default 6, zlib's default) and 0-11 for brotli (default 4).
+   * Compression runs synchronously on the event loop. Brotli's own default, 11, is much slower:
+   * about 1.6 s for a 724 KB JSON value, against about 2 ms at 4. Reads accept any level.
+   */
+  level?: number;
   /** UTF-8 byte length of the inner string above which compression is tried. Default 1024. */
   threshold?: number;
   /**
@@ -45,6 +57,13 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
   const inner = suppliedInner as Partial<Serializer> | null;
   if (algorithm !== 'gzip' && algorithm !== 'brotli') {
     throw new CacheConfigError("compressedSerializer: algorithm must be 'gzip' or 'brotli'");
+  }
+  const maxLevel = algorithm === 'gzip' ? 9 : 11;
+  const level: unknown = options.level ?? (algorithm === 'gzip' ? 6 : 4);
+  if (typeof level !== 'number' || !Number.isInteger(level) || level < 0 || level > maxLevel) {
+    throw new CacheConfigError(
+      `compressedSerializer: level must be an integer from 0 to ${String(maxLevel)} for ${algorithm}`,
+    );
   }
   if (!Number.isInteger(threshold) || threshold < 0) {
     throw new CacheConfigError('compressedSerializer: threshold must be an integer >= 0');
@@ -91,7 +110,10 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
       // have no such limit.
       if (size > maxDecompressedBytes) return plain;
       const bytes = Buffer.from(plain, 'utf8');
-      const packed = algorithm === 'gzip' ? gzipSync(bytes) : brotliCompressSync(bytes);
+      const packed =
+        algorithm === 'gzip'
+          ? gzipSync(bytes, { level })
+          : brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: level } });
       const out = prefix + packed.toString('base64');
       return out.length < plain.length ? out : plain;
     },

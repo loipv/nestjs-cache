@@ -63,6 +63,7 @@ CacheModule.forRoot({
 | ---------------------- | ---------------- | ----------------------------------------------------------------------- |
 | `inner`                | `jsonSerializer` | Serializer that produces and reads the string that gets compressed      |
 | `algorithm`            | `'gzip'`         | `'gzip'` or `'brotli'`, used for writes                                 |
+| `level`                | `6` / `4`        | Compression level: 0-9 for `gzip` (default 6), 0-11 for `brotli` (default 4) |
 | `threshold`            | `1024`           | Payloads whose UTF-8 byte length is above it are tried for compression  |
 | `maxDecompressedBytes` | 16 MiB           | Upper bound of a decompressed payload; larger ones are rejected on read |
 
@@ -75,7 +76,9 @@ CacheModule.forRoot({
 - Switching back from `compressedSerializer` to an uncompressed serializer makes the compressed entries unreadable:
   they produce `deserialize` errors and are misses until they expire.
 - Compression is synchronous (`node:zlib`) and costs event-loop CPU on large payloads; `brotli` compresses smaller
-  and slower than `gzip`.
+  and slower than `gzip`. The brotli default is quality 4, not zlib's 11: on a 724 KB JSON value, quality 11 blocked
+  the event loop for about 1.6 s, quality 4 for about 2 ms. Raise `level` only for small values. Reads accept any
+  level.
 - A corrupt or oversized payload is a `deserialize` error and a miss, like any unreadable entry.
 - An unreadable entry this library wrote (a corrupt envelope, or one with a string or otherwise non-numeric `v`) is deleted on read
   under `compressedSerializer(jsonSerializer)` (the default `inner`), as under the plain `jsonSerializer`. An envelope whose `v` is a number

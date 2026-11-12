@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { brotliCompressSync, gunzipSync, gzipSync } from 'node:zlib';
+import { brotliCompressSync, constants, gunzipSync, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { unwrap, wrap } from '../../../src/core/envelope.js';
 import { CacheConfigError } from '../../../src/errors.js';
@@ -138,11 +138,62 @@ describe('compressedSerializer', () => {
       { maxDecompressedBytes: 2.5 },
       { inner: {} },
       { inner: { serialize: () => '' } },
+      { level: -1 },
+      { level: 10 },
+      { level: 1.5 },
+      { level: Number.NaN },
+      { algorithm: 'brotli', level: 12 },
+      { algorithm: 'brotli', level: -1 },
     ];
     for (const o of bad) {
       expect(() => compressedSerializer(o as never)).toThrow(CacheConfigError);
     }
     expect(() => compressedSerializer({ threshold: 0 })).not.toThrow();
+    expect(() => compressedSerializer({ level: 0 })).not.toThrow();
+    expect(() => compressedSerializer({ level: 9 })).not.toThrow();
+    expect(() => compressedSerializer({ algorithm: 'brotli', level: 11 })).not.toThrow();
+  });
+
+  describe('level', () => {
+    // Varied enough that compression levels give different outputs.
+    const e = wrap(
+      Array.from({ length: 400 }, (_, i) => `item ${String(i)} ${String((i * 7919) % 1000)}`).join(
+        ',',
+      ),
+      0,
+      10,
+    );
+    const bytes = Buffer.from(jsonSerializer.serialize(e), 'utf8');
+    const brotli = (quality: number): string =>
+      BR +
+      brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: quality } }).toString(
+        'base64',
+      );
+    const gzip = (level?: number): string =>
+      GZ + (level === undefined ? gzipSync(bytes) : gzipSync(bytes, { level })).toString('base64');
+
+    it('brotli defaults to quality 4, not zlib default 11', () => {
+      expect(brotli(4)).not.toBe(brotli(11));
+      expect(compressedSerializer({ algorithm: 'brotli' }).serialize(e)).toBe(brotli(4));
+    });
+
+    it('brotli uses the given level as its quality', () => {
+      expect(brotli(9)).not.toBe(brotli(4));
+      expect(compressedSerializer({ algorithm: 'brotli', level: 9 }).serialize(e)).toBe(brotli(9));
+    });
+
+    it('gzip defaults to zlib default level and uses the given level', () => {
+      expect(gzip(1)).not.toBe(gzip());
+      expect(compressedSerializer().serialize(e)).toBe(gzip());
+      expect(compressedSerializer({ level: 1 }).serialize(e)).toBe(gzip(1));
+    });
+
+    it('reads values written at any level, by either algorithm', () => {
+      const reader = compressedSerializer({ algorithm: 'gzip', level: 1 });
+      for (const raw of [brotli(11), brotli(0), gzip(9), gzip(0)]) {
+        expect(unwrap(reader.deserialize(raw))).toEqual(unwrap(e));
+      }
+    });
   });
 
   it('uses a custom inner serializer', () => {

@@ -16,7 +16,7 @@
   - Resilience: distributed locks, circuit breaker, `swr` and `sliding` strategies, `softTimeout`, see [resilience](https://github.com/loipv/nestjs-cache/blob/main/docs/resilience.md).
   - Namespaces and tags: versioned namespaces with O(1) `clear`, batch API, tag invalidation, see [namespaces and tags](https://github.com/loipv/nestjs-cache/blob/main/docs/namespaces-and-tags.md).
   - HTTP caching: `@HttpCache` on Express and Fastify, see [HTTP caching](https://github.com/loipv/nestjs-cache/blob/main/docs/http-caching.md).
-  - Serializers and compression: JSON serializer and gzip or brotli `compressedSerializer`, see [serializers](https://github.com/loipv/nestjs-cache/blob/main/docs/serializers.md).
+  - Serializers and compression: JSON serializer and gzip or brotli `compressedSerializer` (with a `level` option; brotli defaults to quality 4), see [serializers](https://github.com/loipv/nestjs-cache/blob/main/docs/serializers.md).
   - Observability: Prometheus metrics, `@nestjs/terminus` health indicator and OpenTelemetry tracing, see [observability](https://github.com/loipv/nestjs-cache/blob/main/docs/observability.md).
   - Security and migration: see [security](https://github.com/loipv/nestjs-cache/blob/main/docs/security.md) and [migrating from `@nestjs/cache-manager`](https://github.com/loipv/nestjs-cache/blob/main/docs/migration-from-cache-manager.md).
 
