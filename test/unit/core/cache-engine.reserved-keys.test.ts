@@ -159,7 +159,9 @@ describe('@CachePut and @CacheEvict with an untrusted key template', () => {
     }
 
     @CacheEvict({ key: '{0}' })
-    async remove(_id: string): Promise<void> {}
+    async remove(id: string): Promise<string> {
+      return `removed:${id}`;
+    }
   }
 
   async function setup(): Promise<{
@@ -191,7 +193,7 @@ describe('@CachePut and @CacheEvict with an untrusted key template', () => {
 
   it('@CacheEvict reports one key error and never deletes the reserved key', async () => {
     const { svc, store, emitted, close } = await setup();
-    await svc.remove(RESERVED);
+    expect(await svc.remove(RESERVED)).toBe(`removed:${RESERVED}`);
     expect(keyErrors(emitted)).toHaveLength(1);
     expect(JSON.stringify(store.calls)).not.toContain('__version__');
     await close();
