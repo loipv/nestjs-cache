@@ -301,6 +301,7 @@ export class TieredStore implements CacheStore {
     if (message.origin === this.origin) return;
     if (
       'keys' in message &&
+      !('prefix' in message) &&
       Array.isArray(message.keys) &&
       message.keys.every((k): k is string => typeof k === 'string')
     ) {
@@ -308,7 +309,9 @@ export class TieredStore implements CacheStore {
       void this.attempt('delete', () => this.l1.delete(message.keys));
     } else {
       // A custom bus may deliver a body of a newer format: clear L1 rather than keep stale data.
-      const given = (message as { prefix?: unknown }).prefix;
+      // Like parseMessage: a prefix counts only when `keys` is absent; keys and prefix together
+      // (or any unknown body) clear everything.
+      const given = 'keys' in message ? undefined : (message as { prefix?: unknown }).prefix;
       const prefix = typeof given === 'string' ? given : '';
       this.forgetPrefix(prefix);
       void this.attempt('clear', () => this.l1.clear(prefix));
