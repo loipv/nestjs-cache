@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { CacheConfigError } from '../../../src/errors.js';
 import { CacheLogger } from '../../../src/module/cache.logger.js';
 import { CacheTracing, resolveTracingOptions } from '../../../src/observability/cache-tracing.js';
-import type { CacheTracingOptions } from '../../../src/observability/tracing.types.js';
+import type {
+  CacheTracingOptions,
+  SpanLike,
+  SpanOptionsLike,
+  TracerLike,
+} from '../../../src/observability/tracing.types.js';
 import { FakeTracer } from '../helpers/fake-tracer.js';
 
 const BASE = { store: 'default', namespace: 'users' };
@@ -337,17 +342,27 @@ describe('CacheTracing', () => {
     });
 
     it('recorders after the scope ended never touch the ended span', async () => {
-      let late: (() => void) | undefined;
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let late: Promise<void> | undefined;
       await tracing.span('cache.getOrSet', BASE, async () => {
-        late = () => {
+        // Runs in the scope's async context, after the span ended.
+        late = gate.then(() => {
           tracing.miss();
+          tracing.result('bypass');
+          tracing.set('cache.written', true);
           tracing.error('refresh', new Error('late'));
-        };
+          tracing.lockSpan().end(true);
+        });
       });
       const callsAfterEnd = tracer.calls;
-      late!();
+      release();
+      await late;
       expect(tracer.calls).toBe(callsAfterEnd);
       expect(tracer.span('cache.getOrSet').exceptions).toEqual([]);
+      expect(tracer.spans('cache.lock')).toEqual([]);
     });
 
     it('lockSpan starts cache.lock under the active span and ends it once', async () => {
@@ -391,6 +406,81 @@ describe('CacheTracing', () => {
         tracing.key('app:users:k');
       });
       expect(tracer.span('cache.get').attributes['cache.key']).toBeUndefined();
+    });
+
+    it('a traced call adds no tick: the caller gets the promise fn returned', async () => {
+      const resolved = Promise.resolve(1);
+      expect(tracing.span('cache.get', BASE, () => resolved)).toBe(resolved);
+      const rejected = Promise.reject(new Error('r'));
+      expect(tracing.span('cache.get', BASE, () => rejected)).toBe(rejected);
+      await expect(rejected).rejects.toThrow('r');
+      const loaded = Promise.resolve(2);
+      let fromChild: Promise<number> | undefined;
+      let fromRoot: Promise<number> | undefined;
+      await tracing.span('cache.getOrSet', BASE, async () => {
+        fromChild = tracing.child('cache.load', () => loaded);
+        fromRoot = tracing.root(BASE, () => loaded);
+      });
+      expect(fromChild).toBe(loaded);
+      expect(fromRoot).toBe(loaded);
+      await loaded;
+    });
+
+    it('a traced call settles in the same tick as an untraced one', async () => {
+      const off = new CacheTracing();
+      const order: string[] = [];
+      const run = async (): Promise<void> => {
+        await Promise.resolve();
+      };
+      const done = Promise.all([
+        off.span('cache.get', BASE, run).then(() => order.push('off')),
+        tracing.span('cache.get', BASE, run).then(() => order.push('on')),
+        run().then(() => order.push('plain')),
+      ]);
+      await done;
+      expect(order).toEqual(['off', 'on', 'plain']);
+    });
+
+    it('the span has ended (and the error is recorded) before the caller resumes', async () => {
+      await tracing.span('cache.get', BASE, async () => {
+        tracing.hit(false);
+      });
+      expect(tracer.span('cache.get').endCount).toBe(1);
+      const error = new Error('x');
+      try {
+        await tracing.span('cache.set', BASE, () => Promise.reject(error));
+      } catch {
+        expect(tracer.span('cache.set').endCount).toBe(1);
+        expect(tracer.span('cache.set').status).toEqual({ code: 2 });
+      }
+      await tracing.span('cache.getOrSet', BASE, async () => {
+        await tracing
+          .child('cache.load', () => Promise.reject(error))
+          .catch(() => {
+            expect(tracer.span('cache.load').endCount).toBe(1);
+            expect(tracer.span('cache.getOrSet').status).toEqual({ code: 2 });
+          });
+      });
+    });
+
+    it('child after the scope ended is untraced', async () => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let late: Promise<never> | undefined;
+      await tracing.span('cache.getOrSet', BASE, async () => {
+        // Runs in the scope's async context, after the span ended.
+        late = gate.then(() =>
+          tracing.child('cache.load', () => Promise.reject(new Error('late'))),
+        );
+      });
+      const calls = tracer.calls;
+      release();
+      await expect(late).rejects.toThrow('late');
+      expect(tracer.spans('cache.load')).toEqual([]);
+      expect(tracer.calls).toBe(calls);
+      expect(tracer.span('cache.getOrSet').status).toBeUndefined();
     });
 
     it('two concurrent spans keep separate scopes', async () => {
@@ -546,6 +636,73 @@ describe('CacheTracing', () => {
       expect(storeError).toHaveBeenCalled();
       for (const call of storeError.mock.calls) expect(call[1]).toBe('tracing');
       expect(tracer.span('cache.refresh').links).toEqual([]);
+    });
+
+    it('a refresh whose tracer fails runs outside the triggering scope', async () => {
+      let refresh: Promise<void> | undefined;
+      await tracing.span('cache.getOrSet', BASE, async () => {
+        tracer.failOn('startActiveSpan', 'before');
+        refresh = tracing.root(BASE, async () => {
+          tracing.miss();
+          tracing.error('refresh', new Error('swallowed'));
+          await tracing.child('cache.load', () => Promise.reject(new Error('load')));
+        });
+        await refresh.catch(() => undefined);
+        tracer.reset();
+      });
+      const main = tracer.span('cache.getOrSet');
+      expect(main.exceptions).toEqual([]);
+      expect(main.events).toEqual([]);
+      expect(main.status).toBeUndefined();
+      expect(main.attributes['cache.result']).toBeUndefined();
+      expect(tracer.spans('cache.load')).toEqual([]);
+    });
+
+    it('a tracer that calls its callback late never runs fn twice and ends the late span', async () => {
+      const inner = new FakeTracer();
+      let late: Promise<unknown> | undefined;
+      const deferring: TracerLike = {
+        startActiveSpan<F extends (span: SpanLike) => unknown>(
+          name: string,
+          options: SpanOptionsLike,
+          fn: F,
+        ): ReturnType<F> {
+          late = Promise.resolve().then(() => inner.startActiveSpan(name, options, fn));
+          return undefined as ReturnType<F>;
+        },
+        startSpan: (name, options) => inner.startSpan(name, options),
+      };
+      const deferred = new CacheTracing(logger);
+      deferred.use({ tracer: deferring });
+      const fn = vi.fn(() => Promise.resolve(4));
+      await expect(deferred.span('cache.get', BASE, fn)).resolves.toBe(4);
+      await late;
+      expect(fn).toHaveBeenCalledOnce();
+      expect(inner.span('cache.get').endCount).toBe(1);
+      expect(inner.span('cache.get').attributes['cache.result']).toBeUndefined();
+      inner.assertAllEnded();
+    });
+
+    it('a tracer that calls its callback twice runs fn once and ends both spans', async () => {
+      const inner = new FakeTracer();
+      const twice: TracerLike = {
+        startActiveSpan<F extends (span: SpanLike) => unknown>(
+          name: string,
+          options: SpanOptionsLike,
+          fn: F,
+        ): ReturnType<F> {
+          inner.startActiveSpan(name, options, fn);
+          return inner.startActiveSpan(name, options, fn);
+        },
+        startSpan: (name, options) => inner.startSpan(name, options),
+      };
+      const doubled = new CacheTracing(logger);
+      doubled.use({ tracer: twice });
+      const fn = vi.fn(() => Promise.resolve(5));
+      await expect(doubled.span('cache.get', BASE, fn)).resolves.toBe(5);
+      expect(fn).toHaveBeenCalledOnce();
+      expect(inner.spans('cache.get').map((s) => s.endCount)).toEqual([1, 1]);
+      inner.assertAllEnded();
     });
 
     it('without a logger, tracer errors are swallowed silently', async () => {

@@ -25,7 +25,10 @@ export type FakeTracerMethod =
  */
 export type FailWhen = 'before' | 'after';
 
-/** One recorded span: its parent, attributes, events, exceptions, status, links and ends. */
+/**
+ * One recorded span: its parent, attributes, events, exceptions, status, links and ends. A write
+ * after `end` is dropped (as OpenTelemetry does) and listed in `writesAfterEnd`.
+ */
 export class FakeSpan implements SpanLike {
   readonly attributes: Record<string, SpanAttributeValue> = {};
   readonly events: { name: string; attributes: Record<string, SpanAttributeValue> | undefined }[] =
@@ -33,6 +36,8 @@ export class FakeSpan implements SpanLike {
   readonly exceptions: unknown[] = [];
   status: { code: number; message?: string } | undefined;
   endCount = 0;
+  /** The write methods called after the span ended, in call order. */
+  readonly writesAfterEnd: string[] = [];
   readonly traceId: string;
   readonly spanId: string;
 
@@ -50,6 +55,7 @@ export class FakeSpan implements SpanLike {
 
   setAttribute(key: string, value: SpanAttributeValue): this {
     this.tracer.call('setAttribute', () => {
+      if (this.ended('setAttribute')) return;
       this.attributes[key] = value;
     });
     return this;
@@ -57,6 +63,7 @@ export class FakeSpan implements SpanLike {
 
   addEvent(name: string, attributes?: Record<string, SpanAttributeValue>): this {
     this.tracer.call('addEvent', () => {
+      if (this.ended('addEvent')) return;
       this.events.push({ name, attributes });
     });
     return this;
@@ -64,12 +71,14 @@ export class FakeSpan implements SpanLike {
 
   recordException(exception: unknown): void {
     this.tracer.call('recordException', () => {
+      if (this.ended('recordException')) return;
       this.exceptions.push(exception);
     });
   }
 
   setStatus(status: { code: number; message?: string }): this {
     this.tracer.call('setStatus', () => {
+      if (this.ended('setStatus')) return;
       this.status = status;
     });
     return this;
@@ -79,6 +88,13 @@ export class FakeSpan implements SpanLike {
     this.tracer.call('end', () => {
       this.endCount += 1;
     });
+  }
+
+  /** Lists a write after the span ended; returns whether it did. */
+  private ended(method: string): boolean {
+    if (this.endCount === 0) return false;
+    this.writesAfterEnd.push(method);
+    return true;
   }
 
   spanContext(): SpanContextLike {
@@ -126,12 +142,18 @@ export class FakeTracer implements TracerLike {
     return found[0]!;
   }
 
-  /** Throws unless every recorded span was ended exactly once. */
+  /** Throws unless every recorded span was ended exactly once and got no write after its end. */
   assertAllEnded(): void {
     const bad = this.recorded.filter((s) => s.endCount !== 1);
     if (bad.length > 0) {
       throw new Error(
         `spans not ended exactly once: ${bad.map((s) => `${s.name} (${String(s.endCount)})`).join(', ')}`,
+      );
+    }
+    const late = this.recorded.filter((s) => s.writesAfterEnd.length > 0);
+    if (late.length > 0) {
+      throw new Error(
+        `spans written after end: ${late.map((s) => `${s.name} (${s.writesAfterEnd.join(', ')})`).join(', ')}`,
       );
     }
   }

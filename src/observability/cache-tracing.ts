@@ -129,13 +129,13 @@ export class CacheTracing {
 
   /**
    * Runs `fn` in an active child span of the current one. A rejection marks the child and the
-   * current scope's span `ERROR`. Untraced outside a scope.
+   * current scope's span `ERROR`. Untraced outside a scope or after the scope ended.
    */
   child<T>(name: 'cache.load', fn: () => Promise<T>): Promise<T> {
     const on = this.on;
     if (on === undefined) return fn();
     const scope = on.als.getStore();
-    if (scope === undefined) return fn();
+    if (scope === undefined || scope.ended) return fn();
     return this.activate(on.tracer, scope.store, name, {}, fn, (span) =>
       this.settle(span, scope.store, fn, (error) => {
         this.fail(span, scope.store, error);
@@ -146,7 +146,8 @@ export class CacheTracing {
 
   /**
    * Runs `fn` in a new root span `cache.refresh` linked to the current scope's span (no link
-   * outside a scope), in a scope of its own: a background refresh outlives its trigger.
+   * outside a scope), in a scope of its own: a background refresh outlives its trigger. If the
+   * tracer fails, `fn` runs untraced outside any scope, so it never writes to its trigger.
    */
   root<T>(base: TraceBase, fn: () => Promise<T>): Promise<T> {
     const on = this.on;
@@ -158,7 +159,7 @@ export class CacheTracing {
         options.links = [{ context: current.span.spanContext() }];
       });
     }
-    return this.scoped(on, 'cache.refresh', base, options, 'single', fn);
+    return this.scoped(on, 'cache.refresh', base, options, 'single', fn, () => on.als.exit(fn));
   }
 
   /**
@@ -268,8 +269,9 @@ export class CacheTracing {
     options: SpanOptionsLike,
     kind: 'single' | 'batch',
     fn: () => Promise<T>,
+    untraced: () => Promise<T> = fn,
   ): Promise<T> {
-    return this.activate(on.tracer, base.store, name, options, fn, (span) => {
+    return this.activate(on.tracer, base.store, name, options, untraced, (span) => {
       const scope: Scope = {
         span,
         store: base.store,
@@ -291,16 +293,17 @@ export class CacheTracing {
 
   /**
    * Calls `tracer.startActiveSpan` with `body`. If the tracer throws before calling `body`, or
-   * never calls it, `fn` runs untraced; if it throws after, the outcome of `body` is kept, so
-   * `fn` never runs twice. A synchronous throw of `fn` is rethrown here, not mistaken for a
-   * tracer error.
+   * returns without calling it, `untraced` runs instead; if it throws after, the outcome of
+   * `body` is kept. Either way the user function runs once: a callback the tracer invokes again,
+   * or late (after the fallback ran), only ends its span. A synchronous throw of the user
+   * function is rethrown here, not mistaken for a tracer error.
    */
   private activate<T>(
     tracer: TracerLike,
     store: string,
     name: string,
     options: SpanOptionsLike,
-    fn: () => Promise<T>,
+    untraced: () => Promise<T>,
     body: (span: SpanLike) => Outcome<T>,
   ): Promise<T> {
     const state: { invoked: boolean; outcome: Outcome<T> | undefined } = {
@@ -309,7 +312,12 @@ export class CacheTracing {
     };
     try {
       void tracer.startActiveSpan(name, options, (span: SpanLike) => {
-        if (state.invoked) return undefined;
+        if (state.invoked) {
+          this.guard(store, () => {
+            span.end();
+          });
+          return undefined;
+        }
         state.invoked = true;
         const outcome = body(span);
         state.outcome = outcome;
@@ -319,15 +327,21 @@ export class CacheTracing {
       this.report(store, error);
     }
     const outcome = state.outcome;
-    if (outcome === undefined) return fn();
+    if (outcome === undefined) {
+      state.invoked = true;
+      return untraced();
+    }
     if ('thrown' in outcome) throw outcome.thrown;
     return outcome.promise;
   }
 
   /**
-   * Runs `run` and ends `span` once when it settles. A rejection or synchronous throw first
-   * calls `onError`, which records it. With a `scope`, the scope is closed (its batch counters
-   * set) before the span ends.
+   * Runs `run` and ends `span` once when it settles, on a side branch: the caller gets the
+   * promise `run` returned, so tracing adds no tick, and the side branch's reactions (registered
+   * first) end the span before the caller resumes. The side branch handles the rejection, which
+   * still reaches the caller through the original promise. A rejection or synchronous throw
+   * first calls `onError`, which records it. With a `scope`, the scope is closed (its batch
+   * counters set) before the span ends.
    */
   private settle<T>(
     span: SpanLike,
@@ -350,19 +364,11 @@ export class CacheTracing {
       close();
       return { thrown };
     }
-    return {
-      promise: promise.then(
-        (value) => {
-          close();
-          return value;
-        },
-        (error: unknown) => {
-          onError(error);
-          close();
-          throw error;
-        },
-      ),
-    };
+    promise.then(close, (error: unknown) => {
+      onError(error);
+      close();
+    });
+    return { promise };
   }
 
   /** Marks the scope's span `ERROR` for a failed child, once per error. */
