@@ -1,5 +1,5 @@
-// Type-checks the built `dist/index.d.ts` with the minimum supported TypeScript (TS_MIN), through
-// test/types-min. That compiler is installed on demand into node_modules/.cache (git-ignored), not
+// Type-checks the built `dist/index.d.ts` and `dist/index.d.cts` with the minimum supported
+// TypeScript (TS_MIN), through test/types-min. That compiler is installed on demand into node_modules/.cache (git-ignored), not
 // as a dependency, so it never competes with the repo's own `tsc`. Run `npm run build` first.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -29,7 +29,7 @@ if (installedVersion() !== TS_MIN) {
       '--ignore-scripts',
       `typescript@${TS_MIN}`,
     ],
-    { cwd: root, stdio: 'inherit' },
+    { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' },
   );
   if (install.status !== 0 || installedVersion() !== TS_MIN) {
     console.error(`typecheck:min: could not install typescript@${TS_MIN}`);
@@ -37,8 +37,16 @@ if (installedVersion() !== TS_MIN) {
   }
 }
 
-const result = spawnSync(process.execPath, [tsc, '-p', join(root, 'test', 'types-min')], {
-  cwd: root,
-  stdio: 'inherit',
-});
-process.exit(result.status ?? 1);
+// The ESM declarations (`dist/index.d.ts`) and the CommonJS ones (`dist/index.d.cts`) are each
+// checked against the same consumer.
+for (const project of ['tsconfig.json', 'tsconfig.cjs.json']) {
+  const result = spawnSync(
+    process.execPath,
+    [tsc, '-p', join(root, 'test', 'types-min', project)],
+    {
+      cwd: root,
+      stdio: 'inherit',
+    },
+  );
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}

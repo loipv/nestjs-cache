@@ -6,6 +6,9 @@ import { Module, Injectable } from '@nestjs/common';
 import {
   CacheModule,
   CacheService,
+  CacheEvents,
+  CacheHealthIndicator,
+  HttpCacheInterceptor,
   Cacheable,
   CachePut,
   CacheEvict,
@@ -17,7 +20,12 @@ import {
   circuitBreakerStore,
   memoryStore,
 } from '@loipv/nestjs-cache';
-import type { RedisClientAdapter, TracerLike, PrometheusClientLike } from '@loipv/nestjs-cache';
+import type {
+  CacheHealthResult,
+  RedisClientAdapter,
+  TracerLike,
+  PrometheusClientLike,
+} from '@loipv/nestjs-cache';
 
 declare const adapter: RedisClientAdapter;
 declare const tracer: TracerLike;
@@ -63,12 +71,35 @@ export class UserService {
   }
 }
 
+@Injectable()
+export class Probe {
+  constructor(
+    private readonly health: CacheHealthIndicator,
+    private readonly events: CacheEvents,
+    private readonly interceptor: HttpCacheInterceptor,
+  ) {}
+
+  async run(): Promise<CacheHealthResult> {
+    const result = await this.health.check('cache', { store: 'default', timeout: 500 });
+    const off: () => void = this.events.on('error', ({ operation, error }) => {
+      void operation;
+      void error;
+    });
+    off();
+    void this.interceptor;
+    return result.cache;
+  }
+}
+
 @Module({
   imports: [
-    CacheModule.forRoot({ isGlobal: true, stores: { default: store } }),
+    CacheModule.forRootAsync({
+      isGlobal: true,
+      useFactory: () => ({ stores: { default: store } }),
+    }),
     CacheTracingModule.forRoot({ tracer }),
     CachePrometheusModule.forRoot({ client: prom }),
   ],
-  providers: [UserService],
+  providers: [UserService, Probe],
 })
 export class AppModule {}
