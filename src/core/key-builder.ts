@@ -174,6 +174,26 @@ export function emptyKeyError(): TypeError {
   return new TypeError('Cache key must not be empty');
 }
 
+/**
+ * Without a namespace a key starting with `__` is a key error: `fullKey` would place it in the
+ * reserved `__` space of `__version__`, `__tag__` and `__lock__`, where a caller-controlled key
+ * (for example an untrusted `{0}` template) could read or delete the library's own entries.
+ */
+export function isReservedKey(namespace: string | undefined, key: string): boolean {
+  return namespace === undefined && key.startsWith('__');
+}
+
+export function reservedKeyError(): TypeError {
+  return new TypeError('Invalid key: keys starting with "__" are reserved; use a namespace');
+}
+
+/** The key error for `key` in `namespace`, or `undefined` when it is valid. */
+export function keyErrorOf(namespace: string | undefined, key: string): TypeError | undefined {
+  if (isEmptyKey(key)) return emptyKeyError();
+  if (isReservedKey(namespace, key)) return reservedKeyError();
+  return undefined;
+}
+
 export function fullKey(
   prefix: string | undefined,
   namespace: string | undefined,

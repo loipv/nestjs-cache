@@ -339,9 +339,9 @@ describe('the lock key', () => {
 });
 
 describe('a read of a lock key over a shared Redis', () => {
-  it('reports the unreadable value but never deletes the lock of another instance', async () => {
+  it('rejects a reserved key and never touches the lock of another instance', async () => {
     /* the auditor's scenario: lock keys are `<prefix>:__lock__:<namespace>:<key>` holding a bare UUID, in the same
-       Redis as the cache entries; a user-controlled key can name one */
+       Redis as the cache entries; a user-controlled key can name one, so a key starting with `__` is a key error */
     const redis = new FakeRedis();
     const store = new RedisStore({ client: redis });
     const events = new CacheEvents();
@@ -359,7 +359,7 @@ describe('a read of a lock key over a shared Redis', () => {
     expect(await engine.get({ key: '__lock__:users:1' })).toBeUndefined();
     expect(await service.get('__lock__:users:1')).toBeUndefined();
 
-    expect(errors).toEqual(['deserialize', 'deserialize']);
+    expect(errors).toEqual(['key', 'key']);
     expect(redis.commands.filter((c) => c.name === 'unlink')).toEqual([]);
     expect(redis.data.get('__lock__:users:1')).toBe(token);
     expect(await lock.acquire('__lock__:users:1', 10_000)).toBeUndefined();

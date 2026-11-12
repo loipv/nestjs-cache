@@ -21,7 +21,7 @@ import {
   type Stamping,
   type TagOption,
 } from './engine-tags.js';
-import { emptyKeyError, isEmptyKey, isReservedNamespace } from './key-builder.js';
+import { isReservedNamespace, keyErrorOf } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
@@ -202,7 +202,7 @@ export class CacheEngine {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
     const strategy = strategyOf(options, undefined, undefined, 'get');
-    if (this.emptyKey(target, ref.key)) {
+    if (this.invalidKey(target, ref.namespace, ref.key)) {
       this.tracing.result('bypass');
       return undefined;
     }
@@ -253,7 +253,7 @@ export class CacheEngine {
     checkBoolean('lock', options.lock);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
-    if (this.emptyKey(target, ref.key)) return this.bypass(loader);
+    if (this.invalidKey(target, ref.namespace, ref.key)) return this.bypass(loader);
     // Awaited only for a versioned namespace: the swr refresh below must register its flight
     // without an added tick, as in 0.3.
     const pending = this.io.resolveKey(target, ref);
@@ -295,7 +295,7 @@ export class CacheEngine {
     checkDuration('ttl', options.ttl);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const requested = strategyOf(options, ttl, undefined, 'set');
-    if (this.emptyKey(target, ref.key)) {
+    if (this.invalidKey(target, ref.namespace, ref.key)) {
       this.tracing.set('cache.written', false);
       return;
     }
@@ -359,7 +359,7 @@ export class CacheEngine {
     checkDuration('nullTtl', options.nullTtl);
     checkBoolean('cacheNull', options.cacheNull);
     const strategy = strategyOf(options, options.ttl ?? this.options.defaults.ttl, preset);
-    if (this.emptyKey(target, ref.key)) {
+    if (this.invalidKey(target, ref.namespace, ref.key)) {
       this.tracing.set('cache.written', false);
       return;
     }
@@ -502,9 +502,15 @@ export class CacheEngine {
   ): Promise<void> {
     const target = this.io.resolve(scope.store);
     this.checkNamespace(scope.namespace);
-    const valid = keys.filter((key) => !isEmptyKey(key));
+    let invalid: TypeError | undefined;
+    const valid = keys.filter((key) => {
+      const error = keyErrorOf(scope.namespace, key);
+      if (error === undefined) return true;
+      invalid ??= error;
+      return false;
+    });
     this.tracing.set('cache.keys', valid.length);
-    if (valid.length < keys.length) this.io.reportError(target.name, 'key', emptyKeyError());
+    if (invalid !== undefined) this.io.reportError(target.name, 'key', invalid);
     await this.io.delete(scope, valid, true);
   }
 
@@ -568,10 +574,11 @@ export class CacheEngine {
     return this.tracing.child('cache.load', loader);
   }
 
-  /** Reports an empty key as a key error; the caller then skips the cache. */
-  private emptyKey(target: Target, key: string): boolean {
-    if (!isEmptyKey(key)) return false;
-    this.io.reportError(target.name, 'key', emptyKeyError());
+  /** Reports an empty or reserved key as a key error; the caller then skips the cache. */
+  private invalidKey(target: Target, namespace: string | undefined, key: string): boolean {
+    const error = keyErrorOf(namespace, key);
+    if (error === undefined) return false;
+    this.io.reportError(target.name, 'key', error);
     return true;
   }
 }

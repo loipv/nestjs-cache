@@ -11,7 +11,7 @@ import type { BatchItem, EngineIO } from './engine-io.js';
 import type { Target } from './engine-keys.js';
 import type { BatchTagOption } from './engine-tags.js';
 import type { BatchPlan, EngineLoad, LoadItem } from './engine-load.js';
-import { emptyKeyError, isEmptyKey } from './key-builder.js';
+import { keyErrorOf } from './key-builder.js';
 import type { ExpiryStrategy } from './strategies/expiry-strategy.js';
 
 /** The store and namespace a batch call works in. */
@@ -41,7 +41,11 @@ export class EngineBatch {
     keys: readonly string[],
     strategy: ExpiryStrategy,
   ): Promise<(T | undefined)[]> {
-    const items = await this.batchItems(target, scope, this.uniqueKeys(target, keys));
+    const items = await this.batchItems(
+      target,
+      scope,
+      this.uniqueKeys(target, scope.namespace, keys),
+    );
     if (items === undefined) return keys.map(() => undefined);
     const read = await this.io.readMany(
       target,
@@ -79,7 +83,11 @@ export class EngineBatch {
   ): Promise<void> {
     const values = new Map<string, T>();
     for (const [key, value] of entries) values.set(key, value);
-    const items = await this.batchItems(target, scope, this.uniqueKeys(target, [...values.keys()]));
+    const items = await this.batchItems(
+      target,
+      scope,
+      this.uniqueKeys(target, scope.namespace, [...values.keys()]),
+    );
     if (items === undefined) return;
     const writes = items.map((item) => {
       const value = values.get(item.ref.key) as T;
@@ -100,7 +108,7 @@ export class EngineBatch {
     strategy: ExpiryStrategy,
     ttl: number,
   ): Promise<(T | undefined)[]> {
-    const unique = this.uniqueKeys(target, keys);
+    const unique = this.uniqueKeys(target, scope.namespace, keys);
     const plan: BatchPlan<T> = { target, namespace: scope.namespace, loader, options, strategy };
     const items = await this.batchItems(target, scope, unique);
     const values = new Map<string, unknown>();
@@ -147,15 +155,20 @@ export class EngineBatch {
     return keys.map((key) => values.get(key) as T | undefined);
   }
 
-  /** `keys` deduped, first occurrence first, without empty keys (reported once as a key error). */
-  private uniqueKeys(target: Target, keys: readonly string[]): string[] {
+  /** `keys` deduped, first occurrence first, without invalid keys (one key error per call). */
+  private uniqueKeys(
+    target: Target,
+    namespace: string | undefined,
+    keys: readonly string[],
+  ): string[] {
     const unique = new Set<string>();
-    let empty = false;
+    let invalid: TypeError | undefined;
     for (const key of keys) {
-      if (isEmptyKey(key)) empty = true;
-      else unique.add(key);
+      const error = keyErrorOf(namespace, key);
+      if (error === undefined) unique.add(key);
+      else invalid ??= error;
     }
-    if (empty) this.io.reportError(target.name, 'key', emptyKeyError());
+    if (invalid !== undefined) this.io.reportError(target.name, 'key', invalid);
     return [...unique];
   }
 

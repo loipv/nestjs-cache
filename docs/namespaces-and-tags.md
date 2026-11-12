@@ -53,6 +53,10 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - Names must match exactly. A sub-namespace such as `users:admin` is not versioned by `users: { versioned: true }`;
   list it on its own.
 - Namespaces starting with `__` are reserved and rejected (see [Error behaviour](resilience.md#error-behaviour)).
+- A key starting with `__` is rejected when no namespace is given, because that space holds the library's own
+  `__version__`, `__tag__` and `__lock__` keys. It is a key error like an empty key (see
+  [Error behaviour](resilience.md#error-behaviour)). Inside a namespace (`{ namespace: 'users', key: '__x' }`) such a
+  key is fine, and so is `__` anywhere past the first two characters (`a__b`).
 - If the token cannot be read or written, an `error` event with `operation: 'version'` is emitted. On a plain store
   (not tiered) a `get` is then a miss without a `miss` event, `getOrSet` runs the loader without writing the result,
   and `set` and `delete` do nothing.

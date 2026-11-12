@@ -4,6 +4,7 @@ import {
   compileTemplate,
   defaultKey,
   fullKey,
+  isReservedKey,
   isReservedNamespace,
   lockKey,
   namespacePrefix,
@@ -184,5 +185,15 @@ describe('compileTemplate escape flag', () => {
   /* A path segment resolved to a string is escaped like a top-level string. */
   it('escapes strings resolved through a path', () => {
     expect(compileTemplate('{0.id}')([{ id: 'a:b' }], true)).toBe('a%3Ab');
+  });
+});
+
+describe('isReservedKey', () => {
+  it('reserves keys starting with two underscores only without a namespace', () => {
+    expect(isReservedKey(undefined, '__version__:users')).toBe(true);
+    expect(isReservedKey(undefined, '__')).toBe(true);
+    expect(isReservedKey(undefined, '_x')).toBe(false);
+    expect(isReservedKey(undefined, 'a__b')).toBe(false);
+    expect(isReservedKey('users', '__x')).toBe(false);
   });
 });
