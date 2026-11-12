@@ -73,9 +73,8 @@ export interface CacheTracingOptions {
 }
 
 /** Options of `CacheTracingModule.forRootAsync`: `useFactory` resolves the module options. */
-export interface CacheTracingAsyncOptions extends Pick<ModuleMetadata, 'imports'> {
-  /** Providers passed to `useFactory`, in order. */
+export interface CacheTracingAsyncOptions {
+  imports?: ModuleMetadata['imports'];
   inject?: FactoryProvider['inject'];
-  /** Returns the module options, or a promise of them. */
-  useFactory(...args: never[]): CacheTracingOptions | Promise<CacheTracingOptions>;
+  useFactory: (...args: never[]) => CacheTracingOptions | Promise<CacheTracingOptions>;
 }
