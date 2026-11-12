@@ -11,6 +11,9 @@ type PubSubListener = (message: string, channel: string) => void;
  * Structural subset of a node-redis v5 or v6 client (`createClient()` from `redis`). Declared
  * by hand so the library never imports `redis`. The client must be connected before it is
  * passed to `nodeRedisAdapter`; the library never connects it.
+ *
+ * Structural subset of redis ≥ 5. Implemented by you. In 1.x, members are only added as optional,
+ * and the library checks that they exist before calling them.
  */
 export interface NodeRedisLike {
   get(key: string): Promise<string | null>;
@@ -44,6 +47,9 @@ export interface NodeRedisLike {
  * Structural subset of a node-redis v5 or v6 cluster (`createCluster()` from `redis`). Declared
  * by hand so the library never imports `redis`. `nodeRedisAdapter` runs in cluster mode when the
  * client has `masters`. Like a single client, it must be connected before it is passed in.
+ *
+ * Structural subset of redis ≥ 5. Implemented by you. In 1.x, members are only added as optional,
+ * and the library checks that they exist before calling them.
  */
 export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'duplicate'> {
   /** The master nodes, passed back to `nodeClient`; `scanIterator` scans each of them. */
@@ -64,6 +70,9 @@ export interface NodeRedisClusterLike extends Omit<NodeRedisLike, 'scan' | 'dupl
  * itself, whose pub/sub connection follows the master, and closing the subscriber only
  * unsubscribes its own channels; the sentinel is never closed. Like a single client, it must be
  * connected before it is passed in.
+ *
+ * Structural subset of redis ≥ 5. Implemented by you. In 1.x, members are only added as optional,
+ * and the library checks that they exist before calling them.
  */
 export interface NodeRedisSentinelLike extends Omit<NodeRedisLike, 'duplicate'> {
   /** Marks a Sentinel client; never called. */

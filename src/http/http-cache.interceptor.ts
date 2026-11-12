@@ -39,7 +39,12 @@ const loading = new WeakSet<object>();
  */
 const passing = new WeakSet<object>();
 
-/** Caches GET/HEAD response bodies of routes marked with `@HttpCache`; other requests pass through. */
+/**
+ * Caches GET/HEAD response bodies of routes marked with `@HttpCache`; other requests pass through.
+ *
+ * Created by Nest; inject it, do not construct it. Constructor parameters are not part of the
+ * public API.
+ */
 @Injectable()
 export class HttpCacheInterceptor implements NestInterceptor {
   constructor(

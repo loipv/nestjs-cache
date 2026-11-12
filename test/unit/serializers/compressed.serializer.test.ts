@@ -173,9 +173,9 @@ describe('compressedSerializer', () => {
   });
 
   it('marks only a wrapper of jsonSerializer with a non-enumerable OWN_ENVELOPE check', () => {
-    /* Spec 4: the check says true for an envelope of another version (plain or compressed),
-       false for a foreign value, and undefined when it cannot decompress; a custom inner and a
-       spread copy carry no marker. */
+    /* Spec 4: the check says true for an envelope that is ours and deletable (plain or compressed;
+       a newer `v` is kept), false for a foreign value, and undefined when it cannot decompress; a
+       custom inner and a spread copy carry no marker. */
     const marked = compressedSerializer({ maxDecompressedBytes: 256 }) as unknown as Record<
       typeof OWN_ENVELOPE,
       (raw: string) => boolean | undefined

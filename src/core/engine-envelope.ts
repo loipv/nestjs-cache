@@ -195,13 +195,14 @@ export async function deleteInvalid(
 }
 
 /**
- * Whether an unreadable entry was written by this library: a corrupted envelope or one of
- * another version, i.e. an object with an own `v`. `decoded` is what the serializer returned,
- * or `undefined` when it threw. The built-in JSON serializer validates the envelope itself, so
- * for it the raw JSON is inspected; `compressedSerializer` over it carries an `OWN_ENVELOPE`
- * check that does the same behind the compression prefix (`undefined`, so no delete, when it
- * cannot decompress). A throwing custom serializer never leads to a delete. Never throws: a
- * value that cannot even be inspected (a revoked Proxy) is not ours.
+ * Whether an unreadable entry was written by this library and may be deleted: a corrupted
+ * envelope or one of an older version, i.e. an object with an own `v` (a newer `v` is kept).
+ * `decoded` is what the serializer returned, or `undefined` when it threw. The built-in JSON
+ * serializer validates the envelope itself, so for it the raw JSON is inspected;
+ * `compressedSerializer` over it carries an `OWN_ENVELOPE` check that does the same behind the
+ * compression prefix (`undefined`, so no delete, when it cannot decompress). A throwing custom
+ * serializer never leads to a delete. Never throws: a value that cannot even be inspected (a
+ * revoked Proxy) is not ours.
  */
 function ownEnvelope(
   ctx: EnvelopeContext,

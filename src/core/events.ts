@@ -4,7 +4,12 @@ export type BreakerState = 'closed' | 'open' | 'half-open';
 /** How much the library logs: nothing, errors and warnings (the default), or also one debug line per event. */
 export type CacheLogLevel = 'off' | 'error' | 'debug';
 
-/** The operation an `error` event reports as failed. */
+/**
+ * The operation an `error` event reports as failed.
+ *
+ * Provided by the library. New members, events, fields or values may be added in a minor release;
+ * handle unknown ones.
+ */
 export type CacheOperation =
   | 'get'
   | 'set'
@@ -36,6 +41,9 @@ export type ReportError = (
 /**
  * The payload of each `CacheEvents` event. `store` is the store name; `key` and `keys` are the
  * user keys, without the prefix, namespace or version token.
+ *
+ * Provided by the library. New members, events, fields or values may be added in a minor release;
+ * handle unknown ones.
  */
 export interface CacheEventMap {
   /** A read found the entry; `stale` is an `swr` entry past its `ttl`. */
@@ -84,6 +92,9 @@ export interface CacheEventMap {
 /**
  * What a store gets from `CacheStore.bind`: it reports its own failures (`error`) and breaker
  * state changes (`breaker`) through it; the module adds the store name.
+ *
+ * Provided by the library. New members, events, fields or values may be added in a minor release;
+ * handle unknown ones.
  */
 export interface CacheEventSink {
   emit(event: 'error', payload: { operation: CacheOperation; error: unknown }): void;
@@ -105,6 +116,9 @@ type Listener<E extends keyof CacheEventMap> = (payload: CacheEventMap[E]) => vo
 /**
  * The cache event bus, provided by `CacheModule`: inject it and subscribe with `on`. Only the
  * library emits events.
+ *
+ * Created by Nest; inject it, do not construct it. Constructor parameters are not part of the
+ * public API.
  */
 export class CacheEvents {
   private readonly listeners = new Map<keyof CacheEventMap, Set<{ fn: unknown }>>();

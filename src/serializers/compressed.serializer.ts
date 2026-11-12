@@ -21,7 +21,8 @@ export interface CompressedSerializerOptions {
 /**
  * Internal (not exported from the package): the key of the check `compressedSerializer` adds
  * over `jsonSerializer`, which tells the engine whether an unreadable raw string is one of the
- * library's own envelopes (spec 4). The check returns `undefined` when it cannot tell.
+ * library's own envelopes, ours and deletable (a newer `v` is kept) (spec 4). The check returns
+ * `undefined` when it cannot tell.
  */
 export const OWN_ENVELOPE: unique symbol = Symbol('nestjs-cache.ownEnvelope');
 

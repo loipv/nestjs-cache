@@ -8,6 +8,11 @@ export const RELEASE_SCRIPT =
 /**
  * Minimal Redis surface the cache needs; implemented over ioredis by `ioredisAdapter` and over
  * node-redis by `nodeRedisAdapter`.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
+ * `redisStore` tells an adapter from an ioredis client by checking that `createSubscriber` is a
+ * function.
  */
 export interface RedisClientAdapter {
   get(key: string): Promise<string | undefined>;
@@ -48,7 +53,12 @@ export interface RedisClientAdapter {
   createSubscriber(): RedisSubscriberAdapter;
 }
 
-/** The subscriber connection of a `RedisClientAdapter`, used by the invalidation bus. */
+/**
+ * The subscriber connection of a `RedisClientAdapter`, used by the invalidation bus.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
+ */
 export interface RedisSubscriberAdapter {
   /**
    * Subscribes to `channel`. If it rejects (for example Redis was unreachable), the adapter

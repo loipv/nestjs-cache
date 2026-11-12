@@ -6,6 +6,10 @@ import type { CacheEventSink } from '../core/events.js';
  *
  * `origin` identifies the publishing instance, so receivers can ignore their
  * own messages. A message carries either exact `keys` or a `prefix`.
+ *
+ * Provided by the library. New members, events, fields or values may be added in a minor release;
+ * handle unknown ones.
+ * A bus passes messages through as opaque JSON.
  */
 export type InvalidationMessage =
   { origin: string; keys: readonly string[] } | { origin: string; prefix: string };
@@ -14,6 +18,9 @@ export type InvalidationMessage =
  * Cross-instance channel that keeps local caches in sync (for example Redis
  * Pub/Sub, NATS or Kafka). It only affects the freshness of L1 entries; the
  * data in the shared store is always correct.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
  */
 export interface InvalidationBus {
   /** Broadcasts a message to every subscribed instance. */
@@ -42,6 +49,9 @@ export interface InvalidationBus {
 
 /**
  * Distributed mutual exclusion, used by the cache engine to avoid stampedes across instances.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
  */
 export interface LockProvider {
   /**
@@ -51,7 +61,12 @@ export interface LockProvider {
   acquire(key: string, ttlMs: number): Promise<LockHandle | undefined>;
 }
 
-/** Proof of ownership of an acquired lock. */
+/**
+ * Proof of ownership of an acquired lock.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
+ */
 export interface LockHandle {
   /**
    * Releases the lock only if it is still ours (it may have expired and been taken by another
@@ -62,6 +77,9 @@ export interface LockHandle {
 
 /**
  * Contract for a cache backend. Values are opaque serialized strings.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
  */
 export interface CacheStore {
   /** Returns the stored string, or `undefined` for a miss or an expired entry. */

@@ -5,6 +5,9 @@ import { isEnvelope, type CacheEnvelope } from '../core/envelope.js';
  * (`CacheModuleOptions.serializer`).
  * `deserialize` must throw on input it does not recognise: the engine reports that as an `error`
  * event with operation `'deserialize'` and treats the entry as a miss.
+ *
+ * `deserialize(serialize(e))` must keep every field of `e`, including fields this version does
+ * not know.
  */
 export interface Serializer {
   serialize(envelope: CacheEnvelope): string;
