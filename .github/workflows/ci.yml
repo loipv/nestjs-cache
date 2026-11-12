@@ -34,18 +34,24 @@ jobs:
       - run: npm run build
       - run: npm run typecheck:min
       - run: npm run check:pack
+      - run: npm run test:consumers
       - run: npm run check:pkg
       - run: npm run check:workflows
       - run: npm run example:check
 
+  # Each Node line and each Nest major runs once: oldest Node with the oldest Nest, the current
+  # line with coverage, the newest with the newest. `npm ci` dominates a job, so the matrix stays
+  # small and the packed-tarball check (`test:consumers`) rides along instead of its own jobs.
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24, 26]
-        nest: [11, 12]
+        include:
+          - { node: 22, nest: 11, consumers: true }
+          - { node: 24, nest: 12, coverage: true }
+          - { node: 26, nest: 12 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -53,14 +59,21 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
+      # Installs the packed tarball into a Nest 11 CommonJS app and a Nest 12 ESM app on the oldest
+      # supported Node line (the static job covers the current one). Before the Nest 11 install,
+      # so the build sees the locked dependencies.
+      - if: matrix.consumers
+        run: npm run test:consumers
       - name: Install Nest 11
         if: matrix.nest == 11
         run: npm install --no-save --ignore-scripts @nestjs/common@11 @nestjs/core@11 @nestjs/testing@11 @nestjs/platform-express@11 @nestjs/platform-fastify@11
-      - if: ${{ !(matrix.node == 24 && matrix.nest == 12) }}
+      - if: ${{ !matrix.coverage }}
         run: npm test
-      - if: ${{ matrix.node == 24 && matrix.nest == 12 }}
+      - if: matrix.coverage
         run: npm run test:cov
 
+  # One cell per client major line. The current one runs all six adapters; the older lines run
+  # the adapters their package provides.
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -68,10 +81,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - ioredis: 6
+            adapters: 'ioredis,ioredis-cluster,ioredis-sentinel,node-redis,node-redis-cluster,node-redis-sentinel'
           - { ioredis: 5, adapters: 'ioredis,ioredis-cluster' }
-          - { ioredis: 6, adapters: 'ioredis,ioredis-cluster' }
-          - { ioredis: 6, adapters: 'node-redis,node-redis-cluster' }
-          - { ioredis: 6, adapters: 'ioredis-sentinel,node-redis-sentinel' }
           - { ioredis: 6, adapters: 'node-redis,node-redis-cluster,node-redis-sentinel', redis: 5 }
     env:
       CACHE_IT_ADAPTERS: ${{ matrix.adapters }}
@@ -91,31 +103,13 @@ jobs:
         run: npm install --no-save --ignore-scripts redis@5
       - run: npm run test:integration
 
-  # Installs the packed tarball into a Nest 11 CommonJS app and a Nest 12 ESM app, on the oldest
-  # and the current supported Node line.
-  consumers:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm run test:consumers
-
   # The single required status check for branch protection: fails unless every job above
   # succeeded. GitHub counts a skipped required check as passing, so this job must never be
   # skipped: `always()` makes it run (and fail) whenever a need failed, was skipped, timed out or
   # was cancelled. `npm run check:workflows` guards the `if` and the `needs` list.
   ci-ok:
     if: always()
-    needs: [static, unit, integration, consumers]
+    needs: [static, unit, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
