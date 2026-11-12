@@ -68,7 +68,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "test": "vitest run --project unit",
+    "test": "vitest run --project unit --project unit-traced",
     "test:cov": "vitest run --project unit --coverage",
     "test:integration": "vitest run --project integration",
     "test:consumers": "node scripts/test-consumers.mjs",

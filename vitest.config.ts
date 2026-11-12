@@ -17,6 +17,15 @@ export default defineConfig({
       },
       {
         test: {
+          // The engine tests again, with a FakeTracer registered (test/unit/helpers/engine.ts):
+          // tracing must not change behaviour or tick order.
+          name: 'unit-traced',
+          include: ['test/unit/core/cache-engine*.test.ts'],
+          env: { CACHE_TEST_TRACING: '1' },
+        },
+      },
+      {
+        test: {
           name: 'integration',
           include: ['test/integration/**/*.test.ts'],
           testTimeout: 60_000,

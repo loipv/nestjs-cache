@@ -12,6 +12,9 @@ export type Reread<T> = () => Promise<{ found: true; value: T } | { found: false
 
 /** Must not throw. */
 export interface LockHooks {
+  /** Called right before `acquire` (the `cache.lock` span starts here). */
+  onAcquireStart?(): void;
+  /** Called once: the lock was acquired, or the wait for it ended. */
   onLock(acquired: boolean, waitedMs: number): void;
   onError(error: unknown): void;
 }
@@ -53,6 +56,7 @@ export async function loadWithLock<T>(
 ): Promise<{ value: T; from: 'cache' | 'load' }> {
   const started = Date.now();
   let handle: LockHandle | undefined;
+  hooks.onAcquireStart?.();
   try {
     handle = await lock.acquire(key, settings.ttl);
   } catch (error) {
@@ -93,6 +97,7 @@ export async function refreshWithLock(
 ): Promise<void> {
   const started = Date.now();
   let handle: LockHandle | undefined;
+  hooks.onAcquireStart?.();
   try {
     handle = await lock.acquire(key, ttl);
   } catch (error) {

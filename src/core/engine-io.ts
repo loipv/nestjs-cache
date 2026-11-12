@@ -1,5 +1,6 @@
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
+import type { CacheTracing } from '../observability/cache-tracing.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type { CacheEventMap, CacheEvents, CacheOperation, ReportError } from './events.js';
 import {
@@ -60,6 +61,7 @@ export class EngineIO {
     private readonly events: CacheEvents,
     private readonly versions: NamespaceVersions,
     tokens: VersionTokens,
+    private readonly tracing: CacheTracing,
   ) {
     const reportError: ReportError = (store, operation, error) => {
       this.reportError(store, operation, error);
@@ -105,6 +107,8 @@ export class EngineIO {
     // An open circuit means the store is temporarily absent, not broken: no `error` event.
     if (error instanceof CircuitOpenError) return;
     this.events.emit('error', { store: store ?? 'default', operation, error });
+    // Swallowed: recorded on the current cache span, if any, with the status left unset.
+    this.tracing.error(operation, error);
   }
 
   /**
@@ -374,9 +378,11 @@ export class EngineIO {
     return done;
   }
 
+  /** `recordKeys` sets the full keys deleted as `cache.key` (the `delete` call's own span). */
   async delete(
     scope: { store?: string | undefined; namespace?: string | undefined },
     keys: readonly string[],
+    recordKeys = false,
   ): Promise<void> {
     const target = this.resolve(scope.store);
     if (keys.length === 0) return;
@@ -391,6 +397,7 @@ export class EngineIO {
     const fullKeys = namespaces.flatMap((ns) =>
       keys.map((key) => fullKey(this.options.prefix, ns, key)),
     );
+    if (recordKeys) this.tracing.key(fullKeys);
     try {
       await store.delete(fullKeys);
     } catch (error) {
@@ -447,10 +454,12 @@ export class EngineIO {
 
   hit(store: string, ref: KeyRef, stale: boolean): void {
     this.events.emit('hit', { store, namespace: ref.namespace, key: ref.key, stale });
+    this.tracing.hit(stale);
   }
 
   miss(store: string, ref: KeyRef): void {
     this.events.emit('miss', { store, namespace: ref.namespace, key: ref.key });
+    this.tracing.miss();
   }
 
   ttlFor(strategy: ExpiryStrategy, ttl: number): number {

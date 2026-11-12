@@ -1,4 +1,5 @@
 import type { ResolvedDefaults } from '../module/cache.options.js';
+import type { CacheTracing } from '../observability/cache-tracing.js';
 import type { LockProvider } from '../stores/cache-store.interface.js';
 import {
   isEmpty,
@@ -82,6 +83,8 @@ interface LoadedMany<T> {
   written: ReadonlySet<string>;
 }
 
+const NOOP = (): void => undefined;
+
 /** Node runs a longer `setTimeout` delay after 1 ms; the soft wait is capped at this instead. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -130,6 +133,7 @@ export class EngineLoad {
   constructor(
     private readonly io: EngineIO,
     defaults: Pick<ResolvedDefaults, 'lock'>,
+    private readonly tracing: CacheTracing,
   ) {
     const { ttl, waitTimeout, retryDelay } = defaults.lock;
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
@@ -143,6 +147,9 @@ export class EngineLoad {
    */
   async onMiss<T>(plan: LoadPlan<T>): Promise<T> {
     const flightKey = this.flightKey(plan.target, plan.key);
+    if (this.tracing.enabled && this.singleFlight.has(flightKey)) {
+      this.tracing.set('cache.load.joined', true);
+    }
     const joined = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
     if (joined.loaded) return joined.value;
     // The flight was a refresh that skipped its load: another instance holds the lock.
@@ -162,7 +169,14 @@ export class EngineLoad {
     const flightKey = this.flightKey(plan.target, plan.key);
     const current = this.singleFlight.current(flightKey);
     if (current !== undefined) return refreshed(current);
-    return refreshed(this.singleFlight.run<Outcome<T>>(flightKey, () => this.refreshTask(plan)));
+    // Traced, the refresh is a root `cache.refresh` span linked to the call that started it.
+    const task = this.tracing.enabled
+      ? () =>
+          this.tracing.root({ store: plan.target.name, namespace: plan.ref.namespace }, () =>
+            this.refreshTask(plan),
+          )
+      : () => this.refreshTask(plan);
+    return refreshed(this.singleFlight.run<Outcome<T>>(flightKey, task));
   }
 
   /**
@@ -369,12 +383,24 @@ export class EngineLoad {
     return outcome;
   }
 
+  /**
+   * Traced, `cache.lock` runs from `onAcquireStart` to the first `onLock` or acquire error; its
+   * `end` is idempotent, so a later release error lands on the current cache span instead.
+   */
   private hooks({ target, ref }: Located): LockHooks {
+    let lockSpan: { end(acquired: boolean | undefined): void } | undefined;
     return {
+      onAcquireStart: this.tracing.enabled
+        ? () => {
+            lockSpan = this.tracing.lockSpan();
+          }
+        : NOOP,
       onLock: (acquired, waitedMs) => {
+        lockSpan?.end(acquired);
         this.io.emitLock(target.name, ref, waitedMs, acquired);
       },
       onError: (error) => {
+        lockSpan?.end(undefined);
         this.io.reportError(target.name, 'lock', error);
       },
     };
@@ -396,7 +422,7 @@ export class EngineLoad {
     const started = Date.now();
     let value: T;
     try {
-      value = await loader();
+      value = await this.tracing.child('cache.load', loader);
     } catch (error) {
       this.io.emitLoad(target.name, ref, started, false);
       if (refreshing) this.io.reportError(target.name, 'refresh', error);

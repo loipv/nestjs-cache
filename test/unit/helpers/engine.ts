@@ -1,7 +1,10 @@
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
 import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
+import { CacheTracing } from '../../../src/observability/cache-tracing.js';
+import type { TracerLike } from '../../../src/observability/tracing.types.js';
 import { FakeStore } from './fake-store.js';
+import { FakeTracer } from './fake-tracer.js';
 
 const EVENT_FLAGS: Record<keyof CacheEventMap, true> = {
   hit: true,
@@ -16,20 +19,39 @@ const EVENT_FLAGS: Record<keyof CacheEventMap, true> = {
 };
 export const EVENT_NAMES = Object.keys(EVENT_FLAGS) as (keyof CacheEventMap)[];
 
-export function makeEngine(options: CacheModuleOptions = {}): {
+/** Test-only engine options: a tracer to register, and whether it records keys. */
+export interface TracingTestOptions {
+  tracer?: TracerLike;
+  recordKeys?: boolean;
+}
+
+/**
+ * An engine over a `FakeStore`. With `tracer`, the engine traces into it. With
+ * `CACHE_TEST_TRACING=1` (the `unit-traced` project) and no `tracer`, a fresh `FakeTracer` that
+ * records keys is installed, so the existing tests also run with tracing on.
+ */
+export function makeEngine(options: CacheModuleOptions & TracingTestOptions = {}): {
   engine: CacheEngine;
   events: CacheEvents;
   store: FakeStore;
   emitted: { event: keyof CacheEventMap; payload: unknown }[];
+  tracing: CacheTracing;
 } {
-  const supplied = options.stores?.default;
+  const { tracer, recordKeys, ...cacheOptions } = options;
+  const supplied = cacheOptions.stores?.default;
   const store = supplied instanceof FakeStore ? supplied : new FakeStore();
-  const stores = { ...options.stores, default: store };
+  const stores = { ...cacheOptions.stores, default: store };
   const events = new CacheEvents();
-  const engine = new CacheEngine(resolveOptions({ ...options, stores }), events);
+  const tracing = new CacheTracing();
+  if (tracer !== undefined) {
+    tracing.use({ tracer, recordKeys: recordKeys ?? false });
+  } else if (process.env.CACHE_TEST_TRACING === '1') {
+    tracing.use({ tracer: new FakeTracer(), recordKeys: recordKeys ?? true });
+  }
+  const engine = new CacheEngine(resolveOptions({ ...cacheOptions, stores }), events, tracing);
   const emitted: { event: keyof CacheEventMap; payload: unknown }[] = [];
   for (const event of EVENT_NAMES) {
     events.on(event, (payload) => emitted.push({ event, payload }));
   }
-  return { engine, events, store, emitted };
+  return { engine, events, store, emitted, tracing };
 }

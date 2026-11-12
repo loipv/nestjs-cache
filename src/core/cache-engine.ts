@@ -1,6 +1,7 @@
 import type { LoadStrategyOptions } from '../decorators/options.js';
 import { CacheConfigError } from '../errors.js';
 import type { ResolvedCacheOptions } from '../module/cache.options.js';
+import { CacheTracing } from '../observability/cache-tracing.js';
 import {
   EMPTY_STRATEGY,
   EngineIO,
@@ -140,9 +141,14 @@ export class CacheEngine {
   /** Internal: the version tokens of namespaces and tags, one set per engine. */
   readonly tokens: VersionTokens;
 
+  /**
+   * @param tracing Internal: the module's tracing; until a tracer is registered with it, every
+   * call runs untraced, as before 0.10.
+   */
   constructor(
     private readonly options: ResolvedCacheOptions,
     events: CacheEvents,
+    private readonly tracing: CacheTracing = new CacheTracing(),
   ) {
     this.logLevel = options.logging.level;
     this.escapeKeyArgs = options.escapeKeyArgs;
@@ -155,8 +161,8 @@ export class CacheEngine {
       options.versionCacheTtl,
       tokens,
     );
-    this.io = new EngineIO(options, events, versions, tokens);
-    this.load = new EngineLoad(this.io, options.defaults);
+    this.io = new EngineIO(options, events, versions, tokens, tracing);
+    this.load = new EngineLoad(this.io, options.defaults, tracing);
     this.batch = new EngineBatch(options, this.io, this.load);
   }
 
@@ -174,15 +180,31 @@ export class CacheEngine {
   }
 
   /** Never refreshes; `options` selects the read command and the classification only. */
-  async get<T>(ref: KeyRef, options: LoadStrategyOptions = {}): Promise<T | undefined> {
+  get<T>(ref: KeyRef, options?: LoadStrategyOptions): Promise<T | undefined> {
+    if (!this.tracing.enabled) return this.getImpl(ref, options);
+    return this.tracing.span(
+      'cache.get',
+      { store: ref.store ?? 'default', namespace: ref.namespace },
+      () => this.getImpl<T>(ref, options),
+    );
+  }
+
+  private async getImpl<T>(ref: KeyRef, options: LoadStrategyOptions = {}): Promise<T | undefined> {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
     const strategy = strategyOf(options, undefined, undefined, 'get');
-    if (this.emptyKey(target, ref.key)) return undefined;
+    if (this.emptyKey(target, ref.key)) {
+      this.tracing.result('bypass');
+      return undefined;
+    }
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
     // A version failure is already reported; like a key error, it is no miss.
-    if (key === undefined) return undefined;
+    if (key === undefined) {
+      this.tracing.result('bypass');
+      return undefined;
+    }
+    this.tracing.key(key.full);
     const result = await this.io.read(target, key, strategy, this.options.defaults.ttl);
     if (!result.found) {
       this.io.miss(target.name, ref);
@@ -196,7 +218,21 @@ export class CacheEngine {
    * @param preset Internal: the strategy built from `options` at decoration time, so a
    * decorated call does not rebuild it. It must come from `createStrategy(options)`.
    */
-  async getOrSet<T>(
+  getOrSet<T>(
+    ref: KeyRef,
+    loader: () => Promise<T>,
+    options?: LoadOptions<T>,
+    preset?: ExpiryStrategy,
+  ): Promise<T> {
+    if (!this.tracing.enabled) return this.getOrSetImpl(ref, loader, options, preset);
+    return this.tracing.span(
+      'cache.getOrSet',
+      { store: ref.store ?? 'default', namespace: ref.namespace },
+      () => this.getOrSetImpl(ref, loader, options, preset),
+    );
+  }
+
+  private async getOrSetImpl<T>(
     ref: KeyRef,
     loader: () => Promise<T>,
     options: LoadOptions<T> = {},
@@ -210,12 +246,13 @@ export class CacheEngine {
     checkBoolean('lock', options.lock);
     const ttl = options.ttl ?? this.options.defaults.ttl;
     const strategy = strategyOf(options, ttl, preset);
-    if (this.emptyKey(target, ref.key)) return loader();
+    if (this.emptyKey(target, ref.key)) return this.bypass(loader);
     // Awaited only for a versioned namespace: the swr refresh below must register its flight
     // without an added tick, as in 0.3.
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
-    if (key === undefined) return loader();
+    if (key === undefined) return this.bypass(loader);
+    this.tracing.key(key.full);
     const cached = await this.io.read(target, key, strategy, ttl);
     // An entry whose tags could not be checked is loaded without a write (spec 3.2 step 4), and
     // without the lock: nothing would be written for other instances to wait for.
@@ -240,7 +277,16 @@ export class CacheEngine {
   }
 
   /** With `tags`, the entry is stamped with their tokens; an invalid list skips the write. */
-  async set<T>(ref: KeyRef, value: T, options: SetOptions<T> = {}): Promise<void> {
+  set<T>(ref: KeyRef, value: T, options?: SetOptions<T>): Promise<void> {
+    if (!this.tracing.enabled) return this.setImpl(ref, value, options);
+    return this.tracing.span(
+      'cache.set',
+      { store: ref.store ?? 'default', namespace: ref.namespace },
+      () => this.setImpl(ref, value, options),
+    );
+  }
+
+  private async setImpl<T>(ref: KeyRef, value: T, options: SetOptions<T> = {}): Promise<void> {
     const target = this.io.resolve(ref.store);
     this.checkNamespace(ref.namespace);
     checkDuration('ttl', options.ttl);
@@ -250,13 +296,26 @@ export class CacheEngine {
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
     if (key === undefined) return;
+    this.tracing.key(key.full);
     // `set` has no cacheNull/nullTtl: an empty value keeps the 0.1 ttl, but always as `fixed`.
     const strategy = isEmpty(value) ? EMPTY_STRATEGY : requested;
     const { tags } = options;
     const stamping =
       tags === undefined ? undefined : await this.io.tags.stampFor(target, tags, value);
-    if (stamping === 'skip') return;
-    await this.io.write(target, ref, key, value, strategy, this.io.ttlFor(strategy, ttl), stamping);
+    if (stamping === 'skip') {
+      this.tracing.set('cache.written', false);
+      return;
+    }
+    const written = await this.io.write(
+      target,
+      ref,
+      key,
+      value,
+      strategy,
+      this.io.ttlFor(strategy, ttl),
+      stamping,
+    );
+    this.tracing.set('cache.written', written);
   }
 
   /**
@@ -264,7 +323,22 @@ export class CacheEngine {
    * @param taken Internal: the stamp `takeTags` gave before the value was produced (T4-B); the
    * write uses exactly those tokens and `options.tags` is not stamped again.
    */
-  async put<T>(
+  put<T>(
+    ref: KeyRef,
+    value: T,
+    options?: PutOptions<T>,
+    preset?: ExpiryStrategy,
+    taken?: Stamping,
+  ): Promise<void> {
+    if (!this.tracing.enabled) return this.putImpl(ref, value, options, preset, taken);
+    return this.tracing.span(
+      'cache.put',
+      { store: ref.store ?? 'default', namespace: ref.namespace },
+      () => this.putImpl(ref, value, options, preset, taken),
+    );
+  }
+
+  private async putImpl<T>(
     ref: KeyRef,
     value: T,
     options: PutOptions<T> = {},
@@ -281,7 +355,9 @@ export class CacheEngine {
     const pending = this.io.resolveKey(target, ref);
     const key = pending instanceof Promise ? await pending : pending;
     if (key === undefined) return;
-    await this.io.store(target, ref, key, value, options, strategy, true, taken);
+    this.tracing.key(key.full);
+    const written = await this.io.store(target, ref, key, value, options, strategy, true, taken);
+    this.tracing.set('cache.written', written);
   }
 
   /**
@@ -356,18 +432,37 @@ export class CacheEngine {
   }
 
   /** Empty keys are dropped and reported once as a key error; every other key is deleted. */
-  async delete(
+  delete(scope: { store?: string; namespace?: string }, keys: readonly string[]): Promise<void> {
+    if (!this.tracing.enabled) return this.deleteImpl(scope, keys);
+    return this.tracing.span(
+      'cache.delete',
+      { store: scope.store ?? 'default', namespace: scope.namespace },
+      () => this.deleteImpl(scope, keys),
+    );
+  }
+
+  private async deleteImpl(
     scope: { store?: string; namespace?: string },
     keys: readonly string[],
   ): Promise<void> {
     const target = this.io.resolve(scope.store);
     this.checkNamespace(scope.namespace);
     const valid = keys.filter((key) => !isEmptyKey(key));
+    this.tracing.set('cache.keys', valid.length);
     if (valid.length < keys.length) this.io.reportError(target.name, 'key', emptyKeyError());
-    await this.io.delete(scope, valid);
+    await this.io.delete(scope, valid, true);
   }
 
-  async clear(namespace: string, storeName?: string): Promise<void> {
+  clear(namespace: string, storeName?: string): Promise<void> {
+    if (!this.tracing.enabled) return this.clearImpl(namespace, storeName);
+    const base = {
+      store: storeName ?? 'default',
+      namespace: typeof namespace === 'string' && namespace !== '' ? namespace : undefined,
+    };
+    return this.tracing.span('cache.clear', base, () => this.clearImpl(namespace, storeName));
+  }
+
+  private async clearImpl(namespace: string, storeName?: string): Promise<void> {
     // With a prefix, '' would wipe every namespace; without one it would clear nothing.
     if (typeof namespace !== 'string' || namespace === '') {
       throw new CacheConfigError('clear requires a non-empty namespace');
@@ -384,8 +479,17 @@ export class CacheEngine {
    * de-duplication) or an unknown store. A failed token write is one `version` error, and the
    * call rejects with the first failing tag's error once every tag was tried.
    */
-  async invalidateTags(tags: readonly string[], storeName?: string): Promise<void> {
+  invalidateTags(tags: readonly string[], storeName?: string): Promise<void> {
+    if (!this.tracing.enabled) return this.invalidateTagsImpl(tags, storeName);
+    return this.tracing.span('cache.invalidateTags', { store: storeName ?? 'default' }, () =>
+      this.invalidateTagsImpl(tags, storeName),
+    );
+  }
+
+  private async invalidateTagsImpl(tags: readonly string[], storeName?: string): Promise<void> {
     const names = tagsToInvalidate(tags);
+    this.tracing.set('cache.tags', names.length);
+    this.tracing.key(names);
     const target = this.io.resolve(storeName);
     await this.io.tags.invalidate(target, names);
   }
@@ -401,6 +505,12 @@ export class CacheEngine {
         `Invalid namespace: ${namespace}. Names starting with "__" are reserved.`,
       );
     }
+  }
+
+  /** A `getOrSet` that skips the cache: `cache.result = 'bypass'`, the loader in `cache.load`. */
+  private bypass<T>(loader: () => Promise<T>): Promise<T> {
+    this.tracing.result('bypass');
+    return this.tracing.child('cache.load', loader);
   }
 
   /** Reports an empty key as a key error; the caller then skips the cache. */
