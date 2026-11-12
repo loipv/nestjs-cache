@@ -86,5 +86,13 @@
   {
     "fragment": "- **Default keys use the class name.**",
     "reason": "Moved to docs/caveats.md and corrected: a `Map` or `Set` argument is a key error, not a collision (1.0 API review, observation 1)."
+  },
+  {
+    "fragment": "1. Publish the current version by hand and push its tag. npm only allows a trusted publisher once the package exists.",
+    "reason": "Moved to RELEASING.md. For 1.0.0 the first manual publish is 1.0.0 from the version commit, not the current 0.3.0 version."
+  },
+  {
+    "fragment": "```bash npm run build && npm publish git tag v0.3.0 && git push origin v0.3.0 ```",
+    "reason": "Moved to RELEASING.md, where the tag is now v1.0.0 because 0.1.0 to 0.3.0 were never published."
   }
 ]
