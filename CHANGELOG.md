@@ -1,5 +1,7 @@
 # Changelog
 
+Versions 0.1.0 to 0.3.0 below were never published to npm.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

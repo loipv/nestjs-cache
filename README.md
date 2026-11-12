@@ -106,7 +106,7 @@ The library does not rely on `emitDecoratorMetadata`.
 - **0.8 - Compression, Sentinel and `softTimeout` (done):** `compressedSerializer` (gzip and brotli), swr `softTimeout`, Redis Sentinel (ioredis and node-redis), and the tag token re-read.
 - **0.9 - Redis v6, docs and example (done):** `redis` v6 support, the docs split into `docs/`, an [example app](examples/basic/README.md), and an API tidy-up (see the changelog for the breaking changes).
 - **0.10 - Tracing (done):** opt-in OpenTelemetry tracing (`CacheTracingModule`).
-- **1.0 - API freeze (planned):** the public API is frozen and follows semver from there.
+- **1.0 - API freeze (done):** the public API is frozen and follows [semver](docs/semver.md) from there.
 - **After 1.0 - Replica reads (planned):** reads from Redis replicas.
 
 ## Changelog and releasing

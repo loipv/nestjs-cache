@@ -20,13 +20,13 @@ nothing and the newer commit's run takes over. Nothing is released while CI on `
 
 One-time setup for maintainers, in this order:
 
-1. Publish the current version by hand and push its tag. npm only allows a trusted publisher once the package
+1. Publish 1.0.0 by hand from the version commit and push its tag. npm only allows a trusted publisher once the package
    exists. Do this before the release workflow first runs on `main`, or that run will try to publish the unpublished
    version and fail.
 
    ```bash
    npm run build && npm publish
-   git tag v0.3.0 && git push origin v0.3.0
+   git tag v1.0.0 && git push origin v1.0.0
    ```
 
 2. On npmjs.com, add a trusted publisher to `@loipv/nestjs-cache`: GitHub Actions, repository `loipv/nestjs-cache`,
