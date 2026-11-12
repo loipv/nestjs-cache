@@ -79,6 +79,19 @@ function tagsToInvalidate(tags: unknown): string[] {
   return names;
 }
 
+/**
+ * The store and namespace of a traced call's span. Read without a throw, so a `ref` or `scope`
+ * that is not an object makes the call reject inside its span, as it rejects untraced.
+ */
+function traceBase(ref: { store?: string; namespace?: string }): {
+  store: string;
+  namespace?: string;
+} {
+  const given = ref as { store?: string; namespace?: string } | null | undefined;
+  if (typeof given !== 'object' || given === null) return { store: 'default' };
+  return { store: given.store ?? 'default', namespace: given.namespace };
+}
+
 function checkBoolean(option: string, value: boolean | undefined): void {
   if (value === undefined || typeof value === 'boolean') return;
   throw new CacheConfigError(`Invalid ${option}: ${String(value)}. It must be a boolean.`);
@@ -181,12 +194,8 @@ export class CacheEngine {
 
   /** Never refreshes; `options` selects the read command and the classification only. */
   get<T>(ref: KeyRef, options?: LoadStrategyOptions): Promise<T | undefined> {
-    if (!this.tracing.enabled) return this.getImpl(ref, options);
-    return this.tracing.span(
-      'cache.get',
-      { store: ref.store ?? 'default', namespace: ref.namespace },
-      () => this.getImpl<T>(ref, options),
-    );
+    if (!this.tracing.enabled) return this.getImpl<T>(ref, options);
+    return this.tracing.span('cache.get', traceBase(ref), () => this.getImpl<T>(ref, options));
   }
 
   private async getImpl<T>(ref: KeyRef, options: LoadStrategyOptions = {}): Promise<T | undefined> {
@@ -225,10 +234,8 @@ export class CacheEngine {
     preset?: ExpiryStrategy,
   ): Promise<T> {
     if (!this.tracing.enabled) return this.getOrSetImpl(ref, loader, options, preset);
-    return this.tracing.span(
-      'cache.getOrSet',
-      { store: ref.store ?? 'default', namespace: ref.namespace },
-      () => this.getOrSetImpl(ref, loader, options, preset),
+    return this.tracing.span('cache.getOrSet', traceBase(ref), () =>
+      this.getOrSetImpl(ref, loader, options, preset),
     );
   }
 
@@ -279,11 +286,7 @@ export class CacheEngine {
   /** With `tags`, the entry is stamped with their tokens; an invalid list skips the write. */
   set<T>(ref: KeyRef, value: T, options?: SetOptions<T>): Promise<void> {
     if (!this.tracing.enabled) return this.setImpl(ref, value, options);
-    return this.tracing.span(
-      'cache.set',
-      { store: ref.store ?? 'default', namespace: ref.namespace },
-      () => this.setImpl(ref, value, options),
-    );
+    return this.tracing.span('cache.set', traceBase(ref), () => this.setImpl(ref, value, options));
   }
 
   private async setImpl<T>(ref: KeyRef, value: T, options: SetOptions<T> = {}): Promise<void> {
@@ -338,10 +341,8 @@ export class CacheEngine {
     taken?: Stamping,
   ): Promise<void> {
     if (!this.tracing.enabled) return this.putImpl(ref, value, options, preset, taken);
-    return this.tracing.span(
-      'cache.put',
-      { store: ref.store ?? 'default', namespace: ref.namespace },
-      () => this.putImpl(ref, value, options, preset, taken),
+    return this.tracing.span('cache.put', traceBase(ref), () =>
+      this.putImpl(ref, value, options, preset, taken),
     );
   }
 
@@ -396,7 +397,7 @@ export class CacheEngine {
     if (!this.tracing.enabled) return this.getManyImpl<T>(scope, keys, options);
     return this.tracing.span(
       'cache.getMany',
-      { store: scope.store ?? 'default', namespace: scope.namespace },
+      traceBase(scope),
       () => this.getManyImpl<T>(scope, keys, options),
       'batch',
     );
@@ -425,11 +426,9 @@ export class CacheEngine {
     options?: BatchSetOptions<T>,
   ): Promise<void> {
     if (!this.tracing.enabled) return this.setManyImpl<T>(scope, entries, options);
-    return this.tracing.span(
-      'cache.setMany',
-      { store: scope.store ?? 'default', namespace: scope.namespace },
-      () => this.setManyImpl<T>(scope, entries, options),
-      'batch',
+    // Not a `'batch'` scope: a write has no hits or misses to count.
+    return this.tracing.span('cache.setMany', traceBase(scope), () =>
+      this.setManyImpl<T>(scope, entries, options),
     );
   }
 
@@ -464,7 +463,7 @@ export class CacheEngine {
     if (!this.tracing.enabled) return this.getOrSetManyImpl(scope, keys, loader, options);
     return this.tracing.span(
       'cache.getOrSetMany',
-      { store: scope.store ?? 'default', namespace: scope.namespace },
+      traceBase(scope),
       () => this.getOrSetManyImpl(scope, keys, loader, options),
       'batch',
     );
@@ -494,11 +493,7 @@ export class CacheEngine {
   /** Empty keys are dropped and reported once as a key error; every other key is deleted. */
   delete(scope: { store?: string; namespace?: string }, keys: readonly string[]): Promise<void> {
     if (!this.tracing.enabled) return this.deleteImpl(scope, keys);
-    return this.tracing.span(
-      'cache.delete',
-      { store: scope.store ?? 'default', namespace: scope.namespace },
-      () => this.deleteImpl(scope, keys),
-    );
+    return this.tracing.span('cache.delete', traceBase(scope), () => this.deleteImpl(scope, keys));
   }
 
   private async deleteImpl(

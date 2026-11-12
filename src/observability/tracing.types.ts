@@ -65,8 +65,9 @@ export interface CacheTracingOptions {
   /** The tracer spans are started with, for example `trace.getTracer('my-app')`. */
   tracer: TracerLike;
   /**
-   * Record the full cache keys (and tag names) as `cache.key`. Default `false`: keys may hold
-   * user data and have a very large number of values.
+   * Record `cache.key`: the full key (prefix and namespace version included), an array of full
+   * keys on batch calls and `delete`, the tag names on `invalidateTags`. Default `false`: keys
+   * may hold user data and have a very large number of values.
    */
   recordKeys?: boolean;
 }

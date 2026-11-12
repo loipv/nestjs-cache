@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheConfigError } from '../../../src/errors.js';
 import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
 import { CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
-import type { LockProvider } from '../../../src/stores/cache-store.interface.js';
+import type { KeyRef } from '../../../src/core/cache-engine.js';
+import type { LockHandle, LockProvider } from '../../../src/stores/cache-store.interface.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
 import { FakeStore } from '../helpers/fake-store.js';
@@ -151,6 +152,54 @@ describe('CacheEngine tracing: single-key calls', () => {
     expect(joined!.attributes['cache.result']).toBe('miss');
     expect(tracer.span('cache.load').parent).toBe(owner);
     expect(children(tracer, joined!)).toEqual([]);
+  });
+
+  it('a miss joining a refresh that a held lock skipped is not marked joined', async () => {
+    const inner = new FakeLock();
+    // acquire settles after 10 ms, so the refresh flight is still open when the miss arrives.
+    const slow: LockProvider = {
+      acquire: (key, ttlMs) =>
+        delayed(10, undefined).then((): Promise<LockHandle | undefined> =>
+          inner.acquire(key, ttlMs),
+        ),
+    };
+    const { engine, tracer } = traced({
+      stores: { default: lockingStore(slow) },
+      defaults: { lock: { waitTimeout: 200 } },
+    });
+    const opts = { ...SWR, lock: true };
+    await engine.set({ key: 'k' }, 'old', SWR);
+    vi.setSystemTime(150);
+    inner.held.add('__lock__:k');
+    expect(await engine.getOrSet({ key: 'k' }, async () => 'new', opts)).toBe('old');
+    await engine.delete({}, ['k']);
+    const joined = engine.getOrSet({ key: 'k' }, async () => 'missed', opts);
+    await vi.advanceTimersByTimeAsync(310);
+    expect(await joined).toBe('missed');
+    const miss = tracer.spans('cache.getOrSet')[1]!;
+    expect(miss.attributes['cache.result']).toBe('miss');
+    // It loaded on its own: its own cache.load, and no cache.load.joined.
+    expect(miss.attributes).not.toHaveProperty('cache.load.joined');
+    expect(children(tracer, miss)).toEqual(['cache.lock', 'cache.load']);
+  });
+
+  it('a miss joining a load that fails is still marked joined', async () => {
+    const { engine, tracer } = traced();
+    const failure = new Error('shared load failed');
+    const loader = vi.fn(() => rejectedAfter(10, failure));
+    const both = Promise.allSettled([
+      engine.getOrSet({ key: 'k' }, loader),
+      engine.getOrSet({ key: 'k' }, loader),
+    ]);
+    await vi.runAllTimersAsync();
+    expect((await both).map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(loader).toHaveBeenCalledOnce();
+    const [owner, joined] = tracer.spans('cache.getOrSet');
+    expect(owner!.attributes).not.toHaveProperty('cache.load.joined');
+    expect(joined!.attributes['cache.load.joined']).toBe(true);
+    expect(children(tracer, joined!)).toEqual([]);
+    expect(joined!.exceptions).toEqual([failure]);
+    expect(joined!.status).toEqual(ERROR);
   });
 
   it('a span started by the loader is under cache.load, itself under cache.getOrSet', async () => {
@@ -329,9 +378,11 @@ describe('CacheEngine tracing: swr refresh', () => {
     expect(main.endCount).toBe(1);
     await vi.runAllTimersAsync();
     const refresh = tracer.span('cache.refresh');
-    expect(refresh.exceptions).toContain(failure);
+    // Recorded once, though it is both the failed child's error and a swallowed refresh error.
+    expect(refresh.exceptions).toEqual([failure]);
     expect(refresh.status).toEqual(ERROR);
     expect(errorOperations(refresh)).toEqual(['refresh']);
+    expect(tracer.span('cache.load').exceptions).toEqual([failure]);
     expect(tracer.span('cache.load').status).toEqual(ERROR);
     expect(main.exceptions).toEqual([]);
     expect(main.events).toEqual([]);
@@ -391,6 +442,58 @@ describe('CacheEngine tracing: writes and errors', () => {
     expect(load.exceptions).toEqual([failure]);
     expect(main.status).toEqual(ERROR);
     expect(main.exceptions).toEqual([failure]);
+  });
+
+  it('a loader rejecting undefined marks cache.load and cache.getOrSet ERROR', async () => {
+    const { engine, tracer } = traced();
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the case under test
+    const loader = (): Promise<string> => Promise.reject(undefined);
+    await expect(engine.getOrSet({ key: 'k' }, loader)).rejects.toBeUndefined();
+    const main = tracer.span('cache.getOrSet');
+    const load = tracer.span('cache.load');
+    expect(load.status).toEqual(ERROR);
+    expect(load.exceptions).toEqual([undefined]);
+    expect(main.status).toEqual(ERROR);
+    expect(main.exceptions).toEqual([undefined]);
+  });
+
+  it('a failed invalidateTags records its error once: the version event, then ERROR', async () => {
+    const { engine, store, tracer } = traced();
+    const failure = new Error('token write failed');
+    store.failNext('set', failure);
+    await expect(engine.invalidateTags(['t'])).rejects.toBe(failure);
+    const span = tracer.span('cache.invalidateTags');
+    expect(span.exceptions).toEqual([failure]);
+    expect(errorOperations(span)).toEqual(['version']);
+    expect(span.status).toEqual(ERROR);
+  });
+
+  it('a non-object ref or scope rejects instead of throwing, traced as untraced', async () => {
+    const calls: [string, (engine: ReturnType<typeof makeEngine>['engine']) => Promise<unknown>][] =
+      [
+        ['cache.get', (e) => e.get(null as unknown as KeyRef)],
+        ['cache.getOrSet', (e) => e.getOrSet(undefined as unknown as KeyRef, async () => 1)],
+        ['cache.set', (e) => e.set(null as unknown as KeyRef, 1)],
+        ['cache.put', (e) => e.put(null as unknown as KeyRef, 1)],
+        ['cache.getMany', (e) => e.getMany(null as never, ['a'])],
+        ['cache.setMany', (e) => e.setMany(null as never, [['a', 1]])],
+        ['cache.getOrSetMany', (e) => e.getOrSetMany(null as never, ['a'], async () => new Map())],
+        ['cache.delete', (e) => e.delete(null as never, ['a'])],
+      ];
+    const { engine, tracer } = traced();
+    const untraced = makeEngine().engine;
+    for (const [name, call] of calls) {
+      let pending: Promise<unknown> | undefined;
+      expect(() => {
+        pending = call(engine);
+      }).not.toThrow();
+      await expect(pending).rejects.toBeInstanceOf(TypeError);
+      await expect(call(untraced)).rejects.toBeInstanceOf(TypeError);
+      const span = tracer.span(name);
+      expect(span.attributes['cache.store']).toBe('default');
+      expect(span.attributes).not.toHaveProperty('cache.namespace');
+      expect(span.status).toEqual(ERROR);
+    }
   });
 
   it('a CacheConfigError from validation ends the span with ERROR and rejects', async () => {

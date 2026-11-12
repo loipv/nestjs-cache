@@ -262,8 +262,16 @@ describe('CacheTracing', () => {
       });
     });
 
-    it('batch scope without any hit or miss sets no counters', async () => {
-      await tracing.span('cache.setMany', BASE, () => Promise.resolve(), 'batch');
+    it('batch scope without any hit or miss sets zero counters; a plain scope sets none', async () => {
+      await tracing.span('cache.getMany', BASE, () => Promise.resolve(), 'batch');
+      await tracing.span('cache.setMany', BASE, () => Promise.resolve());
+      expect(tracer.span('cache.getMany').attributes).toEqual({
+        'cache.store': 'default',
+        'cache.namespace': 'users',
+        'cache.hits': 0,
+        'cache.stale': 0,
+        'cache.misses': 0,
+      });
       expect(tracer.span('cache.setMany').attributes).toEqual({
         'cache.store': 'default',
         'cache.namespace': 'users',

@@ -156,11 +156,20 @@ export class EngineLoad {
    */
   async onMiss<T>(plan: LoadPlan<T>): Promise<T> {
     const flightKey = this.flightKey(plan.target, plan.key);
-    if (this.tracing.enabled && this.singleFlight.has(flightKey)) {
-      this.tracing.set('cache.load.joined', true);
+    // Traced, `cache.load.joined` is set once the joined flight has loaded (or failed its load),
+    // not for a refresh that skipped its load: this call then loads on its own.
+    const joining = this.tracing.enabled && this.singleFlight.has(flightKey);
+    let joined: Outcome<T>;
+    try {
+      joined = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
+    } catch (error) {
+      if (joining) this.tracing.set('cache.load.joined', true);
+      throw error;
     }
-    const joined = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
-    if (joined.loaded) return joined.value;
+    if (joined.loaded) {
+      if (joining) this.tracing.set('cache.load.joined', true);
+      return joined.value;
+    }
     // The flight was a refresh that skipped its load: another instance holds the lock.
     const own = await this.singleFlight.run<Outcome<T>>(flightKey, () => this.missTask(plan));
     return own.loaded ? own.value : (await this.missTask(plan)).value;
@@ -318,7 +327,8 @@ export class EngineLoad {
     const started = Date.now();
     let loaded: ReadonlyMap<string, T>;
     try {
-      // Traced, `cache.load` covers the Map check too, so a non-Map marks it `ERROR`.
+      // Traced, `cache.load` covers the Map check too, so a non-Map marks it `ERROR`. The async
+      // wrapper costs one microtask after the loader settles, on the traced path only.
       loaded = this.tracing.enabled
         ? await this.tracing.child('cache.load', async () => asMap<T>(await loader([...keys])))
         : asMap<T>(await loader([...keys]));

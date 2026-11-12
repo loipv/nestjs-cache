@@ -49,12 +49,11 @@ interface TraceBase {
   namespace?: string;
 }
 
-/** The counters of a batch scope, set on its span when it ends. */
+/** The counters of a batch scope, set on its span when it ends (0 when none). */
 interface BatchCounts {
   hits: number;
   stale: number;
   misses: number;
-  counted: boolean;
 }
 
 /** The current cache span: a main span or a `cache.refresh`, held in the `AsyncLocalStorage`. */
@@ -65,8 +64,10 @@ interface Scope {
   readonly batch: BatchCounts | undefined;
   /** Set once the span ended; recorders then do nothing. */
   ended: boolean;
-  /** The error already recorded with an `ERROR` status (by a failed child). */
-  failed: { error: unknown } | undefined;
+  /** Set once the span's status is `ERROR`. */
+  failed: boolean;
+  /** The errors recorded on the span, so each is recorded once; created on the first one. */
+  recorded: Set<unknown> | undefined;
 }
 
 interface Enabled {
@@ -87,8 +88,7 @@ function attributesOf(base: TraceBase): Record<string, SpanAttributeValue> {
 }
 
 /**
- * Internal and absent from the package index, but not marked for `stripInternal`: the engine's
- * published declarations reference it. Owns the user's tracer once `CacheTracingModule`
+ * Internal: not part of the public API. Owns the user's tracer once `CacheTracingModule`
  * registers it, and the current cache scope (an `AsyncLocalStorage`, created on registration).
  * Until then every method calls its function directly or does nothing. A throwing tracer or span
  * method is logged (as `'tracing'`) and never reaches the caller, and never runs a function twice.
@@ -121,7 +121,8 @@ export class CacheTracing {
   /**
    * Runs `fn` in a new active main span `name` and its own scope. A rejection (or a
    * synchronous throw) records the exception and sets `ERROR`, then reaches the caller as is.
-   * A `'batch'` scope counts hits, stale hits and misses instead of setting `cache.result`.
+   * A `'batch'` scope counts hits, stale hits and misses instead of setting `cache.result`, and
+   * its span always gets the three counters, 0 when none.
    */
   span<T>(
     name: string,
@@ -150,7 +151,7 @@ export class CacheTracing {
     return this.activate(on.tracer, scope.store, name, {}, fn, (span) =>
       this.settle(span, scope.store, fn, (error) => {
         this.fail(span, scope.store, error);
-        this.markFailed(scope, error);
+        this.failScope(scope, error);
       }),
     );
   }
@@ -212,7 +213,6 @@ export class CacheTracing {
     if (scope.batch) {
       if (stale) scope.batch.stale += 1;
       else scope.batch.hits += 1;
-      scope.batch.counted = true;
     } else {
       this.attribute(scope, 'cache.result', stale ? 'stale' : 'hit');
     }
@@ -224,7 +224,6 @@ export class CacheTracing {
     if (scope === undefined) return;
     if (scope.batch) {
       scope.batch.misses += 1;
-      scope.batch.counted = true;
     } else {
       this.attribute(scope, 'cache.result', 'miss');
     }
@@ -244,7 +243,7 @@ export class CacheTracing {
 
   /** Sets `cache.key` (a full key, or a list of them) when `recordKeys` is on. */
   key(full: string | readonly string[]): void {
-    if (this.on?.recordKeys !== true) return;
+    if (!this.recordKeys) return;
     const scope = this.current();
     if (scope !== undefined) {
       this.attribute(scope, 'cache.key', typeof full === 'string' ? full : [...full]);
@@ -252,15 +251,14 @@ export class CacheTracing {
   }
 
   /**
-   * A failure the library swallowed: records the exception and a `cache.error` event carrying
-   * `cache.error.operation`. The status stays unset, since the caller still gets a result.
+   * A failure the library swallowed: records the exception (unless the span already has it) and
+   * a `cache.error` event carrying `cache.error.operation`. The status stays unset, since the
+   * caller still gets a result.
    */
   error(operation: CacheOperation, error: unknown): void {
     const scope = this.current();
     if (scope === undefined) return;
-    this.guard(scope.store, () => {
-      scope.span.recordException(error);
-    });
+    this.record(scope, error);
     this.guard(scope.store, () => {
       scope.span.addEvent('cache.error', { 'cache.error.operation': operation });
     });
@@ -286,16 +284,17 @@ export class CacheTracing {
       const scope: Scope = {
         span,
         store: base.store,
-        batch: kind === 'batch' ? { hits: 0, stale: 0, misses: 0, counted: false } : undefined,
+        batch: kind === 'batch' ? { hits: 0, stale: 0, misses: 0 } : undefined,
         ended: false,
-        failed: undefined,
+        failed: false,
+        recorded: undefined,
       };
       return this.settle(
         span,
         scope.store,
         () => on.als.run(scope, fn),
         (error) => {
-          if (scope.failed?.error !== error) this.fail(span, scope.store, error);
+          this.failScope(scope, error);
         },
         scope,
       );
@@ -382,11 +381,29 @@ export class CacheTracing {
     return { promise };
   }
 
-  /** Marks the scope's span `ERROR` for a failed child, once per error. */
-  private markFailed(scope: Scope, error: unknown): void {
-    if (scope.ended || scope.failed?.error === error) return;
-    scope.failed = { error };
-    this.fail(scope.span, scope.store, error);
+  /**
+   * Marks the scope's span `ERROR` for an error that reaches its caller (a failed child, or the
+   * call's own rejection). An error the span already has (from the child, or a swallowed one) is
+   * not recorded again.
+   */
+  private failScope(scope: Scope, error: unknown): void {
+    if (scope.ended) return;
+    this.record(scope, error);
+    if (scope.failed) return;
+    scope.failed = true;
+    this.guard(scope.store, () => {
+      scope.span.setStatus({ code: STATUS_ERROR });
+    });
+  }
+
+  /** Records `error` on the scope's span, once per error. */
+  private record(scope: Scope, error: unknown): void {
+    const recorded = (scope.recorded ??= new Set());
+    if (recorded.has(error)) return;
+    recorded.add(error);
+    this.guard(scope.store, () => {
+      scope.span.recordException(error);
+    });
   }
 
   private fail(span: SpanLike, store: string, error: unknown): void {
@@ -401,7 +418,7 @@ export class CacheTracing {
   /** Sets the batch counters and closes the scope; the caller ends the span. */
   private close(scope: Scope): void {
     const counts = scope.batch;
-    if (counts?.counted === true) {
+    if (counts !== undefined) {
       this.attribute(scope, 'cache.hits', counts.hits);
       this.attribute(scope, 'cache.stale', counts.stale);
       this.attribute(scope, 'cache.misses', counts.misses);

@@ -115,6 +115,54 @@ describe('CacheEngine tracing: batch calls', () => {
     expect(tracer.span('cache.load').status).toBeUndefined();
   });
 
+  it('getMany and getOrSetMany over no keys carry zero counters; setMany carries none', async () => {
+    const { engine, tracer } = traced();
+    expect(await engine.getMany({}, [])).toEqual([]);
+    expect(await engine.getMany({}, ['', ''])).toEqual([undefined, undefined]);
+    const loader = vi.fn(async (missing: string[]) => mapOf(missing));
+    expect(await engine.getOrSetMany({}, [], loader)).toEqual([]);
+    expect(await engine.getOrSetMany({}, [''], loader)).toEqual([undefined]);
+    await engine.setMany({}, []);
+    expect(loader).not.toHaveBeenCalled();
+    const zero = { 'cache.hits': 0, 'cache.stale': 0, 'cache.misses': 0 };
+    for (const span of [...tracer.spans('cache.getMany'), ...tracer.spans('cache.getOrSetMany')]) {
+      expect(span.attributes).toMatchObject(zero);
+    }
+    const write = tracer.span('cache.setMany');
+    for (const counter of Object.keys(zero)) expect(write.attributes).not.toHaveProperty(counter);
+  });
+
+  it('a getOrSetMany whose misses all join another call has no cache.load of its own', async () => {
+    const { engine, tracer } = traced();
+    const loader = vi.fn(
+      (missing: string[]) =>
+        new Promise<Map<string, string>>((resolve) => {
+          setTimeout(() => {
+            resolve(mapOf(missing));
+          }, 10);
+        }),
+    );
+    const both = Promise.all([
+      engine.getOrSetMany({}, ['a', 'b'], loader),
+      engine.getOrSetMany({}, ['b', 'a'], loader),
+    ]);
+    await vi.runAllTimersAsync();
+    expect(await both).toEqual([
+      ['newa', 'newb'],
+      ['newb', 'newa'],
+    ]);
+    expect(loader).toHaveBeenCalledOnce();
+    const [owner, joiner] = tracer.spans('cache.getOrSetMany');
+    expect(tracer.span('cache.load').parent).toBe(owner);
+    expect(children(tracer, owner!)).toEqual(['cache.load']);
+    expect(children(tracer, joiner!)).toEqual([]);
+    expect(joiner!.attributes).toMatchObject({
+      'cache.hits': 0,
+      'cache.stale': 0,
+      'cache.misses': 2,
+    });
+  });
+
   it('a span started by the batch loader is under cache.load', async () => {
     const { engine, tracer } = traced();
     await engine.getOrSetMany({}, ['a'], async (missing) =>
@@ -209,9 +257,12 @@ describe('CacheEngine tracing: batch calls', () => {
     await vi.runAllTimersAsync();
     const main = tracer.span('cache.getOrSetMany');
     const refresh = tracer.span('cache.refresh');
-    expect(refresh.exceptions).toContain(failure);
+    // Recorded once, though it is both the failed child's error and a swallowed refresh error.
+    expect(refresh.exceptions).toEqual([failure]);
+    expect(refresh.events.map((event) => event.name)).toEqual(['cache.error']);
     expect(refresh.status).toEqual(ERROR);
     expect(tracer.span('cache.load').status).toEqual(ERROR);
+    expect(tracer.span('cache.load').exceptions).toEqual([failure]);
     expect(tracer.span('cache.load').parent).toBe(refresh);
     expect(main.exceptions).toEqual([]);
     expect(main.status).toBeUndefined();
