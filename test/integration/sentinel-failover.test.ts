@@ -153,6 +153,12 @@ try {
   throw error;
 }
 
+// A run whose CACHE_IT_ADAPTERS selects no Sentinel adapter declares no case above, and Vitest
+// fails a file without one ("No test suite found").
+if (ADAPTERS.length === 0) {
+  it.skip('Sentinel failover (integration): no Sentinel adapter selected', () => undefined);
+}
+
 describe.each(SETUPS)(
   'Sentinel failover (integration) on $name',
   ({ name: adapterName, handle: sentinelSet, reachable }) => {
