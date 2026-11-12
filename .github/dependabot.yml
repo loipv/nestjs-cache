@@ -25,6 +25,11 @@ updates:
     # Give the registry a few days to catch a compromised release before it is proposed.
     cooldown:
       default-days: 7
+    # @types/node follows the oldest supported Node line (engines >=22), not the newest: a newer
+    # major types APIs Node 22 lacks and breaks typecheck:min (TypeScript 5.4).
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     groups:
       dev-dependencies:
         dependency-type: development
