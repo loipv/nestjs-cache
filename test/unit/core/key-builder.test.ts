@@ -194,6 +194,7 @@ describe('isReservedKey', () => {
     expect(isReservedKey(undefined, '__')).toBe(true);
     expect(isReservedKey(undefined, '_x')).toBe(false);
     expect(isReservedKey(undefined, 'a__b')).toBe(false);
+    expect(isReservedKey('', '__x')).toBe(true);
     expect(isReservedKey('users', '__x')).toBe(false);
   });
 });

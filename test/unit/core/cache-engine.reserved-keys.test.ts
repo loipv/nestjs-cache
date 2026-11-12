@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import { CacheEvents, type CacheEventMap } from '../../../src/core/events.js';
-import { CacheModule, Cacheable } from '../../../src/index.js';
+import { CacheEvict, CacheModule, CachePut, Cacheable } from '../../../src/index.js';
 import { EVENT_NAMES, makeEngine } from '../helpers/engine.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
@@ -79,17 +79,27 @@ describe('reserved keys (no namespace, key starts with "__")', () => {
     expect(keyErrors(emitted)).toHaveLength(1);
   });
 
-  it('getOrSetMany loads the reserved key uncached', async () => {
+  it('getOrSetMany does not load or cache the reserved key', async () => {
     const { engine, store, emitted } = makeEngine();
     const loaded: string[][] = [];
     const loader = (missing: string[]): Promise<Map<string, number>> => {
       loaded.push(missing);
       return Promise.resolve(new Map(missing.map((k) => [k, 1])));
     };
-    await engine.getOrSetMany({}, ['__x', 'a'], loader);
+    expect(await engine.getOrSetMany({}, ['__x', 'a'], loader)).toEqual([undefined, 1]);
     expect(loaded).toEqual([['a']]);
     expect([...store.data.keys()]).toEqual(['a']);
     expect(keyErrors(emitted)).toHaveLength(1);
+  });
+
+  it('an empty namespace is no namespace', async () => {
+    const { engine, store, emitted } = makeEngine();
+    expect(await engine.get({ namespace: '', key: RESERVED })).toBeUndefined();
+    await engine.set({ namespace: '', key: RESERVED }, 1);
+    await engine.delete({ namespace: '' }, ['__tag__:orders', 'ok']);
+    expect(await engine.getMany({ namespace: '' }, ['__x'])).toEqual([undefined]);
+    expect(keyErrors(emitted)).toHaveLength(4);
+    expect(store.calls.some((c) => JSON.stringify(c.args).includes('__'))).toBe(false);
   });
 
   it('a namespaced key starting with "__" caches normally', async () => {
@@ -137,5 +147,53 @@ describe('@Cacheable with an untrusted key template', () => {
     expect(keyErrors(emitted)).toHaveLength(1);
     expect(store.calls).toEqual([]);
     await app.close();
+  });
+});
+
+describe('@CachePut and @CacheEvict with an untrusted key template', () => {
+  @Injectable()
+  class Service {
+    @CachePut({ key: '{0}' })
+    async save(id: string): Promise<string> {
+      return `v:${id}`;
+    }
+
+    @CacheEvict({ key: '{0}' })
+    async remove(_id: string): Promise<void> {}
+  }
+
+  async function setup(): Promise<{
+    svc: Service;
+    store: FakeStore;
+    emitted: { event: keyof CacheEventMap; payload: unknown }[];
+    close: () => Promise<void>;
+  }> {
+    const store = new FakeStore();
+    const app = await Test.createTestingModule({
+      imports: [CacheModule.forRoot({ stores: { default: store } })],
+      providers: [Service],
+    }).compile();
+    await app.init();
+    const emitted: { event: keyof CacheEventMap; payload: unknown }[] = [];
+    for (const event of EVENT_NAMES) {
+      app.get(CacheEvents).on(event, (payload) => emitted.push({ event, payload }));
+    }
+    return { svc: app.get(Service), store, emitted, close: () => app.close() };
+  }
+
+  it('@CachePut returns the result, reports one key error and writes nothing', async () => {
+    const { svc, store, emitted, close } = await setup();
+    expect(await svc.save(RESERVED)).toBe(`v:${RESERVED}`);
+    expect(keyErrors(emitted)).toHaveLength(1);
+    expect(store.calls).toEqual([]);
+    await close();
+  });
+
+  it('@CacheEvict reports one key error and never deletes the reserved key', async () => {
+    const { svc, store, emitted, close } = await setup();
+    await svc.remove(RESERVED);
+    expect(keyErrors(emitted)).toHaveLength(1);
+    expect(JSON.stringify(store.calls)).not.toContain('__version__');
+    await close();
   });
 });

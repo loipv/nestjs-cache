@@ -180,7 +180,8 @@ export function emptyKeyError(): TypeError {
  * (for example an untrusted `{0}` template) could read or delete the library's own entries.
  */
 export function isReservedKey(namespace: string | undefined, key: string): boolean {
-  return namespace === undefined && key.startsWith('__');
+  // `fullKey` drops an empty namespace, so '' is no namespace.
+  return (namespace === undefined || namespace === '') && key.startsWith('__');
 }
 
 export function reservedKeyError(): TypeError {

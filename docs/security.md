@@ -13,7 +13,7 @@ This page lists what to watch for when the cache runs on a shared or untrusted R
 - **Template keys render string arguments verbatim.** An argument containing `:` can address a key in another
   (sub-)namespace. Do not put untrusted input with `:` into template keys; use the default hashed key or a key callback
   that encodes it, or set `escapeKeyArgs: true`, which escapes `%` and `:` in template arguments.
-  Keys starting with `__` and no namespace are rejected as a key error (cache skipped, `error` with
+  Keys starting with `__` and no namespace (or an empty one) are rejected as a key error (cache skipped, `error` with
   `operation: 'key'`), so untrusted input cannot reach the library's internal `__version__`, `__tag__` and `__lock__`
   keys. This does not replace `escapeKeyArgs`: input with `:` can still address another namespace.
 - **Keys appear in debug logs and in invalidation messages.** Do not put secrets or personal data in keys; hash them.
