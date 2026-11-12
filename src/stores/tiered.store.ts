@@ -299,12 +299,19 @@ export class TieredStore implements CacheStore {
 
   private readonly onMessage = (message: InvalidationMessage): void => {
     if (message.origin === this.origin) return;
-    if ('keys' in message) {
+    if (
+      'keys' in message &&
+      Array.isArray(message.keys) &&
+      message.keys.every((k): k is string => typeof k === 'string')
+    ) {
       this.forgetKeys(message.keys);
       void this.attempt('delete', () => this.l1.delete(message.keys));
     } else {
-      this.forgetPrefix(message.prefix);
-      void this.attempt('clear', () => this.l1.clear(message.prefix));
+      // A custom bus may deliver a body of a newer format: clear L1 rather than keep stale data.
+      const given = (message as { prefix?: unknown }).prefix;
+      const prefix = typeof given === 'string' ? given : '';
+      this.forgetPrefix(prefix);
+      void this.attempt('clear', () => this.l1.clear(prefix));
     }
   };
 

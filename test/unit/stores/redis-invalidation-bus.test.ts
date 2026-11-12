@@ -25,7 +25,7 @@ describe('redisInvalidationBus', () => {
     });
   });
 
-  it('delivers well-formed messages and drops everything else', async () => {
+  it('delivers well-formed messages, turns an unknown body into a clear and drops the rest', async () => {
     const fake = new FakeRedis();
     const bus = redisInvalidationBus({ client: fake });
     const got: InvalidationMessage[] = [];
@@ -44,7 +44,24 @@ describe('redisInvalidationBus', () => {
     expect(got).toEqual([
       { origin: 'a', keys: ['k'] },
       { origin: 'a', prefix: 'u:' },
+      { origin: 'a', prefix: '' },
+      { origin: 'a', prefix: '' },
+      { origin: 'a', prefix: '' },
+      { origin: 'a', prefix: '' },
     ]);
+  });
+
+  it('ignores a message without a string origin, whatever its body (P-07)', async () => {
+    const fake = new FakeRedis();
+    const bus = redisInvalidationBus({ client: fake });
+    const got: InvalidationMessage[] = [];
+    await bus.subscribe((m) => got.push(m));
+    const sub = fake.subscribers[0]!;
+    sub.deliver('{"keys":["a"]}');
+    sub.deliver('{"origin":1,"keys":["a"]}');
+    sub.deliver('"x"');
+    sub.deliver('x');
+    expect(got).toEqual([]);
   });
 
   describe('an oversized message', () => {

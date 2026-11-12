@@ -181,8 +181,11 @@ describe('compressedSerializer', () => {
       (raw: string) => boolean | undefined
     >;
     const check = marked[OWN_ENVELOPE];
-    expect(check('{"v":2}')).toBe(true);
-    expect(check(GZ + gzipSync(Buffer.from('{"v":2}')).toString('base64'))).toBe(true);
+    expect(check('{"v":1}')).toBe(true);
+    expect(check(GZ + gzipSync(Buffer.from('{"v":1}')).toString('base64'))).toBe(true);
+    // a newer envelope (v > 1) is ours but is never deleted
+    expect(check('{"v":2}')).toBe(false);
+    expect(check(GZ + gzipSync(Buffer.from('{"v":2}')).toString('base64'))).toBe(false);
     expect(check(BR + brotliCompressSync(Buffer.from('{"v":"x"}')).toString('base64'))).toBe(true);
     expect(check('{"foo":1}')).toBe(false);
     expect(check('[{"v":1}]')).toBe(false);

@@ -1,6 +1,6 @@
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { CacheConfigError } from '../errors.js';
-import { hasOwnVersion, type CacheEnvelope } from '../core/envelope.js';
+import { hasOwnVersion, isNewerEnvelope, type CacheEnvelope } from '../core/envelope.js';
 import { jsonSerializer, type Serializer } from './json.serializer.js';
 
 /** Options of `compressedSerializer`. */
@@ -113,7 +113,8 @@ export function compressedSerializer(options: CompressedSerializerOptions = {}):
           }
         }
         try {
-          return hasOwnVersion(JSON.parse(plain));
+          const parsed: unknown = JSON.parse(plain);
+          return hasOwnVersion(parsed) && !isNewerEnvelope(parsed);
         } catch {
           return false;
         }

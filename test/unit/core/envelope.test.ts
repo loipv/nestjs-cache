@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { isEnvelope, unwrap, wrap } from '../../../src/core/envelope.js';
+import { isEnvelope, isNewerEnvelope, unwrap, wrap } from '../../../src/core/envelope.js';
 
 describe('envelope', () => {
+  it('isNewerEnvelope is true only for an own finite numeric v above 1', () => {
+    expect(isNewerEnvelope({ v: 2 })).toBe(true);
+    expect(isNewerEnvelope({ v: 1.5 })).toBe(true);
+    expect(isNewerEnvelope({ v: 1 })).toBe(false);
+    expect(isNewerEnvelope({ v: 0 })).toBe(false);
+    expect(isNewerEnvelope({ v: '2' })).toBe(false);
+    expect(isNewerEnvelope({ v: Infinity })).toBe(false);
+    expect(isNewerEnvelope({ v: NaN })).toBe(false);
+    expect(isNewerEnvelope(Object.create({ v: 2 }))).toBe(false);
+    expect(isNewerEnvelope([2])).toBe(false);
+    expect(isNewerEnvelope(null)).toBe(false);
+    expect(isNewerEnvelope(2)).toBe(false);
+  });
   it('wrap stamps storedAt and expiresAt', () => {
     expect(wrap({ a: 1 }, 1_000, 500)).toEqual({
       v: 1,

@@ -44,10 +44,10 @@ function parseMessage(raw: string): InvalidationMessage | undefined {
     if (Array.isArray(keys) && keys.every((k): k is string => typeof k === 'string')) {
       return { origin, keys };
     }
-    return undefined;
   }
   if (typeof prefix === 'string' && keys === undefined) return { origin, prefix };
-  return undefined;
+  // A string origin with an unknown body (a newer wire format, or a malformed one) clears L1.
+  return { origin, prefix: '' };
 }
 
 /** Internal: builds the bus over an adapter that the caller owns. */

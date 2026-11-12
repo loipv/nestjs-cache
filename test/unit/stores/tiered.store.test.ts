@@ -6,6 +6,7 @@ import {
 } from '../../../src/resilience/circuit-breaker.store.js';
 import type { CacheEventSink } from '../../../src/core/events.js';
 import { CacheConfigError } from '../../../src/errors.js';
+import type { InvalidationMessage } from '../../../src/stores/cache-store.interface.js';
 import { memoryStore, type MemoryStore } from '../../../src/stores/memory.store.js';
 import { redisStore } from '../../../src/stores/redis.store.js';
 import { tieredStore, type TieredStore } from '../../../src/stores/tiered.store.js';
@@ -266,6 +267,50 @@ describe('TieredStore', () => {
     bus.failNext('publish');
     await expect(unbound.get('k')).resolves.toBeUndefined();
     await expect(unbound.set('k', 'v', 1_000)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    '{"origin":"o","keys":[1]}',
+    '{"origin":"o","keys":["a"],"prefix":"p"}',
+    '{"origin":"o","kind":"tags","tags":["t"]}',
+  ])('clears the whole L1 on a message with an unknown body %s (P-07)', async (body) => {
+    const client = new FakeConnection();
+    const connection = client.prepareDuplicate();
+    const local = memoryStore();
+    const s = tieredStore({ l1: local, l2: redisStore({ client: client.asIoredis() }) });
+    s.bind({ emit: vi.fn() });
+    await flush();
+    await local.set('users:1', 'a', 60_000);
+    await local.set('other', 'b', 60_000);
+    connection.publishRemote('nestjs-cache:invalidate', body);
+    await flush();
+    expect(await local.get('users:1')).toBeUndefined();
+    expect(await local.get('other')).toBeUndefined();
+  });
+
+  it.each(['{"keys":["a"]}', '"x"'])(
+    'ignores the message %s: no string origin (P-07)',
+    async (body) => {
+      const client = new FakeConnection();
+      const connection = client.prepareDuplicate();
+      const local = memoryStore();
+      const s = tieredStore({ l1: local, l2: redisStore({ client: client.asIoredis() }) });
+      s.bind({ emit: vi.fn() });
+      await flush();
+      await local.set('a', 'v', 60_000);
+      connection.publishRemote('nestjs-cache:invalidate', body);
+      await flush();
+      expect(await local.get('a')).toBe('v');
+    },
+  );
+
+  it('clears the whole L1 on a custom bus message with a non-string prefix (P-07)', async () => {
+    await store.set('u:1', 'v', 60_000);
+    await store.set('p:1', 'v', 60_000);
+    bus.deliver({ origin: 'o', prefix: 42 } as unknown as InvalidationMessage);
+    l2.data.clear();
+    expect(await store.get('u:1')).toBeUndefined();
+    expect(await store.get('p:1')).toBeUndefined();
   });
 
   it('prefers options.invalidation over l2.invalidation', async () => {

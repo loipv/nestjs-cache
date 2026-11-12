@@ -10,7 +10,13 @@ import {
   type TagOption,
   type TagStamp,
 } from './engine-tags.js';
-import { hasOwnVersion, isEnvelope, unwrap, type CacheEnvelope } from './envelope.js';
+import {
+  hasOwnVersion,
+  isEnvelope,
+  isNewerEnvelope,
+  unwrap,
+  type CacheEnvelope,
+} from './envelope.js';
 import type { ReportError } from './events.js';
 import {
   classifyEnvelope,
@@ -203,9 +209,9 @@ function ownEnvelope(
   decoded: { value: unknown } | undefined,
 ): boolean {
   try {
-    if (decoded !== undefined) return hasOwnVersion(decoded.value);
+    if (decoded !== undefined) return isDeletable(decoded.value);
     const { serializer } = ctx.options;
-    if (serializer === jsonSerializer) return hasOwnVersion(JSON.parse(raw));
+    if (serializer === jsonSerializer) return isDeletable(JSON.parse(raw));
     const check: unknown = (serializer as Partial<Record<typeof OWN_ENVELOPE, unknown>>)[
       OWN_ENVELOPE
     ];
@@ -213,6 +219,11 @@ function ownEnvelope(
   } catch {
     return false;
   }
+}
+
+/** Ours and not newer: a newer envelope is a miss that stays in the store (D-01). */
+function isDeletable(value: unknown): boolean {
+  return hasOwnVersion(value) && !isNewerEnvelope(value);
 }
 
 /** `envelope` with the `tags` field of `stamp`; an absent or empty stamp adds nothing. */

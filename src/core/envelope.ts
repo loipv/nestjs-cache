@@ -32,7 +32,7 @@ export function unwrap(envelope: CacheEnvelope): unknown {
 
 /**
  * Whether `value` looks like an envelope this library wrote, of any version: a plain object with
- * an own `v`. Used to decide whether an unreadable entry may be deleted.
+ * an own `v`. Used with `isNewerEnvelope` to decide whether an unreadable entry may be deleted.
  */
 export function hasOwnVersion(value: unknown): boolean {
   return (
@@ -41,6 +41,17 @@ export function hasOwnVersion(value: unknown): boolean {
     !Array.isArray(value) &&
     Object.prototype.hasOwnProperty.call(value, 'v')
   );
+}
+
+/**
+ * Whether `candidate` is an envelope written by a newer version of this library: an own `v` that
+ * is a finite number greater than 1. Such an entry is a miss but is never deleted, so a rolling
+ * deploy or a rollback does not destroy what the newer instances wrote.
+ */
+export function isNewerEnvelope(candidate: unknown): boolean {
+  if (!hasOwnVersion(candidate)) return false;
+  const v = (candidate as Record<string, unknown>)['v'];
+  return typeof v === 'number' && Number.isFinite(v) && v > 1;
 }
 
 export function isEnvelope(candidate: unknown): candidate is CacheEnvelope {

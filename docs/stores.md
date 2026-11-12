@@ -48,7 +48,10 @@ Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (th
 `tieredStore({ l1, l2, l1Ttl?, invalidation? })` reads L1 first, then L2 (refilling L1 with `l1Ttl`).
 Writes go to L2, then L1 with `min(ttl, l1Ttl)`, then an invalidation message is published.
 `l1Ttl` defaults to `10_000`. A received invalidation message longer than 1 MiB (1_048_576 characters) is not parsed:
-it clears the whole L1.
+it clears the whole L1. So does a message with a string `origin` and a body that is not a list of keys or a prefix
+(a malformed body, or a format from a newer version), because L1 cannot tell what became stale; a message without a
+string `origin` is ignored. A custom invalidation bus gets the same treatment: `{ origin, prefix: 42 }` clears the
+whole L1.
 
 ## Redis Cluster
 

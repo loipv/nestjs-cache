@@ -103,7 +103,7 @@ describe('CacheEngine', () => {
   const isDeserializeError = (e: { event: string; payload: unknown }): boolean =>
     e.event === 'error' && (e.payload as { operation: string }).operation === 'deserialize';
 
-  it.each(['{"v":2,"value":1,"storedAt":0}', '{"v":1,"value":1}', '{"v":"x"}'])(
+  it.each(['{"v":1,"value":1}', '{"v":"x"}', '{"v":"2","value":1,"storedAt":0}'])(
     'an unreadable envelope %s is a miss, is deleted and reported',
     async (raw) => {
       /* the entry is an object with an own `v`: something this library wrote, now unreadable */
@@ -169,7 +169,7 @@ describe('CacheEngine', () => {
 
   it('swallows a failing cleanup delete after a deserialize failure', async () => {
     const { engine, store, emitted } = makeEngine();
-    store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });
+    store.data.set('a', { value: '{"v":1,"value":1}', ttlMs: 1 });
     store.failNext('delete');
     await expect(engine.get({ key: 'a' })).resolves.toBeUndefined();
     expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
@@ -188,20 +188,66 @@ describe('CacheEngine', () => {
     expect(emitted.at(-1)?.event).toBe('miss');
   });
 
-  it('a custom deserializer returning an object with v of another version deletes it', async () => {
+  it('a custom deserializer returning an object with a string v deletes it', async () => {
     const { engine, store, emitted } = makeEngine({
       serializer: {
         serialize: (e) => JSON.stringify(e),
         deserialize: (raw) => JSON.parse(raw) as never,
       },
     });
-    store.data.set('a', { value: '{"v":2,"value":1,"storedAt":0}', ttlMs: 1 });
+    store.data.set('a', { value: '{"v":"2","value":1,"storedAt":0}', ttlMs: 1 });
     store.data.set('b', { value: '{"foo":1}', ttlMs: 1 });
     expect(await engine.get({ key: 'a' })).toBeUndefined();
     expect(await engine.get({ key: 'b' })).toBeUndefined();
     expect(store.data.has('a')).toBe(false);
     expect(store.data.has('b')).toBe(true);
     expect(emitted.filter(isDeserializeError)).toHaveLength(2);
+  });
+
+  const FOREIGN_VERSION = '{"v":"2","value":1,"storedAt":0}';
+  const gz = (plain: string): string =>
+    `\u0000nc1:gz:${gzipSync(Buffer.from(plain)).toString('base64')}`;
+  const br = (plain: string): string =>
+    `\u0000nc1:br:${brotliCompressSync(Buffer.from(plain)).toString('base64')}`;
+
+  describe('a newer envelope (v > 1) is a miss that is not deleted (D-01)', () => {
+    const NEWER = '{"v":2,"value":1,"storedAt":0}';
+
+    it.each(['get', 'getOrSet', 'sliding', 'getMany'] as const)(
+      'is kept and reported through %s',
+      async (path) => {
+        const store = new FakeStore();
+        Object.assign(store, {
+          getAndTouch: (key: string): Promise<string | undefined> =>
+            Promise.resolve(store.data.get(key)?.value),
+          getMany: (keys: readonly string[]): Promise<(string | undefined)[]> =>
+            Promise.resolve(keys.map((k) => store.data.get(k)?.value)),
+        });
+        store.data.set('a', { value: NEWER, ttlMs: 1 });
+        const { engine, emitted } = makeEngine({ stores: { default: store } });
+        const deletes = vi.spyOn(store, 'delete');
+        const loader = vi.fn(async () => 'fresh');
+        if (path === 'get') expect(await engine.get({ key: 'a' })).toBeUndefined();
+        if (path === 'sliding') {
+          expect(await engine.get({ key: 'a' }, { strategy: 'sliding' })).toBeUndefined();
+        }
+        if (path === 'getMany') expect(await engine.getMany({}, ['a'])).toEqual([undefined]);
+        if (path === 'getOrSet') expect(await engine.getOrSet({ key: 'a' }, loader)).toBe('fresh');
+        expect(loader).toHaveBeenCalledTimes(path === 'getOrSet' ? 1 : 0);
+        expect(deletes).not.toHaveBeenCalled();
+        expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+        expect(emitted.some(isDeserializeError)).toBe(true);
+      },
+    );
+
+    it('is kept under compressedSerializer, plain and compressed', async () => {
+      const { engine, store } = makeEngine({ serializer: compressedSerializer() });
+      store.data.set('plain', { value: NEWER, ttlMs: 1 });
+      store.data.set('gzip', { value: gz(NEWER), ttlMs: 1 });
+      expect(await engine.get({ key: 'plain' })).toBeUndefined();
+      expect(await engine.get({ key: 'gzip' })).toBeUndefined();
+      expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
+    });
   });
 
   it('a custom deserializer that throws never deletes, whatever the raw value', async () => {
@@ -228,12 +274,6 @@ describe('CacheEngine', () => {
     expect(emitted.filter(isDeserializeError)).toHaveLength(1);
     expect(store.data.has('a')).toBe(true);
   });
-
-  const FOREIGN_VERSION = '{"v":2,"value":1,"storedAt":0}';
-  const gz = (plain: string): string =>
-    `\u0000nc1:gz:${gzipSync(Buffer.from(plain)).toString('base64')}`;
-  const br = (plain: string): string =>
-    `\u0000nc1:br:${brotliCompressSync(Buffer.from(plain)).toString('base64')}`;
 
   it.each([
     ['compressedSerializer()', () => compressedSerializer()],

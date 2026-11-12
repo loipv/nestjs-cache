@@ -77,8 +77,9 @@ CacheModule.forRoot({
 - Compression is synchronous (`node:zlib`) and costs event-loop CPU on large payloads; `brotli` compresses smaller
   and slower than `gzip`.
 - A corrupt or oversized payload is a `deserialize` error and a miss, like any unreadable entry.
-- An unreadable entry this library wrote (a corrupt envelope, or one of another envelope version) is deleted on read
-  under `compressedSerializer(jsonSerializer)` (the default `inner`), as under the plain `jsonSerializer`. A payload
+- An unreadable entry this library wrote (a corrupt envelope, or one with a string or otherwise non-numeric `v`) is deleted on read
+  under `compressedSerializer(jsonSerializer)` (the default `inner`), as under the plain `jsonSerializer`. An envelope whose `v` is a number
+  greater than 1 is a miss but is kept (a newer version wrote it). A payload
   that cannot be decompressed is never deleted, since it may not be the library's. With a custom or nested `inner`
   (another `compressedSerializer`, for example), an entry that `inner` throws on is never deleted; one it reads into
   an object that has a `v` field but is not a valid envelope is deleted, as under any serializer.
