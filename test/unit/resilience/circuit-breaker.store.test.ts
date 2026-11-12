@@ -702,7 +702,9 @@ describe('circuitBreakerStore clear is not timed out', () => {
     b.bind(sink);
     const d = slowClear(inner);
     const p = b.clear('p');
+    expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(300);
+    expect(vi.getTimerCount()).toBe(0);
     d.resolve(undefined);
     await expect(p).resolves.toBeUndefined();
     expect(b.state).toBe('closed');

@@ -186,6 +186,21 @@ describe('@HttpCache literal keys and tags', () => {
       /^C: a class-level key would be shared by every route; put the key on each method or use a callback/,
     );
   });
+  it('accepts a class-level key callback with a method-level string key', () => {
+    expect(() => {
+      @HttpCache({ key: () => 'k' })
+      class C {
+        @HttpCache({ key: 'plain' })
+        m(): void {}
+      }
+      expect(C).toBeDefined();
+    }).not.toThrow();
+  });
+  it('rejects class-level tags containing braces', () => {
+    expect(() => {
+      onClass({ tags: ['t:{x}'] });
+    }).toThrow(/^C: tags are not templates; use a tags callback/);
+  });
   it('allows callbacks and plain method-level keys', () => {
     expect(() => {
       onClass({ key: () => 'k' });

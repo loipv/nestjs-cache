@@ -313,6 +313,15 @@ describe('TieredStore', () => {
     expect(await store.get('p:1')).toBeUndefined();
   });
 
+  it('clears the whole L1 on a custom bus message with malformed keys (P-07)', async () => {
+    await store.set('a', 'v', 60_000);
+    await store.set('u:1', 'v', 60_000);
+    bus.deliver({ origin: 'o', keys: [1] } as unknown as InvalidationMessage);
+    l2.data.clear();
+    expect(await store.get('a')).toBeUndefined();
+    expect(await store.get('u:1')).toBeUndefined();
+  });
+
   it('clears the whole L1 on a custom bus message with both keys and prefix (P-07)', async () => {
     await store.set('a', 'v', 60_000);
     await store.set('u:1', 'v', 60_000);

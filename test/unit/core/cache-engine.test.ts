@@ -204,7 +204,7 @@ describe('CacheEngine', () => {
     expect(emitted.filter(isDeserializeError)).toHaveLength(2);
   });
 
-  const FOREIGN_VERSION = '{"v":"2","value":1,"storedAt":0}';
+  const STRING_VERSION = '{"v":"2","value":1,"storedAt":0}';
   const gz = (plain: string): string =>
     `\u0000nc1:gz:${gzipSync(Buffer.from(plain)).toString('base64')}`;
   const br = (plain: string): string =>
@@ -226,6 +226,7 @@ describe('CacheEngine', () => {
         store.data.set('a', { value: NEWER, ttlMs: 1 });
         const { engine, emitted } = makeEngine({ stores: { default: store } });
         const deletes = vi.spyOn(store, 'delete');
+        const touches = vi.spyOn(store as unknown as { getAndTouch: () => unknown }, 'getAndTouch');
         const loader = vi.fn(async () => 'fresh');
         if (path === 'get') expect(await engine.get({ key: 'a' })).toBeUndefined();
         if (path === 'sliding') {
@@ -234,6 +235,7 @@ describe('CacheEngine', () => {
         if (path === 'getMany') expect(await engine.getMany({}, ['a'])).toEqual([undefined]);
         if (path === 'getOrSet') expect(await engine.getOrSet({ key: 'a' }, loader)).toBe('fresh');
         expect(loader).toHaveBeenCalledTimes(path === 'getOrSet' ? 1 : 0);
+        expect(touches).toHaveBeenCalledTimes(path === 'sliding' ? 1 : 0);
         expect(deletes).not.toHaveBeenCalled();
         expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
         expect(emitted.some(isDeserializeError)).toBe(true);
@@ -244,8 +246,10 @@ describe('CacheEngine', () => {
       const { engine, store } = makeEngine({ serializer: compressedSerializer() });
       store.data.set('plain', { value: NEWER, ttlMs: 1 });
       store.data.set('gzip', { value: gz(NEWER), ttlMs: 1 });
+      store.data.set('brotli', { value: br(NEWER), ttlMs: 1 });
       expect(await engine.get({ key: 'plain' })).toBeUndefined();
       expect(await engine.get({ key: 'gzip' })).toBeUndefined();
+      expect(await engine.get({ key: 'brotli' })).toBeUndefined();
       expect(store.calls.filter((c) => c.op === 'delete')).toEqual([]);
     });
   });
@@ -292,9 +296,9 @@ describe('CacheEngine', () => {
          gzip/brotli prefix, so it is deleted as under jsonSerializer; a foreign value is not. */
       const { engine, store, emitted } = makeEngine({ serializer: make() });
       const raws = {
-        plain: FOREIGN_VERSION,
-        gzip: gz(FOREIGN_VERSION),
-        brotli: br(FOREIGN_VERSION),
+        plain: STRING_VERSION,
+        gzip: gz(STRING_VERSION),
+        brotli: br(STRING_VERSION),
         corrupt: gz('{"v":1,"value":1}'),
         foreignPlain: '{"foo":1}',
         foreignGzip: gz('{"foo":1}'),
@@ -315,7 +319,7 @@ describe('CacheEngine', () => {
     const { engine, store, emitted } = makeEngine({
       serializer: compressedSerializer({ maxDecompressedBytes: 256 }),
     });
-    const whole = gzipSync(Buffer.from(FOREIGN_VERSION));
+    const whole = gzipSync(Buffer.from(STRING_VERSION));
     const raws = {
       tooLarge: gz(padded),
       tooLargeBrotli: br(padded),
@@ -341,8 +345,8 @@ describe('CacheEngine', () => {
       const { engine, store, emitted } = makeEngine({
         serializer: compressedSerializer({ inner }),
       });
-      store.data.set('plain', { value: FOREIGN_VERSION, ttlMs: 1 });
-      store.data.set('gzip', { value: gz(FOREIGN_VERSION), ttlMs: 1 });
+      store.data.set('plain', { value: STRING_VERSION, ttlMs: 1 });
+      store.data.set('gzip', { value: gz(STRING_VERSION), ttlMs: 1 });
       expect(await engine.get({ key: 'plain' })).toBeUndefined();
       expect(await engine.get({ key: 'gzip' })).toBeUndefined();
       expect([...store.data.keys()]).toEqual(['plain', 'gzip']);

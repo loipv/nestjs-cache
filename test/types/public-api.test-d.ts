@@ -116,6 +116,10 @@ expectTypeOf<Index>().not.toHaveProperty('CacheTracing');
 export type Tracing = lib.CacheTracing;
 
 /* 1.0 G-07: the options type is CircuitBreakerStoreOptions; the old name is gone. */
-expectTypeOf<lib.CircuitBreakerStoreOptions>().toHaveProperty('timeout');
+expectTypeOf<lib.CircuitBreakerStoreOptions>().toEqualTypeOf<{
+  failureThreshold?: number;
+  openDuration?: number;
+  timeout?: number;
+}>();
 // @ts-expect-error the old name is not exported
 export type OldBreakerOptions = lib.CircuitBreakerOptions;
