@@ -1,6 +1,6 @@
 # @loipv/nestjs-cache
 
-Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching.
+Decorator-based caching for NestJS: Redis (ioredis or node-redis, Cluster, Sentinel) and two-tier stores, tags, stale-while-revalidate, stampede protection, HTTP caching and Prometheus metrics
 
 - `@Cacheable`, `@CachePut` and `@CacheEvict` decorators, plus a `CacheService` for direct calls.
 - `@HttpCache` for opt-in caching of controller routes (Express and Fastify).
@@ -69,9 +69,12 @@ with tags, `@HttpCache`, optional Redis and Prometheus is in [`examples/basic`](
   logging and a sample Grafana dashboard.
 - [Tracing](docs/observability.md#tracing): opt-in OpenTelemetry spans for every cache call, with `CacheTracingModule`.
 - [Security](docs/security.md) and [Caveats](docs/caveats.md).
+- [Stability and semver](docs/semver.md): what 1.x keeps stable, and what counts as a major, minor or patch change.
 - [Migrating from `@nestjs/cache-manager`](docs/migration-from-cache-manager.md).
 
 ## Compatibility
+
+The semver contract is in [Stability and semver](docs/semver.md).
 
 | Component          | Supported                                                  |
 | ------------------ | ---------------------------------------------------------- |

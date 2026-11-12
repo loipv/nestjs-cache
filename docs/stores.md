@@ -6,6 +6,11 @@ custom stores.
 [Back to the README](../README.md) · See also: [module options](configuration.md#module-options),
 [circuit breaker](resilience.md#circuit-breaker), [caveats](caveats.md)
 
+Build stores with the factories (`memoryStore`, `redisStore`, `tieredStore`, `circuitBreakerStore`). The classes
+(`MemoryStore`, `RedisStore`, `TieredStore`, `CircuitBreakerStore`) are exported for types and `instanceof` checks only:
+do not construct them directly and do not subclass them. To change behaviour, wrap a store in your own `CacheStore`
+(see [Custom stores](#custom-stores-and-invalidation-buses)).
+
 ## Redis and two-tier setup
 
 You create and close the Redis client yourself. The library only opens one extra connection with
@@ -234,6 +239,14 @@ must retry themselves. A bus may implement the optional `onError(handler)`;
 errors of its subscriber connection this way).
 
 ### Custom Redis adapters
+
+How the library tells clients apart:
+
+- `redisStore({ client })` and `redisInvalidationBus({ client })` treat the value as a `RedisClientAdapter` when its
+  `createSubscriber` is a function; any other value is wrapped with `ioredisAdapter` as an ioredis client.
+- `ioredisAdapter` runs in Cluster mode when `client.isCluster === true`, and uses `client.nodes('master')` for `clear`.
+- `nodeRedisAdapter` runs in Cluster mode when the client has `masters`, in Sentinel mode when `getSentinelNode` is a
+  function, and as a single node otherwise. A Sentinel has no `duplicate`: its subscriber uses the Sentinel itself.
 
 `redisStore({ client })` also accepts a `RedisClientAdapter` (see the TSDoc in `src/stores/redis-client.adapter.ts`).
 Two rules matter for Cluster:

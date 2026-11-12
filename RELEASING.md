@@ -4,6 +4,9 @@ Versions and the CHANGELOG are managed with [Changesets](https://changesets.dev)
 
 [Back to the README](README.md)
 
+What counts as a major, minor or patch change is defined in [the semver contract](docs/semver.md). Pick the bump
+against it.
+
 1. A pull request that changes the published package runs `npx changeset`, picks `patch`, `minor` or `major`, and
    commits the generated `.changeset/*.md` file. Tests, CI and docs-only changes need none.
 2. When CI passes on `main`, the `Release` workflow opens or updates a "Version Packages" pull request that bumps

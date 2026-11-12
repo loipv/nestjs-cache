@@ -42,5 +42,49 @@
   {
     "fragment": "| Envelope unreadable or unknown `v` | Miss, `error` with `operation: 'deserialize'`; key deleted only if it holds an object with a `v` field |",
     "reason": "Moved to docs/resilience.md and extended with the 0.9 cleanup under `compressedSerializer(jsonSerializer)` (final review M-6)."
+  },
+  {
+    "fragment": "- **Key callback:** `key` is a fixed string, or `(req) => string | undefined` where `req` is",
+    "reason": "Moved to docs/http-caching.md and reworded: `key` is a literal string at method level only, and a class-level string key or a string key or tag containing `{` or `}` throws `CacheConfigError` at decoration time (1.0 rows C-02, C-03)."
+  },
+  {
+    "fragment": "- Defaults: `failureThreshold` 5 (an integer `>= 1`), `openDuration` 10_000, `timeout` 500.",
+    "reason": "Moved to docs/resilience.md; the options type is now named `CircuitBreakerStoreOptions` (1.0 row G-07)."
+  },
+  {
+    "fragment": "- `clear` is guarded by the breaker `timeout`.",
+    "reason": "Moved to docs/resilience.md and replaced: `clear` runs only while the circuit is closed, is not bounded by `timeout`, rejects with `CircuitOpenError` while the circuit is open or half-open, and is never the half-open probe (1.0 row G-08)."
+  },
+  {
+    "fragment": "| Key cannot be built or is empty |",
+    "reason": "Moved to docs/resilience.md and extended: a key with no namespace (or an empty one) that starts with `__` is also a key error, and in a delete list only the invalid key is skipped (1.0 row P-02)."
+  },
+  {
+    "fragment": "Multi-store, two-tier cache for NestJS with decorators, stampede protection and null caching.",
+    "reason": "The README tagline is now the `package.json` description, so the npm page and the README say the same (1.0 API review, observation 11)."
+  },
+  {
+    "fragment": "- Tag token keys live 30 days in the same store,",
+    "reason": "Moved to docs/namespaces-and-tags.md and extended: a read does not refresh the 30-day token key TTL, so a tag left alone for 30 days gets a new token (1.0 row P-04)."
+  },
+  {
+    "fragment": "- `CircuitOpenError` never reaches your code and never emits `error`:",
+    "reason": "Moved to docs/resilience.md and corrected: `invalidateTags` can reject with `CircuitOpenError` or the raw store error, and the strict calls of a tiered store reject with it by design (1.0 API review, observation 2; rows A-02, A-03)."
+  },
+  {
+    "fragment": "| Tag tokens cannot be read or written |",
+    "reason": "Moved to docs/resilience.md and extended: `invalidateTags` rejects with the raw store error or `CircuitOpenError` (1.0 API review, observation 2; rows A-02, A-03)."
+  },
+  {
+    "fragment": "| `CircuitOpenError` from a breaker | Never reaches callers",
+    "reason": "Moved to docs/resilience.md and corrected: it never emits `error`, but `invalidateTags` and the strict calls of a tiered store can reject with it (1.0 API review, observation 2; rows A-02, A-03)."
+  },
+  {
+    "fragment": "| `circuitBreakerStore(...)` / store setup | Invalid breaker or store options |",
+    "reason": "Moved to docs/resilience.md and extended with the `tieredStore` `l1Ttl` case, and the new Prometheus, tracing and health indicator row completes the `CacheConfigError` list (1.0 API review, observation 10)."
+  },
+  {
+    "fragment": "- **Default keys use the class name.**",
+    "reason": "Moved to docs/caveats.md and corrected: a `Map` or `Set` argument is a key error, not a collision (1.0 API review, observation 1)."
   }
 ]
