@@ -11,8 +11,8 @@ export { RELEASE_SCRIPT };
  * Structural subset of an ioredis client (v5 and v6). Declared by hand so the
  * library never imports ioredis.
  *
- * Structural subset of ioredis ≥ 5. Implemented by you. In 1.x, members are only added as optional,
- * and the library checks that they exist before calling them.
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
+ * exist before calling them.
  */
 export interface IoredisLike {
   get(key: string): Promise<string | null>;
@@ -49,8 +49,8 @@ type IoredisCommands = Omit<IoredisLike, 'duplicate' | 'on'>;
  * Declared by hand so the library never imports ioredis. `ioredisAdapter` runs in Cluster mode
  * when `isCluster` is `true`.
  *
- * Structural subset of ioredis ≥ 5. Implemented by you. In 1.x, members are only added as optional,
- * and the library checks that they exist before calling them.
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
+ * exist before calling them.
  */
 export interface IoredisClusterLike extends IoredisCommands {
   readonly isCluster: boolean;

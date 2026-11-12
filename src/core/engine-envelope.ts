@@ -195,8 +195,9 @@ export async function deleteInvalid(
 }
 
 /**
- * Whether an unreadable entry was written by this library and may be deleted: a corrupted
- * envelope or one of an older version, i.e. an object with an own `v` (a newer `v` is kept).
+ * Whether an unreadable entry was written by this library and may be deleted: an envelope of
+ * ours that this version cannot read and that is not from a newer version, i.e. an object with
+ * an own `v` unless that `v` is a finite number above 1 (such an entry is kept).
  * `decoded` is what the serializer returned, or `undefined` when it threw. The built-in JSON
  * serializer validates the envelope itself, so for it the raw JSON is inspected;
  * `compressedSerializer` over it carries an `OWN_ENVELOPE` check that does the same behind the

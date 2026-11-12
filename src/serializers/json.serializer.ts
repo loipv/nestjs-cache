@@ -8,6 +8,9 @@ import { isEnvelope, type CacheEnvelope } from '../core/envelope.js';
  *
  * `deserialize(serialize(e))` must keep every field of `e`, including fields this version does
  * not know.
+ *
+ * Implemented by you. In 1.x, members are only added as optional, and the library checks that
+ * they exist before calling them.
  */
 export interface Serializer {
   serialize(envelope: CacheEnvelope): string;
