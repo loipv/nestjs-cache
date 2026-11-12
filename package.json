@@ -65,7 +65,8 @@
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "typecheck:min": "node node_modules/typescript-min/bin/tsc -p test/types-min",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --project unit --project unit-traced",
@@ -127,6 +128,7 @@
     "tsup": "^9.0.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2",
+    "typescript-min": "npm:typescript@5.4.5",
     "vitest": "^5.1.0"
   }
 }

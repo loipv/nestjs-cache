@@ -32,6 +32,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run docs:check
       - run: npm run build
+      - run: npm run typecheck:min
       - run: npm run check:pack
       - run: npm run check:pkg
       - run: npm run check:workflows

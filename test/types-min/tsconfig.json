@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": false,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "types": ["node"],
+    "typeRoots": ["../../node_modules/@types"],
+    "baseUrl": ".",
+    "paths": { "@loipv/nestjs-cache": ["../../dist/index.d.ts"] }
+  },
+  "files": ["consumer.ts"]
+}

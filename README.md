@@ -77,10 +77,14 @@ with tags, `@HttpCache`, optional Redis and Prometheus is in [`examples/basic`](
 | ------------------ | ---------------------------------------------------------- |
 | NestJS             | 11 (CommonJS) and 12 (ESM)                                 |
 | Node.js            | `>=22` (LTS 22, 24, 26)                                    |
+| TypeScript         | `>=5.4` (the published `.d.ts` is checked against 5.4)     |
 | ioredis            | `^5 \|\| ^6` (optional peer; Cluster needs 5.6.0 or later) |
 | redis (node-redis) | `^5 \|\| ^6` (optional peer; Sentinel supported)           |
 | rxjs               | `^7.1` (peer, as for `@nestjs/common`)                     |
 | Redis server       | 6.2 or later (Cluster: 7 or later)                         |
+
+The decorators (`@Cacheable`, `@CachePut`, `@CacheEvict`, `@HttpCache`) are legacy decorators: consumers need
+`experimentalDecorators: true` in `tsconfig.json`. Standard (TC39) decorators are not supported.
 
 The package ships both ESM and CommonJS builds. The injection tokens use `Symbol.for('@loipv/nestjs-cache:...')`,
 so they are shared when both builds are loaded in one process, and `instanceof CacheConfigError` matches errors
