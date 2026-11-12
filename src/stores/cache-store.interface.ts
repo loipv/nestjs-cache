@@ -9,6 +9,7 @@ import type { CacheEventSink } from '../core/events.js';
  *
  * Provided by the library. New members, events, fields or values may be added in a minor release;
  * handle unknown ones.
+ *
  * A bus passes messages through as opaque JSON.
  */
 export type InvalidationMessage =

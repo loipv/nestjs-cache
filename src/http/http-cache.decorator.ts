@@ -11,6 +11,7 @@ import {
   assertTags,
   CLASS_LEVEL,
   describeMethod,
+  hasBraceTag,
 } from '../decorators/metadata.js';
 import { presetStrategy, putOptionsOf } from '../decorators/method-wrapper.js';
 import type { LoadStrategyOptions } from '../decorators/options.js';
@@ -118,10 +119,7 @@ function validate(
     );
   }
   assertTags(target, method, options?.tags);
-  if (
-    Array.isArray(options?.tags) &&
-    (options.tags as unknown[]).some((t) => typeof t === 'string' && /[{}]/.test(t))
-  ) {
+  if (hasBraceTag(options?.tags)) {
     throw new CacheConfigError(
       `${describeMethod(target, method)}: tags are not templates; use a tags callback`,
     );

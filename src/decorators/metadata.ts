@@ -131,6 +131,11 @@ export function assertStrategyTtls(
   }
 }
 
+/** True when `tags` is an array with a string that contains a brace, i.e. looks like a template. */
+export function hasBraceTag(tags: unknown): boolean {
+  return Array.isArray(tags) && tags.some((t) => typeof t === 'string' && /[{}]/.test(t));
+}
+
 /** `tags` must be an array of non-empty strings or a function (spec 2.5). */
 export function assertTags(target: object, method: string | symbol, tags: unknown): void {
   if (tags === undefined || typeof tags === 'function') return;

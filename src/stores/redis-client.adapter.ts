@@ -11,6 +11,7 @@ export const RELEASE_SCRIPT =
  *
  * Implemented by you. In 1.x, members are only added as optional, and the library checks that
  * they exist before calling them.
+ *
  * `redisStore` tells an adapter from an ioredis client by checking that `createSubscriber` is a
  * function.
  */

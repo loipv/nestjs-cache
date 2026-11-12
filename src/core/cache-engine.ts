@@ -387,7 +387,7 @@ export class CacheEngine {
 
   /**
    * `get` for several keys of one namespace: one store read for the batch (per key under
-   * `sliding`), results in input order. A duplicate is read once; an empty key is `undefined`.
+   * `sliding`), results in input order. A duplicate is read once; an empty or reserved key is `undefined`.
    */
   getMany<T>(
     scope: BatchScope,
@@ -418,7 +418,7 @@ export class CacheEngine {
 
   /**
    * `set` for several entries, written with one store call. A repeated key is written once,
-   * with its last value; empty keys are dropped and reported once as a key error.
+   * with its last value; empty or reserved keys are dropped and reported once as a key error.
    */
   setMany<T>(
     scope: BatchScope,
@@ -452,7 +452,8 @@ export class CacheEngine {
    * misses go to one `loader(missing)` call, except those another call is loading, which are
    * awaited. A key the loader omits counts as `undefined`; keys it was not asked for are
    * ignored. Stale `swr` keys are refreshed in the background with one more loader call.
-   * Results are in input order, duplicates included; an empty key is `undefined`. Never locks.
+   * Results are in input order, duplicates included; an empty or reserved key is
+   * `undefined`. Never locks.
    */
   getOrSetMany<T>(
     scope: BatchScope,

@@ -7,8 +7,8 @@ export type SpanAttributeValue = string | number | boolean | string[];
  * Structural subset of an OpenTelemetry `SpanContext`: what a link needs to point at a span.
  * Satisfied by the result of `span.spanContext()` in the OpenTelemetry JS API 1.x.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  */
 export interface SpanContextLike {
   traceId: string;
@@ -20,8 +20,8 @@ export interface SpanContextLike {
  * Structural subset of an OpenTelemetry `Span`: only the methods the library calls. Satisfied by
  * the spans of the OpenTelemetry JS API 1.x, so no dependency on that package is needed.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  */
 export interface SpanLike {
   /** Sets one attribute (`cache.store`, `cache.result`, ...). */
@@ -41,8 +41,8 @@ export interface SpanLike {
 /**
  * Structural subset of an OpenTelemetry `SpanOptions`: the options the library passes.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  */
 export interface SpanOptionsLike {
   /** Attributes set when the span starts. */
@@ -57,8 +57,8 @@ export interface SpanOptionsLike {
  * Structural subset of an OpenTelemetry `Tracer`. Pass `trace.getTracer('my-app')` from
  * the OpenTelemetry JS API 1.x; it is assignable without a cast.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  */
 export interface TracerLike {
   /**

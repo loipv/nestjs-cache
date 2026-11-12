@@ -3,8 +3,8 @@ import type { FactoryProvider, ModuleMetadata } from '@nestjs/common';
 /**
  * Structural subset of a Prometheus registry; satisfied by prom-client and @prometheus-io/client.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  */
 export interface RegistryLike {
   getSingleMetric(name: string): unknown;
@@ -47,8 +47,8 @@ export function construct<TInstance>(
  * Structural subset of a prom-client-compatible client module; pass
  * `import * as client from '...'`.
  *
- * Implemented by you. In 1.x, members are only added as optional, and the library checks that they
- * exist before calling them.
+ * Satisfied by the client you pass in. In 1.x, members are only added as optional, and the
+ * library checks that they exist before calling them.
  *
  * A minimal hand-written fake, for tests:
  *
