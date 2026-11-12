@@ -45,8 +45,8 @@ export function hasOwnVersion(value: unknown): boolean {
 
 /**
  * Whether `candidate` is an envelope written by a newer version of this library: an own `v` that
- * is a finite number greater than 1. Such an entry is a miss but is never deleted, so a rolling
- * deploy or a rollback does not destroy what the newer instances wrote.
+ * is a finite number greater than 1. Such an entry is a miss and no read deletes it. A later miss
+ * or write (`getOrSet`, `set`, `@CachePut`) may still overwrite it with a `v: 1` entry.
  */
 export function isNewerEnvelope(candidate: unknown): boolean {
   if (!hasOwnVersion(candidate)) return false;

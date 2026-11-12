@@ -37,15 +37,16 @@ frozen in 1.x:
   versions would miss each other's entries.
 - **Reserved key space:** `__lock__`, `__version__` and `__tag__`. Namespaces starting with `__` are rejected, and a
   key with no namespace (or with the empty namespace) that starts with `__` is a key error.
-- **Version and tag token keys:** the key shapes and their 30-day TTL.
+- **Version and tag token keys:** the key shapes, and the fact that a token key expires. The exact TTL (30 days
+  today) is not covered.
 - **The lock:** the key `<prefix>:__lock__:<namespace>[@<token>]:<key>`, a random UUID as value, `SET NX PX`, and a
   token-checked release.
 - **The envelope:** `v: 1` and its fields (`value`, `storedAt`, `expiresAt`, `staleAt`, `nil`, `tags`). Forward rules:
   - A field that older readers can ignore is added without changing `v`. A custom `Serializer` must therefore
     round-trip fields it does not know.
   - Bumping `v` is a major change.
-  - An envelope whose `v` is a finite number greater than 1 is read as a miss and is not deleted, so a 1.x node never
-    destroys an entry written by a newer version. The next `getOrSet` miss may overwrite it with a `v: 1` entry.
+  - An envelope whose `v` is a finite number greater than 1 is read as a miss, and no read on a 1.x node deletes it.
+    A later miss or write (a `getOrSet` miss, `set` or `@CachePut`) may overwrite it with a `v: 1` entry.
 - **The compression prefix:** `"\u0000nc1:"` followed by `gz:` or `br:`, then base64.
 - **The invalidation message:** JSON `{ origin, keys }` or `{ origin, prefix }` on the channel `nestjs-cache:invalidate`
   (the channel default). Forward rule: new message kinds may be added in a minor, and a 1.x node handles one it does not
@@ -84,13 +85,14 @@ These can change in any release:
   classes, and when they are thrown, are covered.
 - Internal DI tokens (`Symbol.for('@loipv/nestjs-cache:...')`), the providers `CacheModule` exports besides
   `CacheService`, `CacheEvents` and `CacheHealthIndicator`, timing and tick order, the order of store calls, and
-  internal constants other than the limit of 32 tags.
+  internal constants other than the limit of 32 tags (and the token-key expiry rule above).
 
 ## Major, minor and patch
 
 | Change                                                                                                     | Release |
 | ---------------------------------------------------------------------------------------------------------- | ------- |
 | Remove or rename an exported name, a member, an option field or a strategy name                            | major   |
+| Add a strategy name (`strategy` is a closed union, so user code with an exhaustive `switch` would break)   | major   |
 | Change a default, a signature or documented behaviour in a way that breaks a correct caller                | major   |
 | Change a persisted or wire format: key layout, reserved space, lock, `v`, compression prefix, default keys | major   |
 | Lower the 32-tag limit                                                                                     | major   |

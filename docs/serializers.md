@@ -43,7 +43,7 @@ CacheModule.forRoot({ serializer: dateSerializer });
 
 - `deserialize` must throw on input it does not recognise. The engine reports that as an `error` event with
   `operation: 'deserialize'` and treats the entry as a miss.
-- Every envelope field must survive the round trip, `tags` included, or tag invalidation is silently disabled.
+- Every envelope field must survive the round trip, `tags` included, or tag invalidation is silently disabled. This includes fields your serializer does not know: a minor release can add an optional envelope field without changing `v`, so copy the whole object instead of listing known fields (see [semver](semver.md#persisted-and-wire-formats)).
 - When you switch serializers, entries the new one cannot read are `deserialize` errors and misses until they expire.
 
 ## Compression

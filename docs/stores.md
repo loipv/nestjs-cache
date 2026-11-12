@@ -219,6 +219,10 @@ followed by a `set`, which is not atomic. `lock` is a `LockProvider` (`acquire(k
 `undefined`; `LockHandle.release()` frees it). `getMany` and `setMany` are optional: without them the engine calls `get` and `set` for each key. Leave these members out when unsupported; do not define them as
 `undefined`.
 
+The interfaces you implement (`CacheStore`, `LockProvider`, `InvalidationBus`, `RedisClientAdapter` and the other
+ones) only gain optional members in 1.x, and the library checks that an optional member exists before it calls it, so
+an implementation written for 1.0 keeps working. See [Stability and semver](semver.md#interfaces-you-implement).
+
 A custom store can be the L2 of a `tieredStore`. L1 synchronisation is separate from storage: `tieredStore`
 uses `options.invalidation` if given, otherwise `l2.invalidation`.
 
