@@ -38,7 +38,10 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 ```
 
 - A versioned namespace keeps a token in the key `<prefix>:__version__:<namespace>` and writes data under
-  `<prefix>:<namespace>@<token>:<key>`. The token key has a 30-day TTL that every `clear` refreshes. The TTL is set only when the token key is created and on `clear`; reads and writes never refresh it. A versioned namespace that has not been cleared for 30 days therefore gets a new token on its next use, however busy it is: every entry under the old token misses, including entries written just before with a short `ttl` (a miss, never stale data).
+  `<prefix>:<namespace>@<token>:<key>`. The token key has a 30-day TTL that every `clear` refreshes. The TTL is set only
+  when the token key is created and on `clear`; reads and writes never refresh it. A versioned namespace that has not
+  been cleared for 30 days therefore gets a new token on its next use, however busy it is: every entry under the old
+  token misses, including entries written just before with a short `ttl` (a miss, never stale data).
 - `clear` and `@CacheEvict({ allEntries: true })` write a new token. Old entries are never deleted; they become
   unreachable and expire by their own TTL.
 - Each instance caches the token in memory for `versioning.cacheTtl` ms (default `1_000`), so another instance sees a
@@ -133,7 +136,8 @@ Declaring tags:
 - `@Cacheable` and `@CachePut`: `tags` is an array of templates (same syntax as `key`, honours `escapeKeyArgs`) or a
   callback `(result, ...args) => string[]`. `tags: []` means no tags. Callbacks are checked against the decorated
   method, not inferred from it, so annotate their parameters.
-- `@HttpCache`: `tags` is an array of fixed strings (not templates; a `{` or `}` throws `CacheConfigError` at decoration) or `(body, req: HttpCacheRequest) => string[]`.
+- `@HttpCache`: `tags` is an array of fixed strings (not templates; a `{` or `}` throws `CacheConfigError` at
+  decoration) or `(body, req: HttpCacheRequest) => string[]`.
 - `CacheService.set` and `getOrSet`: fixed strings or `(value) => string[]`. `setMany` and `getOrSetMany`: fixed
   strings or `(value, key) => string[]` (the types `WriteManyOptions<T>` and `GetOrSetManyOptions<T>` are exported).
 
@@ -181,8 +185,11 @@ Consistency and cost:
 - Each tag has a version key `<prefix>:__tag__:<tag>` with a 30-day TTL. Reads cost no extra round-trip while the tag
   tokens are cached in the process; up to 10 000 tag tokens are kept per process (the least recently refreshed is
   evicted first).
-- Tag token keys live 30 days. The TTL is set only when the key is created and on `invalidateTags` or `@CacheEvict({ tags })`; reads and writes never refresh it. A tag that has not been invalidated for 30 days gets a new token on its next use, however busy it is: every entry tagged with it misses, including entries written just before with a short `ttl` (a miss, never stale data). They live in the same store, count toward `memoryStore` `maxEntries`, and one key per distinct tag
-  accumulates in Redis. Bound tags built from untrusted input.
+- Tag token keys live 30 days. The TTL is set only when the key is created and on `invalidateTags` or
+  `@CacheEvict({ tags })`; reads and writes never refresh it. A tag that has not been invalidated for 30 days gets a new
+  token on its next use, however busy it is: every entry tagged with it misses, including entries written just before
+  with a short `ttl` (a miss, never stale data). They live in the same store, count toward `memoryStore` `maxEntries`,
+  and one key per distinct tag accumulates in Redis. Bound tags built from untrusted input.
 - On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old tag
   token for up to `l1Ttl` plus `versioning.cacheTtl` (the tag token key is cached in L1), not only
   `versioning.cacheTtl`.

@@ -8,8 +8,8 @@ custom stores.
 
 Build stores with the factories (`memoryStore`, `redisStore`, `tieredStore`, `circuitBreakerStore`). The classes
 (`MemoryStore`, `RedisStore`, `TieredStore`, `CircuitBreakerStore`) are exported for types and `instanceof` checks only:
-do not construct them directly and do not subclass them. To change behaviour, wrap a store in your own `CacheStore`
-(see [Custom stores](#custom-stores-and-invalidation-buses)).
+build stores with the factories above, and do not subclass them. To change behaviour, wrap a store in your own
+`CacheStore` (see [Custom stores](#custom-stores-and-invalidation-buses)).
 
 ## Redis and two-tier setup
 

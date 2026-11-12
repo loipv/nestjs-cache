@@ -91,18 +91,20 @@ These can change in any release:
 
 ## Major, minor and patch
 
-| Change                                                                                                     | Release |
-| ---------------------------------------------------------------------------------------------------------- | ------- |
-| Remove or rename an exported name, a member, an option field or a strategy name                            | major   |
-| Add a strategy name (`strategy` is a closed union, so user code with an exhaustive `switch` would break)   | major   |
-| Change a default, a signature or documented behaviour in a way that breaks a correct caller                | major   |
-| Change a persisted or wire format: key layout, reserved space, lock, `v`, compression prefix, default keys | major   |
-| Lower the 32-tag limit                                                                                     | major   |
-| Add or remove a label on an existing Prometheus metric; rename a metric, span, attribute or event          | major   |
-| Raise the Node minimum, narrow a peer range, add a required peer, or raise the TypeScript minimum          | major   |
-| Add an exported name, an optional option or an optional interface member                                   | minor   |
-| Add an event, an event payload field, a `CacheOperation` value, a metric, a span or a span attribute       | minor   |
-| Add an optional envelope field without bumping `v`, or a new invalidation message kind                     | minor   |
-| Raise the 32-tag limit                                                                                     | minor   |
-| Widen a peer range or the supported Node range                                                             | minor   |
-| Fix behaviour that contradicts the docs; fix a bug; change messages, logs or internals; update the docs    | patch   |
+| Change                                                                                                                                                       | Release |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| Remove or rename an exported name, a member, an option field or a strategy name                                                                              | major   |
+| Add a strategy name (`strategy` is a closed union, so user code with an exhaustive `switch` would break)                                                     | major   |
+| Change a default, a signature or documented behaviour in a way that breaks a correct caller                                                                  | major   |
+| Change a persisted or wire format: key layout, reserved space, token keys, lock, `v`, compression prefix, the invalidation message, tag stamps, default keys | major   |
+| Remove a metric, a span or an event                                                                                                                          | major   |
+| Lower the 32-tag limit                                                                                                                                       | major   |
+| Add or remove a label on an existing Prometheus metric; rename a metric, span, attribute or event                                                            | major   |
+| Raise the Node minimum, narrow a peer range, add a required peer, or raise the TypeScript minimum                                                            | major   |
+| Add an exported name, an optional option or an optional interface member                                                                                     | minor   |
+| Add an event, an event payload field, a `CacheOperation` value, a metric, a span or a span attribute                                                         | minor   |
+| Add a `cache.result` value                                                                                                                                   | minor   |
+| Add an optional envelope field without bumping `v`, or a new invalidation message kind                                                                       | minor   |
+| Raise the 32-tag limit                                                                                                                                       | minor   |
+| Widen a peer range or the supported Node range                                                                                                               | minor   |
+| Fix behaviour that contradicts the docs; fix a bug; change messages, logs or internals; update the docs                                                      | patch   |

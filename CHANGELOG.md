@@ -9,6 +9,8 @@
   `@loipv/nestjs-cache` 1.0.0 is the first published version. The public API is frozen and follows
   [semver](https://github.com/loipv/nestjs-cache/blob/main/docs/semver.md) from here.
 
+  - Requirements: Node 22 or later; TypeScript 5.4 or later with `experimentalDecorators`; peers `@nestjs/common` and `@nestjs/core` `^11.0.0 || ^12.0.0`, `rxjs` `^7.1.0`, `reflect-metadata` `^0.2.0`, and the optional `ioredis` `^5.0.0 || ^6.0.0` or `redis` `^5.0.0 || ^6.0.0`.
+  - `escapeKeyArgs` defaults to `false`: template arguments are not escaped unless you enable it, see [security](https://github.com/loipv/nestjs-cache/blob/main/docs/security.md).
   - Decorators: `@Cacheable`, `@CachePut`, `@CacheEvict` and the `CacheService` API, see [decorators](https://github.com/loipv/nestjs-cache/blob/main/docs/decorators.md) and [the service](https://github.com/loipv/nestjs-cache/blob/main/docs/cache-service.md).
   - Stores: memory, Redis (ioredis or node-redis v5/v6, Cluster, Sentinel) and tiered L1/L2 with invalidation, see [stores](https://github.com/loipv/nestjs-cache/blob/main/docs/stores.md).
   - Resilience: distributed locks, circuit breaker, `swr` and `sliding` strategies, `softTimeout`, see [resilience](https://github.com/loipv/nestjs-cache/blob/main/docs/resilience.md).
