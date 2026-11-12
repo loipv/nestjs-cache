@@ -98,6 +98,15 @@ for (const p of ['dist/index.js', 'dist/index.cjs']) {
   }
 }
 
+// 7. Tracing is structural (TracerLike): no shipped file mentions or imports `@opentelemetry`,
+// so the package needs no OpenTelemetry dependency and bundles none.
+for (const p of files) {
+  if (!p.startsWith('dist/')) continue;
+  if (readFileSync(join(root, p), 'utf8').includes('@opentelemetry')) {
+    violations.push(`${p} contains @opentelemetry (tracing must not depend on it)`);
+  }
+}
+
 if (violations.length > 0) {
   console.error(`check:pack failed with ${violations.length} violation(s):`);
   for (const v of violations) console.error(`  - ${v}`);

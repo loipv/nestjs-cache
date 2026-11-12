@@ -85,3 +85,13 @@ export type {
   RegistryLike,
 } from './observability/prometheus.types.js';
 export { CachePrometheusModule } from './observability/prometheus.module.js';
+export type {
+  CacheTracingAsyncOptions,
+  CacheTracingOptions,
+  SpanAttributeValue,
+  SpanContextLike,
+  SpanLike,
+  SpanOptionsLike,
+  TracerLike,
+} from './observability/tracing.types.js';
+export { CacheTracingModule } from './observability/tracing.module.js';

@@ -9,3 +9,11 @@ export const CACHE_LOGGER: unique symbol = Symbol.for('@loipv/nestjs-cache:logge
 export const CACHE_PROMETHEUS_OPTIONS: unique symbol = Symbol.for(
   '@loipv/nestjs-cache:prometheus-options',
 );
+/** @internal The `CacheTracingModule` options; `CacheTracing.use` validates them. */
+export const CACHE_TRACING_OPTIONS: unique symbol = Symbol.for(
+  '@loipv/nestjs-cache:tracing-options',
+);
+/** @internal The `CacheTracingModule` provider that registers the tracer with `CacheTracing`. */
+export const CACHE_TRACING_REGISTRATION: unique symbol = Symbol.for(
+  '@loipv/nestjs-cache:tracing-registration',
+);

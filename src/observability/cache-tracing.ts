@@ -87,14 +87,16 @@ function attributesOf(base: TraceBase): Record<string, SpanAttributeValue> {
 }
 
 /**
- * @internal Owns the user's tracer once `CacheTracingModule` registers it, and the current cache
- * scope (an `AsyncLocalStorage`, created on registration). Until then every method calls its
- * function directly or does nothing. A throwing tracer or span method is logged (as
- * `'tracing'`) and never reaches the caller, and never runs a function twice.
+ * Internal and absent from the package index, but not marked for `stripInternal`: the engine's
+ * published declarations reference it. Owns the user's tracer once `CacheTracingModule`
+ * registers it, and the current cache scope (an `AsyncLocalStorage`, created on registration).
+ * Until then every method calls its function directly or does nothing. A throwing tracer or span
+ * method is logged (as `'tracing'`) and never reaches the caller, and never runs a function twice.
  */
 export class CacheTracing {
   private on: Enabled | undefined;
 
+  /** @internal `CacheModule` builds it with its `CacheLogger`. */
   constructor(private readonly logger?: CacheLogger) {}
 
   /** Whether a tracer is registered. */

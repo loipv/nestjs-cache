@@ -4,6 +4,7 @@ import { CacheEngine } from '../core/cache-engine.js';
 import { CacheService } from '../core/cache.service.js';
 import { CacheEvents } from '../core/events.js';
 import { CacheHealthIndicator } from '../health/cache-health.indicator.js';
+import { CacheTracing } from '../observability/cache-tracing.js';
 import { CacheExplorer } from './cache.explorer.js';
 import { CacheLifecycle } from './cache.lifecycle.js';
 import { CacheLogger } from './cache.logger.js';
@@ -33,10 +34,15 @@ function sharedProviders(): Provider[] {
       inject: [CACHE_LOGGER],
     },
     {
+      provide: CacheTracing,
+      useFactory: (logger: CacheLogger) => new CacheTracing(logger),
+      inject: [CACHE_LOGGER],
+    },
+    {
       provide: CACHE_ENGINE,
-      useFactory: (options: ResolvedCacheOptions, events: CacheEvents) =>
-        new CacheEngine(options, events),
-      inject: [CACHE_OPTIONS, CacheEvents],
+      useFactory: (options: ResolvedCacheOptions, events: CacheEvents, tracing: CacheTracing) =>
+        new CacheEngine(options, events, tracing),
+      inject: [CACHE_OPTIONS, CacheEvents, CacheTracing],
     },
     {
       provide: CacheService,
@@ -63,7 +69,14 @@ function sharedProviders(): Provider[] {
   ];
 }
 
-const EXPORTS = [CacheService, CacheEvents, CACHE_ENGINE, CacheHealthIndicator, CACHE_LOGGER];
+const EXPORTS = [
+  CacheService,
+  CacheEvents,
+  CACHE_ENGINE,
+  CacheHealthIndicator,
+  CACHE_LOGGER,
+  CacheTracing,
+];
 
 /**
  * The cache module: provides `CacheService`, `CacheEvents` and `CacheHealthIndicator`, and

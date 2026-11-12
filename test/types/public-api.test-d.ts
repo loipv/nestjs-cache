@@ -92,3 +92,25 @@ export const promAsync: lib.CachePrometheusAsyncOptions = {
   inject: [],
   useFactory: () => ({ client: {} as lib.PrometheusClientLike }),
 };
+
+/* 0.10: tracing. CacheTracingModule and its option and structural tracer types are public;
+   CacheTracing (the internal registry the engine traces through) is not exported. */
+expectTypeOf(lib.CacheTracingModule.forRoot).parameter(0).toEqualTypeOf<lib.CacheTracingOptions>();
+expectTypeOf(lib.CacheTracingModule.forRootAsync)
+  .parameter(0)
+  .toEqualTypeOf<lib.CacheTracingAsyncOptions>();
+expectTypeOf<lib.CacheTracingOptions['tracer']>().toEqualTypeOf<lib.TracerLike>();
+expectTypeOf(null as unknown as lib.TracerLike)
+  .toHaveProperty('startSpan')
+  .returns.toEqualTypeOf<lib.SpanLike>();
+expectTypeOf<ReturnType<lib.SpanLike['spanContext']>>().toEqualTypeOf<lib.SpanContextLike>();
+expectTypeOf<NonNullable<lib.SpanOptionsLike['attributes']>>().toEqualTypeOf<
+  Record<string, lib.SpanAttributeValue>
+>();
+export const tracingAsync: lib.CacheTracingAsyncOptions = {
+  inject: [],
+  useFactory: () => ({ tracer: {} as lib.TracerLike, recordKeys: false }),
+};
+expectTypeOf<Index>().not.toHaveProperty('CacheTracing');
+// @ts-expect-error CacheTracing is internal, not exported
+export type Tracing = lib.CacheTracing;
