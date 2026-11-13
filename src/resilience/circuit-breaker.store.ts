@@ -70,7 +70,7 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
- * `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
+ * `getAndTouch`, `getMany`, `setMany`, `touch`, `setIfAbsent`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
  * `LockHandle.release` are guarded: each races a timeout, except `clear`. `clear` runs only
  * while the circuit is closed (open or half-open it rejects with `CircuitOpenError`, and it is
  * never the half-open probe); it is not bounded by `timeout`, so set a command or socket timeout
@@ -92,6 +92,10 @@ export class CircuitBreakerStore implements CacheStore {
   declare readonly getStrict?: (key: string) => Promise<string | undefined>;
   /** Present only when the inner store has `setStrict`. */
   declare readonly setStrict?: (key: string, value: string, ttlMs: number) => Promise<void>;
+  /** Present only when the inner store has `touch`; one batch counts as one outcome. */
+  declare readonly touch?: (keys: readonly string[], ttlMs: number) => Promise<void>;
+  /** Present only when the inner store has `setIfAbsent`. */
+  declare readonly setIfAbsent?: (key: string, value: string, ttlMs: number) => Promise<boolean>;
   /** Present only when the inner store has a lock; `acquire` and `release` are guarded. */
   declare readonly lock?: LockProvider;
   /** Present only when the inner store has `ping`; guarded like every other operation. */
@@ -141,6 +145,14 @@ export class CircuitBreakerStore implements CacheStore {
     if (inner.setStrict !== undefined) {
       const setStrict = inner.setStrict.bind(inner);
       this.setStrict = (key, value, ttlMs) => this.guard(() => setStrict(key, value, ttlMs));
+    }
+    if (inner.touch !== undefined) {
+      const touch = inner.touch.bind(inner);
+      this.touch = (keys, ttlMs) => this.guard(() => touch(keys, ttlMs));
+    }
+    if (inner.setIfAbsent !== undefined) {
+      const setIfAbsent = inner.setIfAbsent.bind(inner);
+      this.setIfAbsent = (key, value, ttlMs) => this.guard(() => setIfAbsent(key, value, ttlMs));
     }
     if (inner.lock !== undefined) {
       const lock = inner.lock;

@@ -38,6 +38,15 @@ class Partition {
     return entry.value;
   }
 
+  /** Resets the TTL of a live entry in place; a missing or expired key is left as it is. */
+  touch(key: string, ttlMs: number): void {
+    const entry = this.entries.get(key);
+    if (entry === undefined) return;
+    const now = Date.now();
+    if (now >= entry.expiresAt) this.entries.delete(key);
+    else entry.expiresAt = now + ttlMs;
+  }
+
   write(key: string, entry: Entry): void {
     if (this.entries.has(key)) {
       this.entries.delete(key);
@@ -135,6 +144,20 @@ export class MemoryStore implements CacheStore {
   set(key: string, value: string, ttlMs: number): Promise<void> {
     this.partitionOf(key).write(key, { value, expiresAt: Date.now() + ttlMs });
     return Promise.resolve();
+  }
+
+  /** Resets the TTL of the live entries; missing or expired keys are not created. */
+  touch(keys: readonly string[], ttlMs: number): Promise<void> {
+    for (const key of keys) this.partitionOf(key).touch(key, ttlMs);
+    return Promise.resolve();
+  }
+
+  /** Writes only when the key is absent or expired, in one synchronous step. */
+  setIfAbsent(key: string, value: string, ttlMs: number): Promise<boolean> {
+    const partition = this.partitionOf(key);
+    if (partition.read(key, undefined) !== undefined) return Promise.resolve(false);
+    partition.write(key, { value, expiresAt: Date.now() + ttlMs });
+    return Promise.resolve(true);
   }
 
   getMany(keys: readonly string[]): Promise<(string | undefined)[]> {

@@ -980,3 +980,43 @@ describe('circuitBreakerStore batch', () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('circuitBreakerStore touch and setIfAbsent', () => {
+  it('has the members only when the inner store has them', () => {
+    const plain = circuitBreakerStore(new FakeStore());
+    expect('touch' in plain).toBe(false);
+    expect('setIfAbsent' in plain).toBe(false);
+    const b = circuitBreakerStore(memoryStore());
+    expect('touch' in b).toBe(true);
+    expect('setIfAbsent' in b).toBe(true);
+  });
+
+  it('forwards both through the guard', async () => {
+    const b = circuitBreakerStore(memoryStore());
+    expect(await b.setIfAbsent?.('k', 'v', 1_000)).toBe(true);
+    expect(await b.setIfAbsent?.('k', 'w', 1_000)).toBe(false);
+    await b.touch?.(['k'], 5_000);
+  });
+
+  it('a rejecting touch counts toward failureThreshold', async () => {
+    const inner = memoryStore();
+    vi.spyOn(inner, 'touch').mockRejectedValue(new Error('down'));
+    const b = circuitBreakerStore(inner, { failureThreshold: 2 });
+    await expect(b.touch?.(['a', 'b'], 1_000)).rejects.toThrow('down');
+    expect(b.state).toBe('closed');
+    await expect(b.touch?.(['a'], 1_000)).rejects.toThrow('down');
+    expect(b.state).toBe('open');
+  });
+
+  it('an open circuit rejects both with CircuitOpenError without calling in', async () => {
+    const inner = memoryStore();
+    const touch = vi.spyOn(inner, 'touch').mockRejectedValue(new Error('down'));
+    const setIfAbsent = vi.spyOn(inner, 'setIfAbsent');
+    const b = circuitBreakerStore(inner, { failureThreshold: 1 });
+    await expect(b.touch?.(['a'], 1_000)).rejects.toThrow('down');
+    await expect(b.touch?.(['a'], 1_000)).rejects.toBeInstanceOf(CircuitOpenError);
+    await expect(b.setIfAbsent?.('k', 'v', 1_000)).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(setIfAbsent).not.toHaveBeenCalled();
+  });
+});

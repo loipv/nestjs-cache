@@ -35,6 +35,10 @@ export class TieredStore implements CacheStore {
   declare readonly lock?: LockProvider;
   /** Present only when the L2 has `ping`; probes the L2. */
   declare readonly ping?: () => Promise<void>;
+  /** Present only when the L2 has `touch`; rejects when L2 does, reporting nothing itself. */
+  declare readonly touch?: (keys: readonly string[], ttlMs: number) => Promise<void>;
+  /** Present only when the L2 has `setIfAbsent`; an L2 failure is reported as `set` and rejects. */
+  declare readonly setIfAbsent?: (key: string, value: string, ttlMs: number) => Promise<boolean>;
   private readonly l1: CacheStore;
   private readonly l2: CacheStore;
   private readonly l1Ttl: number;
@@ -65,6 +69,24 @@ export class TieredStore implements CacheStore {
     if (options.l2.ping !== undefined) {
       const ping = options.l2.ping.bind(options.l2);
       this.ping = () => ping();
+    }
+    if (options.l2.touch !== undefined) {
+      const touch = options.l2.touch.bind(options.l2);
+      this.touch = (keys, ttlMs) => touch(keys, ttlMs);
+    }
+    if (options.l2.setIfAbsent !== undefined) {
+      const setIfAbsent = options.l2.setIfAbsent.bind(options.l2);
+      this.setIfAbsent = async (key, value, ttlMs) => {
+        let stored: boolean;
+        try {
+          stored = await setIfAbsent(key, value, ttlMs);
+        } catch (error) {
+          this.report('set', error);
+          throw error;
+        }
+        if (stored) await this.afterL2Set(key, value, ttlMs, true);
+        return stored;
+      };
     }
     this.l1Ttl = l1Ttl;
     this.ownedBus = options.invalidation;

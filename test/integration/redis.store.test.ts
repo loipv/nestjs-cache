@@ -102,6 +102,22 @@ describe.each(selectedAdapters())('RedisStore (integration) on %s', (adapterName
     expect(await store.getMany([])).toEqual([]);
   });
 
+  it('touch extends a live key and never creates a missing one', async () => {
+    const store = redisStore({ client });
+    await store.set('t:k', 'v', 1_000);
+    await store.touch(['t:k', 't:nope'], 60_000);
+    expect(await redis.raw.pttl('t:k')).toBeGreaterThan(50_000);
+    expect(await redis.raw.pttl('t:nope')).toBe(-2);
+    expect(await store.get('t:k')).toBe('v');
+  });
+
+  it('setIfAbsent returns true, then false, and keeps the first value', async () => {
+    const store = redisStore({ client });
+    expect(await store.setIfAbsent?.('t:abs', 'first', 5_000)).toBe(true);
+    expect(await store.setIfAbsent?.('t:abs', 'second', 5_000)).toBe(false);
+    expect(await store.get('t:abs')).toBe('first');
+  });
+
   it('clear removes only the prefix, including glob characters', async () => {
     const store = redisStore({ client });
     for (let i = 0; i < 250; i += 1) await store.set(`a[1]:${String(i)}`, 'v', 60_000);

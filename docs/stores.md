@@ -209,6 +209,8 @@ interface CacheStore {
   getAndTouch?(key: string, ttlMs: number): Promise<string | undefined>; // used by 'sliding'
   getMany?(keys: readonly string[]): Promise<(string | undefined)[]>; // used by getMany / getOrSetMany
   setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>; // used by setMany
+  touch?(keys: readonly string[], ttlMs: number): Promise<void>; // refreshes version-token TTLs
+  setIfAbsent?(key: string, value: string, ttlMs: number): Promise<boolean>; // creates version tokens
   readonly lock?: LockProvider; // used by the distributed lock
   readonly invalidation?: InvalidationBus;
   bind?(events: CacheEventSink): void;
@@ -224,6 +226,13 @@ tokens. Stores whose `get`/`set` already reject (memory, Redis) can leave them o
 followed by a `set`, which is not atomic. `lock` is a `LockProvider` (`acquire(key, ttlMs)` returns a `LockHandle` or
 `undefined`; `LockHandle.release()` frees it). `getMany` and `setMany` are optional: without them the engine calls `get` and `set` for each key. Leave these members out when unsupported; do not define them as
 `undefined`.
+
+`touch` resets the TTL of existing keys without changing their values (a missing key is skipped, never created; an
+empty list sends no command). `setIfAbsent` stores a value only when the key does not exist and resolves `true` when it
+wrote it, `false` otherwise; it must be atomic. Omit either one when the store cannot support it: the engine then keeps
+the 1.0 behaviour. `memoryStore` has both, `redisStore` always has `touch` (one `GETEX` per key) and has `setIfAbsent`
+when its client adapter does, and `tieredStore` and `circuitBreakerStore` expose them only when the store below them
+does.
 
 The interfaces you implement (`CacheStore`, `LockProvider`, `InvalidationBus`, `RedisClientAdapter` and the other
 ones) only gain optional members in 1.x, and the library checks that an optional member exists before it calls it, so

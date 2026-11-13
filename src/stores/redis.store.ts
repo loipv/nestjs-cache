@@ -35,12 +35,18 @@ export class RedisStore implements CacheStore {
   declare readonly lock?: LockProvider;
   /** Present only when the adapter implements `ping`. */
   declare readonly ping?: () => Promise<void>;
+  /** Present only when the adapter implements `setIfAbsent`. */
+  declare readonly setIfAbsent?: (key: string, value: string, ttlMs: number) => Promise<boolean>;
   private readonly adapter: RedisClientAdapter;
 
   constructor(options: RedisStoreOptions) {
     this.adapter = toRedisAdapter(options.client);
     this.invalidation = createRedisBus(this.adapter, options.channel ?? DEFAULT_CHANNEL);
     if (supportsLock(this.adapter)) this.lock = new RedisLock(this.adapter);
+    if (this.adapter.setIfAbsent !== undefined) {
+      const setIfAbsent = this.adapter.setIfAbsent.bind(this.adapter);
+      this.setIfAbsent = (key, value, ttlMs) => setIfAbsent(key, value, ttlMs);
+    }
     if (this.adapter.ping !== undefined) {
       const adapter = this.adapter;
       this.ping = () => adapter.ping?.() ?? Promise.resolve();
@@ -87,6 +93,11 @@ export class RedisStore implements CacheStore {
 
   getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
     return this.adapter.getex(key, ttlMs);
+  }
+
+  /** One `GETEX` per key, in parallel; the values are ignored and a missing key is not created. */
+  async touch(keys: readonly string[], ttlMs: number): Promise<void> {
+    await Promise.all(keys.map((key) => this.adapter.getex(key, ttlMs)));
   }
 
   /** Closes the bus's subscriber connection; the caller's client is left open. */

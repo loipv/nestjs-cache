@@ -118,6 +118,19 @@ export interface CacheStore {
    */
   setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>;
   /**
+   * Optional. Resets the TTL of the given keys to `ttlMs` (milliseconds, integer >= 1) without
+   * changing their values. A key that does not exist is skipped and is not created. An empty list
+   * sends no command. Rejects when the store cannot be reached. When missing, the engine keeps the
+   * 1.0 behaviour for the version tokens.
+   */
+  touch?(keys: readonly string[], ttlMs: number): Promise<void>;
+  /**
+   * Optional. Atomically stores `value` under `key` only when the key does not exist yet; `ttlMs`
+   * is an integer >= 1. Resolves `true` when it wrote the value and `false` when the key already
+   * existed. When missing, the engine keeps the 1.0 behaviour for creating version tokens.
+   */
+  setIfAbsent?(key: string, value: string, ttlMs: number): Promise<boolean>;
+  /**
    * Optional. Like `get`, but rejects instead of degrading when the durable tier cannot be read.
    * Stores whose `get` already rejects on failure (memory, Redis) need not implement it.
    * Implementing it also opts the store into the version-token fallback (a failed version read

@@ -304,4 +304,52 @@ describe('MemoryStore reserved key prefixes (version tokens)', () => {
     await s.set('y', '3', 1e6);
     expect(await s.getMany(['p:a', 'x', 'y'])).toEqual(['1', undefined, '3']);
   });
+
+  describe('touch', () => {
+    it('resets the TTL of a live entry', async () => {
+      const s = memoryStore();
+      await s.set('a', '1', 1_000);
+      await s.touch(['a'], 5_000);
+      vi.advanceTimersByTime(2_000);
+      expect(await s.get('a')).toBe('1');
+      vi.advanceTimersByTime(4_000);
+      expect(await s.get('a')).toBeUndefined();
+    });
+
+    it('does not create a missing or expired key', async () => {
+      const s = memoryStore();
+      await s.touch(['missing'], 1_000);
+      expect(await s.get('missing')).toBeUndefined();
+      await s.set('old', '1', 10);
+      vi.advanceTimersByTime(11);
+      await s.touch(['old'], 1_000);
+      expect(await s.get('old')).toBeUndefined();
+    });
+
+    it('extends a key of the token partition too', async () => {
+      const s = memoryStore();
+      s.reserveKeyPrefixes(['p:__tag__:']);
+      await s.set('p:__tag__:t', 'tok', 1_000);
+      await s.touch(['p:__tag__:t'], 5_000);
+      vi.advanceTimersByTime(2_000);
+      expect(await s.get('p:__tag__:t')).toBe('tok');
+    });
+  });
+
+  describe('setIfAbsent', () => {
+    it('writes once, then reports false and keeps the value', async () => {
+      const s = memoryStore();
+      expect(await s.setIfAbsent('k', 'v', 1_000)).toBe(true);
+      expect(await s.setIfAbsent('k', 'w', 1_000)).toBe(false);
+      expect(await s.get('k')).toBe('v');
+    });
+
+    it('counts an expired key as absent', async () => {
+      const s = memoryStore();
+      await s.setIfAbsent('k', 'v', 1_000);
+      vi.advanceTimersByTime(1_000);
+      expect(await s.setIfAbsent('k', 'w', 1_000)).toBe(true);
+      expect(await s.get('k')).toBe('w');
+    });
+  });
 });

@@ -179,6 +179,43 @@ describe.each(WITH_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
     expect(await b.cache.get('t4:k', { namespace: 'p' })).toEqual({ n: 2 });
   });
 
+  it('setIfAbsent writes L2 and L1, and a peer drops its L1 copy', async () => {
+    const l1a = memoryStore();
+    const l1b = memoryStore();
+    const sink = { emit: vi.fn() };
+    const mk = (l1: ReturnType<typeof memoryStore>) => {
+      const t = tieredStore({ l1, l2: redisStore({ client: redis.client }), l1Ttl: 60_000 });
+      t.bind(sink);
+      return t;
+    };
+    const sa = mk(l1a);
+    const sb = mk(l1b);
+    try {
+      // The peer's subscription starts in the background: retry until it drops the stale copy.
+      await vi.waitFor(
+        async () => {
+          await redis.raw.del('sia:k');
+          await l1b.set('sia:k', 'stale', 60_000);
+          expect(await sa.setIfAbsent?.('sia:k', 'fresh', 60_000)).toBe(true);
+          await vi.waitFor(
+            async () => {
+              expect(await l1b.get('sia:k')).toBeUndefined();
+            },
+            { timeout: 500 },
+          );
+        },
+        { timeout: 5_000 },
+      );
+      expect(await redis.raw.get('sia:k')).toBe('fresh');
+      expect(await l1a.get('sia:k')).toBe('fresh');
+      expect(await sa.setIfAbsent?.('sia:k', 'other', 60_000)).toBe(false);
+      expect(await redis.raw.get('sia:k')).toBe('fresh');
+    } finally {
+      await sa.close();
+      await sb.close();
+    }
+  });
+
   /* Closing the apps leaves the user's client open: it still serves commands afterwards. */
   it('closing the app does not close the user client', async () => {
     await closeApp(a);

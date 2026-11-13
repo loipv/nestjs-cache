@@ -673,13 +673,13 @@ describe('TieredStore', () => {
 
   describe('getAndTouch', () => {
     class TouchStore extends FakeStore {
-      readonly touch = vi.fn((key: string, ttlMs: number): Promise<string | undefined> => {
+      readonly touchFn = vi.fn((key: string, ttlMs: number): Promise<string | undefined> => {
         const entry = this.data.get(key);
         if (entry) this.data.set(key, { value: entry.value, ttlMs });
         return Promise.resolve(entry?.value);
       });
       getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {
-        return this.touch(key, ttlMs);
+        return this.touchFn(key, ttlMs);
       }
     }
 
@@ -697,7 +697,7 @@ describe('TieredStore', () => {
       const t = tieredStore({ l1, l2: touching, invalidation: bus });
       t.bind(sink);
       expect(await t.getAndTouch('k', 60_000)).toBe('v');
-      expect(touching.touch).toHaveBeenCalledWith('k', 60_000);
+      expect(touching.touchFn).toHaveBeenCalledWith('k', 60_000);
       expect(touching.calls.filter((c) => c.op === 'get')).toHaveLength(0);
       vi.advanceTimersByTime(9_999);
       expect(await l1.get('k')).toBe('v');
@@ -729,7 +729,7 @@ describe('TieredStore', () => {
       t.bind(sink);
       await flush();
       let release: () => void = () => undefined;
-      touching.touch.mockImplementationOnce(
+      touching.touchFn.mockImplementationOnce(
         (): Promise<string | undefined> =>
           new Promise((resolve) => {
             release = () => {
@@ -748,7 +748,7 @@ describe('TieredStore', () => {
     it('an older overlapping read neither backfills nor removes the newer token', async () => {
       const touching = new TouchStore();
       const replies: ((value: string) => void)[] = [];
-      touching.touch.mockImplementation(
+      touching.touchFn.mockImplementation(
         (): Promise<string | undefined> =>
           new Promise((resolve) => {
             replies.push(resolve);
@@ -781,7 +781,7 @@ describe('TieredStore', () => {
     it('reports an L2 failure as get and resolves undefined', async () => {
       const touching = new TouchStore();
       const boom = new Error('boom');
-      touching.touch.mockRejectedValueOnce(boom);
+      touching.touchFn.mockRejectedValueOnce(boom);
       const t = tieredStore({ l1, l2: touching, invalidation: bus });
       t.bind(sink);
       expect(await t.getAndTouch('k', 1_000)).toBeUndefined();
@@ -1147,5 +1147,90 @@ describe('TieredStore batch', () => {
     sink.emit.mockClear();
     expect(await t.getMany(['a', 'b'])).toEqual(['A', undefined]);
     expect(sink.emit.mock.calls.filter((c) => c[0] === 'error')).toEqual([]);
+  });
+});
+
+describe('TieredStore touch and setIfAbsent', () => {
+  /** An L2 stand-in that has the optional members as mocks. */
+  class TouchStore extends FakeStore {
+    touch = vi.fn<(keys: readonly string[], ttlMs: number) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
+    setIfAbsent = vi.fn<(key: string, value: string, ttlMs: number) => Promise<boolean>>(() =>
+      Promise.resolve(true),
+    );
+  }
+
+  let l1: MemoryStore;
+  let l2: TouchStore;
+  let bus: FakeBus;
+  let sink: { emit: Mock };
+  let store: TieredStore;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    l1 = memoryStore();
+    l2 = new TouchStore();
+    bus = new FakeBus();
+    sink = { emit: vi.fn() };
+    store = tieredStore({ l1, l2, invalidation: bus, l1Ttl: 10_000 });
+    store.bind(sink);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  describe('touch', () => {
+    it('is absent when L2 has no touch', () => {
+      const plain = tieredStore({ l1: memoryStore(), l2: new FakeStore(), invalidation: bus });
+      expect('touch' in plain).toBe(false);
+      expect('setIfAbsent' in plain).toBe(false);
+    });
+
+    it('forwards to L2 and leaves L1 alone', async () => {
+      await l1.set('a', '1', 1_000);
+      await store.touch?.(['a'], 60_000);
+      expect(l2.touch).toHaveBeenCalledWith(['a'], 60_000);
+      vi.advanceTimersByTime(1_000);
+      expect(await l1.get('a')).toBeUndefined();
+    });
+
+    it('rejects with the L2 error and reports nothing itself', async () => {
+      const error = new Error('down');
+      l2.touch.mockRejectedValueOnce(error);
+      await expect(store.touch?.(['a'], 1_000)).rejects.toBe(error);
+      expect(sink.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('setIfAbsent', () => {
+    it('true writes L1 with the capped TTL and publishes the key', async () => {
+      expect(await store.setIfAbsent?.('k', 'v', 60_000)).toBe(true);
+      expect(l2.setIfAbsent).toHaveBeenCalledWith('k', 'v', 60_000);
+      expect(bus.published).toEqual([{ origin: anyString, keys: ['k'] }]);
+      vi.advanceTimersByTime(9_999);
+      expect(await l1.get('k')).toBe('v');
+      vi.advanceTimersByTime(1);
+      expect(await l1.get('k')).toBeUndefined();
+    });
+
+    it('false writes nothing to L1 and publishes nothing', async () => {
+      l2.setIfAbsent.mockResolvedValueOnce(false);
+      expect(await store.setIfAbsent?.('k', 'v', 60_000)).toBe(false);
+      expect(await l1.get('k')).toBeUndefined();
+      expect(bus.published).toEqual([]);
+    });
+
+    it('reports an L2 rejection as set and rejects', async () => {
+      const error = new Error('down');
+      l2.setIfAbsent.mockRejectedValueOnce(error);
+      await expect(store.setIfAbsent?.('k', 'v', 1_000)).rejects.toBe(error);
+      expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'set', error });
+      expect(await l1.get('k')).toBeUndefined();
+      expect(bus.published).toEqual([]);
+    });
   });
 });

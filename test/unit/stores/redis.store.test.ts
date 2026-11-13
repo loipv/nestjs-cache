@@ -106,6 +106,40 @@ describe('RedisStore', () => {
   });
 });
 
+describe('RedisStore touch and setIfAbsent', () => {
+  it('touch sends one getex per key and ignores the values', async () => {
+    const fake = new FakeRedis();
+    const store = redisStore({ client: fake });
+    await store.touch(['a', 'b'], 9_000);
+    expect(fake.commands.filter((c) => c.name === 'getex')).toEqual([
+      { name: 'getex', args: ['a', 9_000] },
+      { name: 'getex', args: ['b', 9_000] },
+    ]);
+  });
+
+  it('touch sends nothing for an empty list', async () => {
+    const fake = new FakeRedis();
+    await redisStore({ client: fake }).touch([], 1);
+    expect(fake.commands).toEqual([]);
+  });
+
+  it('setIfAbsent delegates to the adapter', async () => {
+    const fake = new FakeRedis();
+    const store = redisStore({ client: fake });
+    expect(await store.setIfAbsent?.('k', 'v', 5)).toBe(true);
+    expect(await store.setIfAbsent?.('k', 'w', 5)).toBe(false);
+    expect(fake.commands.filter((c) => c.name === 'setIfAbsent')).toHaveLength(2);
+  });
+
+  it('has setIfAbsent only when the adapter has it', () => {
+    const fake = new FakeRedis();
+    Object.defineProperty(fake, 'setIfAbsent', { value: undefined });
+    const store = redisStore({ client: fake });
+    expect('setIfAbsent' in store).toBe(false);
+    expect(Object.keys(store)).not.toContain('setIfAbsent');
+  });
+});
+
 describe('RedisStore batch', () => {
   /* With mget available, getMany issues exactly one MGET and no GET, in input order. */
   it('getMany issues exactly one mget', async () => {
