@@ -23,10 +23,12 @@ describe('chunkKeys', () => {
   });
 
   it('measures keys by their escaped JSON length', () => {
-    const keys = Array.from({ length: 200 }, () => '"\\'.repeat(10));
+    /* Each key is 100 characters but 202 once escaped: 4 fit in 1 000 characters, where its
+       raw length would fit 9 (20 keys: 5 chunks escaped, 3 raw). */
+    const keys = Array.from({ length: 20 }, () => '"\\'.repeat(50));
     const max = 1_000;
     const chunks = chunkKeys('o', keys, max);
-    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.map((c) => c.keys.length)).toEqual([4, 4, 4, 4, 4]);
     for (const chunk of chunks) expect(JSON.stringify(chunk).length).toBeLessThanOrEqual(max);
     expect(chunks.flatMap((c) => c.keys)).toEqual(keys);
   });

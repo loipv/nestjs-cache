@@ -817,9 +817,10 @@ describe('CacheEngine swr refresh backoff (spec 3.5)', () => {
     expect(loader).toHaveBeenCalledOnce();
   });
 
-  it('a successful refresh clears the backoff', async () => {
+  it('a refresh that writes after the window leaves no backoff: the next stale read refreshes', async () => {
     /* After the backoff a refresh writes; the entry goes stale again, and the next stale read
-       refreshes at once (it fails, and is backed off again). */
+       refreshes at once (it fails, and is backed off again). The expired entry was already
+       dropped when the refresh started, so this pins the outcome, not the delete on success. */
     const { engine } = makeEngine();
     await engine.set({ key: 'k' }, 'old', LONG);
     vi.setSystemTime(150);

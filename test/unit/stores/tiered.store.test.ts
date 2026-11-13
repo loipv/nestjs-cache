@@ -149,6 +149,28 @@ describe('TieredStore', () => {
     await store.setMany(entries);
     expect(bus.published.length).toBeGreaterThan(1);
     expect(bus.published.every((m) => 'keys' in m)).toBe(true);
+    // Together the messages carry every key once, in order.
+    expect(bus.published.flatMap((m) => ('keys' in m ? m.keys : []))).toEqual(
+      entries.map((e) => e.key),
+    );
+  });
+
+  it('reports a failing chunk publish without rejecting the write, and sends the others', async () => {
+    const entries = Array.from({ length: 30_000 }, (_, i) => ({
+      key: `bulk:${String(i).padStart(40, '0')}`,
+      value: 'v',
+      ttlMs: 60_000,
+    }));
+    const boom = new Error('publish failed');
+    bus.failNext('publish', boom);
+    await expect(store.setMany(entries)).resolves.toBeUndefined();
+    expect(sink.emit).toHaveBeenCalledOnce();
+    expect(sink.emit).toHaveBeenCalledWith('error', { operation: 'publish', error: boom });
+    // The first chunk failed; the later ones were still published.
+    const sent = bus.published.flatMap((m) => ('keys' in m ? m.keys : []));
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent).toEqual(entries.map((e) => e.key).slice(-sent.length));
+    expect(l2.data.get(entries[0]!.key)?.value).toBe('v');
   });
 
   it('publishes one message for a small delete', async () => {

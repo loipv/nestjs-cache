@@ -163,7 +163,9 @@ describe('lock runner', () => {
       });
       expect(lock.releaseCalls).toEqual(['k']);
       expect(hooks.onLock).toHaveBeenCalledWith(true, 0);
-      expect(hooks.onError).toHaveBeenCalledOnce();
+      await vi.waitFor(() => {
+        expect(hooks.onError).toHaveBeenCalledOnce();
+      });
       expect(hooks.onError).toHaveBeenCalledWith(boom);
     });
 
@@ -303,7 +305,9 @@ describe('lock runner', () => {
           hooks,
         ),
       ).rejects.toBe(boom);
-      expect(hooks.onError).toHaveBeenCalledWith(releaseError);
+      await vi.waitFor(() => {
+        expect(hooks.onError).toHaveBeenCalledWith(releaseError);
+      });
     });
   });
 
@@ -369,8 +373,11 @@ describe('lock runner', () => {
       const boom = new Error('release failed');
       lock.failNext('release', boom);
       await refreshWithLock(lock, 'k', 10_000, async () => undefined, hooks);
-      expect(hooks.onError).toHaveBeenCalledWith(boom);
+      await vi.waitFor(() => {
+        expect(hooks.onError).toHaveBeenCalledWith(boom);
+      });
     });
+
     it('does not wait for the release and a rejecting release reaches onError', async () => {
       const pending: LockProvider = {
         acquire: () => Promise.resolve({ release: () => new Promise<void>(() => undefined) }),
@@ -381,8 +388,9 @@ describe('lock runner', () => {
         acquire: () => Promise.resolve({ release: () => Promise.reject(boom) }),
       };
       await refreshWithLock(failing, 'k', 10_000, async () => undefined, hooks);
-      await Promise.resolve();
-      expect(hooks.onError).toHaveBeenCalledWith(boom);
+      await vi.waitFor(() => {
+        expect(hooks.onError).toHaveBeenCalledWith(boom);
+      });
     });
   });
 });

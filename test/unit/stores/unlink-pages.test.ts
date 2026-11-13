@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { unlinkPages } from '../../../src/stores/unlink-pages.js';
 
 interface Deferred {
@@ -17,7 +17,11 @@ function deferred(): Deferred {
   return { resolve, reject, promise };
 }
 
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
+/** Runs every pending microtask: all the work under test is promise-based, with no timers. */
+const flush = (): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 
 function harness(pageCount: number, failAtPage?: number) {
   const pulled: number[] = [];
@@ -41,15 +45,16 @@ describe('unlinkPages', () => {
   it('keeps at most `concurrency` unlinks in flight', async () => {
     const h = harness(10);
     void unlinkPages(h.pages, h.unlink, 4).catch(() => undefined);
-    await tick();
+    await flush();
     expect(h.unlinks).toHaveLength(4);
-    expect(h.pulled.length).toBeLessThanOrEqual(5);
+    // The fifth page is pulled and waits for a free slot.
+    expect(h.pulled).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('overlaps the scan with the unlinks', async () => {
     const h = harness(3);
     const done = unlinkPages(h.pages, h.unlink, 4);
-    await tick();
+    await flush();
     expect(h.pulled).toEqual([1, 2, 3]);
     expect(h.unlinks).toHaveLength(3);
     for (const d of h.unlinks) d.resolve();
@@ -62,21 +67,51 @@ describe('unlinkPages', () => {
     const done = unlinkPages(h.pages, h.unlink, 3).catch((e: unknown) => {
       outcome = e;
     });
-    await tick();
+    await flush();
     expect(h.unlinks).toHaveLength(3);
-    const pulledBefore = h.pulled.length;
+    // The fourth page is pulled and waits for a free slot.
+    expect(h.pulled).toEqual([1, 2, 3, 4]);
     const boom = new Error('unlink 2 failed');
     h.unlinks[1]!.reject(boom);
-    await tick();
+    await flush();
     expect(outcome).toBe('pending');
     h.unlinks[0]!.resolve();
-    await tick();
+    await flush();
     expect(outcome).toBe('pending');
     h.unlinks[2]!.resolve();
     await done;
     expect(outcome).toBe(boom);
-    expect(h.pulled.length).toBeLessThanOrEqual(pulledBefore + 1);
-    expect(h.unlinks.length).toBeLessThanOrEqual(4);
+    // The waiting page is dropped once the slot frees: nothing more is pulled or unlinked.
+    expect(h.pulled).toEqual([1, 2, 3, 4]);
+    expect(h.unlinks).toHaveLength(3);
+  });
+
+  it('closes the iterator on an unlink failure', async () => {
+    const h = harness(10);
+    const close = vi.spyOn(h.pages, 'return');
+    const boom = new Error('unlink failed');
+    const done = unlinkPages(h.pages, h.unlink, 2);
+    await flush();
+    expect(h.unlinks).toHaveLength(2);
+    h.unlinks[0]!.reject(boom);
+    h.unlinks[1]!.resolve();
+    await expect(done).rejects.toBe(boom);
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.pulled).toEqual([1, 2, 3]);
+  });
+
+  it('rejects with the unlink error when the scan and an in-flight unlink both fail', async () => {
+    /* The scan fails at page 3 while the unlinks of pages 1 and 2 are in flight; one of them
+       then fails too. The unlink error wins. */
+    const h = harness(10, 3);
+    const done = unlinkPages(h.pages, h.unlink, 4);
+    await flush();
+    expect(h.pulled).toEqual([1, 2, 3]);
+    expect(h.unlinks).toHaveLength(2);
+    const boom = new Error('unlink 1 failed');
+    h.unlinks[0]!.reject(boom);
+    h.unlinks[1]!.resolve();
+    await expect(done).rejects.toBe(boom);
   });
 
   it('rejects with the iterator error after the in-flight unlinks settle', async () => {
@@ -85,7 +120,7 @@ describe('unlinkPages', () => {
     const done = unlinkPages(h.pages, h.unlink, 4).catch((e: unknown) => {
       outcome = e;
     });
-    await tick();
+    await flush();
     expect(h.unlinks).toHaveLength(2);
     expect(outcome).toBe('pending');
     for (const d of h.unlinks) d.resolve();

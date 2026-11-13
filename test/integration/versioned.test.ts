@@ -133,7 +133,8 @@ describe.each(selectedAdapters())('versioned namespaces (integration) on %s', (a
       const other = await startApp(redisStore({ client: redis.client }));
       try {
         expect(await other.cache.get('1', { namespace: 'users' })).toBe('x');
-        // The touch runs after a microtask; the raw client may use another connection, so poll.
+        // The raw client is the adapter's own client, but `get` does not wait for the background
+        // touch, so poll instead of relying on command order.
         const deadline = Date.now() + 2_000;
         let pttl = await redis.raw.pttl('app:__version__:users');
         while (pttl <= 2_500_000_000 && Date.now() < deadline) {
