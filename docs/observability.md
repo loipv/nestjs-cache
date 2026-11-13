@@ -342,7 +342,9 @@ span-derived labels.
   span.
 - An error the library swallows, that is, one that emits the `error` event, is recorded with `recordException` and a
   `cache.error` event carrying `cache.error.operation` (a `CacheOperation`) on the running cache span. The status stays
-  unset, because the caller still gets a result.
+  unset, because the caller still gets a result. Background work (the P-04 token touch and the background lock release)
+  runs outside any cache span, so its failures are reported only through the `error` event, logs and metrics, not on a
+  span.
 - A failed `swr` refresh is the exception. A refresh whose loader fails is a swallowed `refresh` error, yet it marks
   `cache.refresh` and its `cache.load` with status `ERROR`, because the refresh itself failed. The span of the request
   that triggered it is untouched: that request already got its stale value.
