@@ -109,9 +109,10 @@ joined with concurrent misses on the same key (one load), and a refresh that fai
 when it loads an empty value that is not stored. During the backoff a stale read of that key returns the stale value
 without starting a refresh: no `load` or `error` event, no `cache.refresh` span, and no wait for `softTimeout`. A
 `getOrSetMany` leaves the backed-off keys out of its refresh loader call. A refresh already running for the key is still
-joined, and a miss always loads. A refresh that writes clears the backoff. Each instance keeps at most 10 000 backed-off
-keys and drops the oldest beyond that. `0` turns the backoff off, as in 1.0. The value must be an integer `>= 0`;
-anything else is a `CacheConfigError`.
+joined, and a miss always loads. A refresh that writes clears the backoff. Another write to the key (a `set`, or the
+write of a miss) does not reset it, so after a rewrite with a short ttl its stale reads may skip the refresh for at most
+`refreshBackoff` ms. Each instance keeps at most 10 000 backed-off keys and drops the oldest beyond that. `0` turns the
+backoff off, as in 1.0. The value must be an integer `>= 0`; anything else is a `CacheConfigError`.
 
 **`softTimeout`.** With `strategy: 'swr'` a stale hit normally returns the old value at once. Add `softTimeout` (ms)
 to wait up to that long for the refresh instead (joining one already in flight): the fresh value is returned if it
