@@ -70,8 +70,6 @@ export class RedisStore implements CacheStore {
   }
 
   async setMany(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void> {
-    if (entries.length === 0) return;
-    if (this.adapter.setMany !== undefined) return this.adapter.setMany(entries);
     await Promise.all(entries.map((e) => this.adapter.set(e.key, e.value, e.ttlMs)));
   }
 

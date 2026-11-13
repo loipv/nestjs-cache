@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { DEFAULT_CHANNEL } from '../../../src/stores/redis-invalidation-bus.js';
 import { RedisLock } from '../../../src/stores/redis-lock.js';
 import { escapeGlob, redisStore } from '../../../src/stores/redis.store.js';
@@ -181,28 +181,5 @@ describe('RedisStore batch', () => {
       { name: 'set', args: ['a', '1', 5] },
       { name: 'set', args: ['b', '2', 9] },
     ]);
-  });
-
-  /* An adapter with setMany gets one call and no per-entry set. */
-  it('setMany uses adapter.setMany when present', async () => {
-    const fake = new FakeRedis();
-    const setMany = vi.fn(() => Promise.resolve());
-    const adapter = Object.assign(fake, { setMany });
-    const entries = [
-      { key: 'a', value: '1', ttlMs: 5 },
-      { key: 'b', value: '2', ttlMs: 9 },
-    ];
-    await redisStore({ client: adapter }).setMany(entries);
-    expect(setMany).toHaveBeenCalledTimes(1);
-    expect(setMany).toHaveBeenCalledWith(entries);
-    expect(fake.commands).toEqual([]);
-  });
-
-  it('setMany of an empty list sends nothing', async () => {
-    const fake = new FakeRedis();
-    const setMany = vi.fn(() => Promise.resolve());
-    await redisStore({ client: Object.assign(fake, { setMany }) }).setMany([]);
-    expect(setMany).not.toHaveBeenCalled();
-    expect(fake.commands).toEqual([]);
   });
 });

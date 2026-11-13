@@ -11,29 +11,6 @@ function groupBySlot(keys: readonly string[]): Map<number, string[]> {
   return groups;
 }
 
-/** One `setMany` per slot via `allSettled`, then rethrows the first rejection. */
-export async function setManyBySlot<E extends { key: string }>(
-  entries: readonly E[],
-  setMany: (slotEntries: E[]) => Promise<void>,
-): Promise<void> {
-  if (entries.length === 0) return;
-  const byKey = new Map<string, E[]>();
-  for (const entry of entries) {
-    const list = byKey.get(entry.key);
-    if (list === undefined) byKey.set(entry.key, [entry]);
-    else list.push(entry);
-  }
-  const groups = groupBySlot([...byKey.keys()]);
-  const results = await Promise.allSettled(
-    [...groups.values()].map((slotKeys) =>
-      setMany(slotKeys.flatMap((key) => byKey.get(key) ?? [])),
-    ),
-  );
-  for (const result of results) {
-    if (result.status === 'rejected') throw result.reason;
-  }
-}
-
 /** One `mget` per slot, in parallel; resolves the values in input order. Any rejection rejects. */
 export async function mgetBySlot(
   keys: readonly string[],

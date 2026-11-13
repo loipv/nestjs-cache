@@ -277,9 +277,5 @@ Two rules matter for Cluster:
 
 - `mget` and `unlink` receive keys that may belong to several hash slots. A Cluster adapter must split the command per
   slot.
-- `setMany?(entries)` is optional and writes the entries in one pipeline (`SET key value PX ttlMs`); a Cluster adapter
-  must split them per slot, and it rejects when any `SET` fails. Only `ioredisAdapter` has it: node-redis auto-pipelines
-  commands issued in the same tick, so `RedisStore` already sends its parallel `set` calls as one pipeline and
-  `nodeRedisAdapter` needs no member.
 - `scanIterator?(match, count)` is optional. When present, `clear` uses it instead of the `scan` cursor loop; it must
   yield the matching keys of every node that holds data (each master of a cluster), in pages.

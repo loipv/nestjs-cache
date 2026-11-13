@@ -1,5 +1,5 @@
 import { CacheConfigError } from '../errors.js';
-import { mgetBySlot, scanNodes, setManyBySlot, unlinkBySlot } from './cluster-ops.js';
+import { mgetBySlot, scanNodes, unlinkBySlot } from './cluster-ops.js';
 import { RELEASE_SCRIPT } from './redis-client.adapter.js';
 import type { RedisClientAdapter, RedisSubscriberAdapter } from './redis-client.adapter.js';
 import { closeWithTimeout, createSubscriptionTracker } from './subscriber-support.js';
@@ -33,11 +33,6 @@ export interface IoredisLike {
   ping?(): Promise<unknown>;
   /** Optional. Used by batch reads; the adapter exposes `mget` only when it exists. */
   mget?(...keys: string[]): Promise<(string | null)[]>;
-  /** Optional. Used by batch writes; the adapter exposes `setMany` only when it exists. */
-  pipeline?(): {
-    set(key: string, value: string, mode: 'PX', ttlMs: number): unknown;
-    exec(): Promise<[error: Error | null, result: unknown][] | null>;
-  };
   duplicate(): IoredisLike;
   subscribe(...channels: string[]): Promise<unknown>;
   on(event: string, listener: (...args: never[]) => void): unknown;
@@ -114,27 +109,8 @@ export function ioredisAdapter(client: IoredisLike | IoredisClusterLike): RedisC
     // A Cluster rejects a multi-key command across slots (CROSSSLOT): one MGET per slot.
     adapter.mget = isClusterClient(client) ? (keys) => mgetBySlot(keys, mget) : mget;
   }
-  if (typeof client.pipeline === 'function') {
-    const setMany = async (entries: readonly SetEntry[]): Promise<void> => {
-      if (entries.length === 0) return;
-      const pipeline = client.pipeline?.();
-      if (pipeline === undefined) return;
-      for (const e of entries) pipeline.set(e.key, e.value, 'PX', Math.ceil(e.ttlMs));
-      const results = await pipeline.exec();
-      if (results === null) throw new Error('ioredisAdapter: pipeline aborted');
-      for (const [error] of results) {
-        if (error !== null) throw error;
-      }
-    };
-    // Entries of several slots would be CROSSSLOT in one pipeline: one pipeline per slot.
-    adapter.setMany = isClusterClient(client)
-      ? (entries) => setManyBySlot(entries, setMany)
-      : setMany;
-  }
   return adapter;
 }
-
-type SetEntry = { key: string; value: string; ttlMs: number };
 
 type KeyspaceCommands = Pick<
   RedisClientAdapter,

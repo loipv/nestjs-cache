@@ -46,11 +46,6 @@ export interface RedisClientAdapter {
    */
   mget?(keys: readonly string[]): Promise<(string | undefined)[]>;
   /**
-   * Optional. SET key value PX ttlMs for every entry, in one pipeline. An empty list sends
-   * nothing. A Cluster adapter must split the entries per slot. Rejects when any SET fails.
-   */
-  setMany?(entries: readonly { key: string; value: string; ttlMs: number }[]): Promise<void>;
-  /**
    * Optional. Every key matching `match`, in pages, across every node that holds data (each master
    * of a cluster). When present, `RedisStore.clear` uses it instead of the `scan` cursor loop.
    */
