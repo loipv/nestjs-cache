@@ -166,7 +166,10 @@ export class VersionTokens {
     if (cached !== undefined) {
       const now = Date.now();
       if (now < cached.until) {
-        if (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+        if (
+          target.store.touch !== undefined &&
+          (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL)
+        ) {
           this.touchIfDue(target, kind, name, cached, now);
         }
         return Promise.resolve(cached.token);
@@ -336,7 +339,10 @@ export class VersionTokens {
       const k = slot(target, name);
       const cached = state.cache.get(k);
       if (cached !== undefined && now < cached.until) {
-        if (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+        if (
+          target.store.touch !== undefined &&
+          (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL)
+        ) {
           this.touchIfDue(target, kind, name, cached, now);
         }
         result.set(name, cached.token);
@@ -452,15 +458,19 @@ export class VersionTokens {
       if (state.cache.size <= state.limit) break;
       state.cache.delete(oldest);
     }
-    if (entry.touchedAt === undefined || now - entry.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+    if (
+      target.store.touch !== undefined &&
+      (entry.touchedAt === undefined || now - entry.touchedAt >= TOKEN_TOUCH_INTERVAL)
+    ) {
       this.touchIfDue(target, state.kind, name, entry, now);
     }
   }
 
   /**
-   * Queues a touch of the token key of `name` when the store has `touch`, recording `now` in
-   * `entry.touchedAt`. The caller has checked that the entry is due. A store without `touch`
-   * queues nothing and records nothing (the 1.0 behaviour).
+   * Queues a touch of the token key of `name`, recording `now` in `entry.touchedAt`. The caller
+   * has checked that the store has `touch` and that the entry is due: a store without `touch` is
+   * never queued (the 1.0 behaviour), though a bump or a create still sets `touchedAt` there
+   * (`remember`), which nothing reads.
    */
   private touchIfDue(
     target: Target,
@@ -470,7 +480,6 @@ export class VersionTokens {
     now: number,
   ): void {
     const store = target.store;
-    if (store.touch === undefined) return;
     entry.touchedAt = now;
     let batch = this.touches.get(store);
     if (batch === undefined) {

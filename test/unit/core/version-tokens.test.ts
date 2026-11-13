@@ -1075,17 +1075,23 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
   it('a failed touch without onTouchError, or with a throwing one, is never unhandled', async () => {
     const store = memoryStore();
     await existing(store, 'ns', 'users');
-    vi.spyOn(store, 'touch').mockRejectedValue(new Error('touch failed'));
+    const failure = new Error('touch failed');
+    const touch = vi.spyOn(store, 'touch').mockRejectedValue(failure);
     const unhandled = vi.fn();
     process.on('unhandledRejection', unhandled);
     try {
       const silent = new VersionTokens('app', 1000);
       await silent.current({ name: 'default', store }, 'ns', 'users');
-      const throwing = new VersionTokens('app', 1000, MAX_TAG_TOKENS, () => {
+      const listener = vi.fn(() => {
         throw new Error('listener failed');
       });
+      const throwing = new VersionTokens('app', 1000, MAX_TAG_TOKENS, listener);
       await throwing.current({ name: 'default', store }, 'ns', 'users');
       await vi.runAllTimersAsync();
+      // One touch per instance; the throwing listener got the failure and swallowed nothing.
+      expect(touch).toHaveBeenCalledTimes(2);
+      expect(listener).toHaveBeenCalledOnce();
+      expect(listener).toHaveBeenCalledWith('default', failure);
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
       process.off('unhandledRejection', unhandled);
@@ -1093,15 +1099,36 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
   });
 
   it('a store without touch queues nothing and reports nothing', async () => {
-    const { store, tokens, target } = setup();
+    /* The token exists, so every use would be due for a touch on a store with `touch`: from the
+       store read, from the cache, and again 24 hours later. Nothing is queued, and the hot path
+       does not even reach touchIfDue. */
+    const { store, target } = setup(2 * TOKEN_TOUCH_INTERVAL);
+    await existing(store, 'ns', 'users');
+    store.calls.length = 0;
     const onTouchError = vi.fn();
-    const withCallback = new VersionTokens('app', 1000, MAX_TAG_TOKENS, onTouchError);
-    await withCallback.current(target, 'ns', 'users');
-    await withCallback.currentMany(target, 'ns', ['users']);
-    await tokens.current(target, 'ns', 'users');
-    await vi.runAllTimersAsync();
+    const tokens = new VersionTokens('app', 2 * TOKEN_TOUCH_INTERVAL, MAX_TAG_TOKENS, onTouchError);
+    const queued = vi.spyOn(globalThis, 'queueMicrotask');
+    const touchIfDue = vi.spyOn(
+      VersionTokens.prototype as unknown as { touchIfDue: () => void },
+      'touchIfDue',
+    );
+    try {
+      await tokens.current(target, 'ns', 'users');
+      await tokens.currentMany(target, 'ns', ['users']);
+      vi.setSystemTime(TOKEN_TOUCH_INTERVAL);
+      await tokens.current(target, 'ns', 'users');
+      await tokens.currentMany(target, 'ns', ['users']);
+      await vi.runAllTimersAsync();
+      expect(queued).not.toHaveBeenCalled();
+      expect(touchIfDue).not.toHaveBeenCalled();
+    } finally {
+      queued.mockRestore();
+      touchIfDue.mockRestore();
+    }
     expect(onTouchError).not.toHaveBeenCalled();
     expect('touch' in store).toBe(false);
+    // One store read; nothing else reached the store.
+    expect(store.calls).toEqual([{ op: 'get', args: [tokenKey('app', 'ns', 'users')] }]);
   });
 
   it('a tiered store touches through L2, and only when L2 has touch', async () => {
