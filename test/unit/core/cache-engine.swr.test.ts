@@ -783,6 +783,40 @@ describe('CacheEngine swr refresh backoff (spec 3.5)', () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
+  it('a stale read in the same tick as a failed refresh settling starts no other refresh (M7)', async () => {
+    /* One stale read per microtask, from before the failed refresh starts until after it
+       settled: the reads during the flight join it, and the read landing right after
+       single-flight forgets the key must already see the backoff. */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    const loader = vi.fn(boom);
+    const reads: Promise<string>[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      reads.push(engine.getOrSet({ key: 'k' }, loader, LONG));
+      await Promise.resolve();
+    }
+    expect(await Promise.all(reads)).toEqual(reads.map(() => 'old'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it('a stale batch read in the same tick as a failed batch refresh settling starts no other (M7)', async () => {
+    /* As above, for getOrSetMany: each item's backoff is recorded inside its flight. */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    const loader = vi.fn((): Promise<Map<string, string>> => Promise.reject(new Error('boom')));
+    const reads: Promise<(string | undefined)[]>[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      reads.push(engine.getOrSetMany({}, ['k'], loader, LONG));
+      await Promise.resolve();
+    }
+    expect(await Promise.all(reads)).toEqual(reads.map(() => ['old']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
   it('a successful refresh clears the backoff', async () => {
     /* After the backoff a refresh writes; the entry goes stale again, and the next stale read
        refreshes at once (it fails, and is backed off again). */

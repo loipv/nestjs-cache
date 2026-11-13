@@ -123,13 +123,15 @@ function asMap<T>(loaded: unknown): ReadonlyMap<string, T> {
   return loaded as ReadonlyMap<string, T>;
 }
 
+/** A flight's outcome as a refresh result. */
+function refreshedOf<T>(outcome: Outcome<T>): Refreshed<T> {
+  return outcome.loaded && outcome.unwritten !== true ? { value: outcome.value } : undefined;
+}
+
 /** A flight's outcome as a refresh result; never rejects. */
 function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
   return flight.then(
-    (outcome) => {
-      const settled = outcome as Outcome<T>;
-      return settled.loaded && settled.unwritten !== true ? { value: settled.value } : undefined;
-    },
+    (outcome) => refreshedOf(outcome as Outcome<T>),
     () => undefined,
   );
 }
@@ -216,19 +218,30 @@ export class EngineLoad {
     if (current !== undefined) return refreshed(current);
     if (this.backingOff(flightKey)) return Promise.resolve(undefined);
     // Traced, the refresh is a root `cache.refresh` span linked to the call that started it.
-    const task = this.tracing.enabled
+    const run = this.tracing.enabled
       ? () =>
           this.tracing.root({ store: plan.target.name, namespace: plan.ref.namespace }, () =>
             this.refreshTask(plan),
           )
       : () => this.refreshTask(plan);
-    const result = refreshed<T>(this.singleFlight.run<Outcome<T>>(flightKey, task));
-    // Without backoff, the 1.0 path exactly: no added continuation.
-    if (this.refreshBackoff === 0) return result;
-    return result.then((settled) => {
-      this.noteRefresh(flightKey, settled);
-      return settled;
-    });
+    // Without backoff, the 1.0 path exactly: no added continuation. With it, the backoff is
+    // recorded inside the flight, before single-flight forgets the key, so no stale read in
+    // between starts another refresh.
+    const task =
+      this.refreshBackoff === 0
+        ? run
+        : async (): Promise<Outcome<T>> => {
+            let outcome: Outcome<T>;
+            try {
+              outcome = await run();
+            } catch (error) {
+              this.noteRefresh(flightKey, undefined);
+              throw error;
+            }
+            this.noteRefresh(flightKey, refreshedOf(outcome));
+            return outcome;
+          };
+    return refreshed<T>(this.singleFlight.run<Outcome<T>>(flightKey, task));
   }
 
   /**
@@ -275,27 +288,19 @@ export class EngineLoad {
     softTimeout?: number,
   ): Promise<ReadonlyMap<string, T>> {
     const done = new Map<string, T>();
-    const backoff = this.refreshBackoff > 0;
-    // The flight key of each item this call loads itself; `undefined` for a joined one.
-    const owned: (string | undefined)[] = [];
-    const due = backoff
-      ? items.filter((item) => {
-          const flightKey = this.flightKey(plan.target, item.key);
-          if (this.singleFlight.has(flightKey)) {
-            owned.push(undefined);
-            return true;
-          }
-          if (this.backingOff(flightKey)) return false;
-          owned.push(flightKey);
-          return true;
-        })
-      : items;
-    // `flights` joins the items in flight and loads the others with one loader call.
+    // An item in flight is joined, never backed off.
+    const due =
+      this.refreshBackoff > 0
+        ? items.filter((item) => {
+            const flightKey = this.flightKey(plan.target, item.key);
+            return this.singleFlight.has(flightKey) || !this.backingOff(flightKey);
+          })
+        : items;
+    // `flights` joins the items in flight and loads the others with one loader call; each item
+    // it loads records its backoff inside its flight.
     const flights = this.flights(plan, due, true).map((flight, i) =>
       refreshed<T>(flight).then((result) => {
         const item = due[i];
-        const flightKey = owned[i];
-        if (flightKey !== undefined) this.noteRefresh(flightKey, result);
         if (result !== undefined && item !== undefined) done.set(item.ref.key, result.value);
       }),
     );
@@ -306,7 +311,8 @@ export class EngineLoad {
 
   /**
    * One flight per item: an item in flight joins it; the others run one shared `loadMany`,
-   * started by the first of them, so every flight is registered before anything is awaited.
+   * started by the first of them, so every flight is registered before anything is awaited. A
+   * refresh records each own item's backoff (`noteRefresh`) inside its flight, as `refresh`.
    */
   private flights<T>(
     plan: BatchPlan<T>,
@@ -316,9 +322,11 @@ export class EngineLoad {
     const own = items.filter(
       (item) => !this.singleFlight.has(this.flightKey(plan.target, item.key)),
     );
+    const noting = refreshing && this.refreshBackoff > 0;
     let batch: Promise<LoadedMany<T>> | undefined;
-    return items.map((item) =>
-      this.singleFlight.run<Outcome<unknown>>(this.flightKey(plan.target, item.key), async () => {
+    return items.map((item) => {
+      const flightKey = this.flightKey(plan.target, item.key);
+      return this.singleFlight.run<Outcome<unknown>>(flightKey, async () => {
         // Traced, a refresh is one root `cache.refresh` span for the batch's own items.
         batch ??=
           refreshing && this.tracing.enabled
@@ -326,11 +334,22 @@ export class EngineLoad {
                 this.loadMany(plan, own, true),
               )
             : this.loadMany(plan, own, refreshing);
-        const { loaded, written } = await batch;
+        let settled: LoadedMany<T>;
+        try {
+          settled = await batch;
+        } catch (error) {
+          if (noting) this.noteRefresh(flightKey, undefined);
+          throw error;
+        }
         const { key } = item.ref;
-        return this.outcome({ value: loaded.get(key), written: written.has(key) });
-      }),
-    );
+        const outcome = this.outcome({
+          value: settled.loaded.get(key),
+          written: settled.written.has(key),
+        });
+        if (noting) this.noteRefresh(flightKey, refreshedOf(outcome));
+        return outcome;
+      });
+    });
   }
 
   /**
