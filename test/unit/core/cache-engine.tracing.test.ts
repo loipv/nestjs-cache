@@ -428,6 +428,25 @@ describe('CacheEngine tracing: swr refresh', () => {
     expect(main.status).toBeUndefined();
     expect(main.writesAfterEnd).toEqual([]);
   });
+
+  it('a refresh skipped by backoff starts no cache.refresh', async () => {
+    /* Spec 3.5: a stale read during the backoff after a failed refresh creates no span. */
+    const { engine, tracer } = traced();
+    const options = { ...SWR, staleTtl: 10_000 } as const;
+    await engine.set({ key: 'k' }, 'old', options);
+    vi.setSystemTime(150);
+    const loader = vi.fn((): Promise<string> => Promise.reject(new Error('boom')));
+    expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('old');
+    await vi.runAllTimersAsync();
+    expect(tracer.spans('cache.refresh')).toHaveLength(1);
+    vi.setSystemTime(500);
+    expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('old');
+    await vi.runAllTimersAsync();
+    expect(loader).toHaveBeenCalledOnce();
+    expect(tracer.spans('cache.refresh')).toHaveLength(1);
+    expect(tracer.spans('cache.getOrSet')).toHaveLength(2);
+    expect(tracer.spans('cache.load')).toHaveLength(1);
+  });
 });
 
 describe('CacheEngine tracing: writes and errors', () => {

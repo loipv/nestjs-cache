@@ -35,6 +35,11 @@ export interface CacheDefaults {
   /** TTL of a stored empty value, in ms. Default 30 000. */
   nullTtl?: number;
   lock?: CacheLockDefaults;
+  /**
+   * Milliseconds a key waits before another swr refresh after one that wrote nothing. Default
+   * 1 000; `0` disables.
+   */
+  refreshBackoff?: number;
 }
 
 /** Options of `CacheModule.forRoot`, and the value `forRootAsync`'s `useFactory` resolves. */
@@ -80,6 +85,7 @@ export interface ResolvedDefaults {
   cacheNull: boolean;
   nullTtl: number;
   lock: { enabled: boolean; ttl: number; waitTimeout: number; retryDelay: number };
+  refreshBackoff: number;
 }
 
 export interface ResolvedCacheOptions {
@@ -95,6 +101,7 @@ export interface ResolvedCacheOptions {
 
 const DEFAULT_TTL = 60_000;
 const DEFAULT_NULL_TTL = 30_000;
+const DEFAULT_REFRESH_BACKOFF = 1_000;
 
 function invalid(path: string, value: unknown, rule: string): CacheConfigError {
   return new CacheConfigError(`Invalid cache option ${path}: ${String(value)} (${rule})`);
@@ -104,6 +111,14 @@ function positiveDuration(path: string, value: number | undefined, fallback: num
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw invalid(path, value, 'must be a finite number > 0');
+  }
+  return value;
+}
+
+function refreshBackoffOf(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_REFRESH_BACKOFF;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw invalid('defaults.refreshBackoff', value, 'must be an integer >= 0');
   }
   return value;
 }
@@ -249,6 +264,7 @@ export function resolveOptions(options: CacheModuleOptions = {}): ResolvedCacheO
         waitTimeout: positiveDuration('defaults.lock.waitTimeout', lock.waitTimeout, 3_000),
         retryDelay: positiveDuration('defaults.lock.retryDelay', lock.retryDelay, 50),
       },
+      refreshBackoff: refreshBackoffOf(defaults.refreshBackoff),
     },
     serializer: options.serializer ?? jsonSerializer,
     logging: loggingOf(options.logging),

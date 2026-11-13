@@ -17,6 +17,7 @@ describe('resolveOptions', () => {
       cacheNull: false,
       nullTtl: 30_000,
       lock: { enabled: false, ttl: 10_000, waitTimeout: 3_000, retryDelay: 50 },
+      refreshBackoff: 1_000,
     });
     expect(r.prefix).toBeUndefined();
     expect(r.serializer).toBe(jsonSerializer);
@@ -43,6 +44,7 @@ describe('resolveOptions', () => {
       cacheNull: true,
       nullTtl: 1_000,
       lock: { enabled: false, ttl: 10_000, waitTimeout: 3_000, retryDelay: 50 },
+      refreshBackoff: 1_000,
     });
     expect(r.stores.get('default')).toBe(a);
     expect(r.stores.get('sessions')).toBe(b);
@@ -87,6 +89,30 @@ describe('resolveOptions', () => {
 
   it('every rejection is a CacheConfigError', () => {
     expect(() => resolveOptions({ defaults: { ttl: 0 } })).toThrow(CacheConfigError);
+  });
+});
+
+describe('resolveOptions refreshBackoff', () => {
+  it('defaults to 1000', () => {
+    expect(resolveOptions().defaults.refreshBackoff).toBe(1_000);
+  });
+
+  it.each([0, 1, 250, 60_000])('accepts %s', (value) => {
+    expect(resolveOptions({ defaults: { refreshBackoff: value } }).defaults.refreshBackoff).toBe(
+      value,
+    );
+  });
+
+  it.each([-1, 1.5, '1', Number.NaN, Number.POSITIVE_INFINITY, null])('rejects %s', (value) => {
+    const options = { defaults: { refreshBackoff: value } } as unknown as CacheModuleOptions;
+    expect(() => resolveOptions(options)).toThrow(CacheConfigError);
+    expect(() => resolveOptions(options)).toThrow(/defaults\.refreshBackoff/);
+  });
+
+  it('names the rule in the message', () => {
+    expect(() => resolveOptions({ defaults: { refreshBackoff: -1 } })).toThrow(
+      'Invalid cache option defaults.refreshBackoff: -1 (must be an integer >= 0)',
+    );
   });
 });
 

@@ -110,7 +110,8 @@ describe('CacheEngine swr background refresh', () => {
   });
 
   it('a failing refresh keeps the stale value and reports refresh', async () => {
-    const { engine, emitted, store } = makeEngine();
+    // Without backoff, so the next stale read retries at once (spec 3.5 covers the backoff).
+    const { engine, emitted, store } = makeEngine({ defaults: { refreshBackoff: 0 } });
     await engine.set({ key: 'k' }, 'old', SWR);
     vi.setSystemTime(150);
     const boom = new Error('boom');
@@ -163,7 +164,8 @@ describe('CacheEngine swr background refresh', () => {
   });
 
   it('stores the refreshed value through the miss storage policy', async () => {
-    const { engine, store } = makeEngine();
+    // Without backoff: the unwritten empty refresh below would back the key off (spec 3.5).
+    const { engine, store } = makeEngine({ defaults: { refreshBackoff: 0 } });
     await engine.set({ key: 'k' }, 'old', SWR);
     vi.setSystemTime(150);
     const options = { ...SWR, unless: (v: string | null) => v === 'skip' };
@@ -730,4 +732,291 @@ describe('CacheEngine softTimeout needs swr (F-3)', () => {
       await expect(engine.getOrSet({ key: 'k' }, loader, without)).resolves.toBe(1);
     },
   );
+});
+
+describe('CacheEngine swr refresh backoff (spec 3.5)', () => {
+  /* staleTtl outlives the 1 s backoff, so the entry stays stale (not expired) throughout. */
+  const LONG = { ttl: 100, strategy: 'swr', staleTtl: 100_000 } as const;
+  const LONG_SOFT = { ...LONG, softTimeout: 100 } as const;
+  const boom = (): Promise<string> => Promise.reject(new Error('boom'));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  /** Tracks when `promise` settles, without awaiting it. */
+  function track<T>(promise: Promise<T>): { settled: boolean; value: T | undefined } {
+    const state: { settled: boolean; value: T | undefined } = { settled: false, value: undefined };
+    void promise.then((value) => {
+      state.settled = true;
+      state.value = value;
+    });
+    return state;
+  }
+
+  it('a failing loader is tried once per backoff window', async () => {
+    /* 200 stale reads within 999 ms of a failed refresh start no other refresh: one loader
+       call, one load and one refresh error. At 1 000 ms the next stale read tries again. */
+    const { engine, emitted } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    emitted.length = 0;
+    const loader = vi.fn(boom);
+    for (let i = 0; i < 200; i += 1) {
+      vi.setSystemTime(150 + Math.floor((i * 999) / 199));
+      expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('old');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(Date.now()).toBe(1_149);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(emitted.filter((e) => e.event === 'load')).toHaveLength(1);
+    expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
+    expect(emitted.filter((e) => e.event === 'hit')).toHaveLength(200);
+    vi.setSystemTime(1_150);
+    expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('old');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it('a successful refresh clears the backoff', async () => {
+    /* After the backoff a refresh writes; the entry goes stale again, and the next stale read
+       refreshes at once (it fails, and is backed off again). */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    const loader = vi.fn(boom);
+    await engine.getOrSet({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(1_150);
+    loader.mockImplementation(async () => 'new');
+    await engine.getOrSet({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(await engine.get({ key: 'k' })).toBe('new');
+    vi.setSystemTime(1_260);
+    loader.mockImplementation(boom);
+    expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('new');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(1_400);
+    expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('new');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledTimes(3);
+  });
+
+  it('a refresh skipped by a lock held elsewhere is backed off too', async () => {
+    /* The first stale read finds the lock held and loads nothing; a second one within 1 s
+       does not try to acquire the lock again. After 1 s it does. */
+    const lock = new FakeLock();
+    const store = Object.assign(new FakeStore(), { lock });
+    const { engine } = makeEngine({ stores: { default: store } });
+    const options = { ...LONG, lock: true } as const;
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    lock.held.add('__lock__:k');
+    const loader = vi.fn(async () => 'new');
+    expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('old');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock.acquireCalls).toEqual(['__lock__:k']);
+    vi.setSystemTime(1_149);
+    expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('old');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock.acquireCalls).toHaveLength(1);
+    expect(loader).not.toHaveBeenCalled();
+    vi.setSystemTime(1_150);
+    lock.held.clear();
+    expect(await engine.getOrSet({ key: 'k' }, loader, options)).toBe('old');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock.acquireCalls).toHaveLength(2);
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it('refreshBackoff 0 keeps the 1.0 behaviour', async () => {
+    /* Every stale read with no refresh running calls the loader. */
+    const { engine } = makeEngine({ defaults: { refreshBackoff: 0 } });
+    await engine.set({ key: 'k' }, 'old', LONG);
+    const loader = vi.fn(boom);
+    for (let i = 0; i < 5; i += 1) {
+      vi.setSystemTime(150 + i * 10);
+      expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('old');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(loader).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([1, 250])('refreshBackoff %s ms is the window', async (ms) => {
+    const { engine } = makeEngine({ defaults: { refreshBackoff: ms } });
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    const loader = vi.fn(boom);
+    await engine.getOrSet({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(150 + ms - 1);
+    await engine.getOrSet({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+    vi.setSystemTime(150 + ms);
+    await engine.getOrSet({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it('an empty refreshed value that is not written is backed off', async () => {
+    /* F-2: a refresh that loads null without cacheNull writes nothing, so it is backed off. */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    const loader = vi.fn(async (): Promise<string | null> => null);
+    await engine.getOrSet<string | null>({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(500);
+    await engine.getOrSet<string | null>({ key: 'k' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it('a miss on a backed-off key still loads', async () => {
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    await engine.getOrSet({ key: 'k' }, boom, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    await engine.delete({}, ['k']);
+    vi.setSystemTime(200);
+    const loader = vi.fn(async () => 'loaded');
+    expect(await engine.getOrSet({ key: 'k' }, loader, LONG)).toBe('loaded');
+    expect(loader).toHaveBeenCalledOnce();
+    expect(await engine.get({ key: 'k' })).toBe('loaded');
+  });
+
+  it('a stale read during backoff joins a running miss flight (Review Focus 5)', async () => {
+    /* The key is backed off. A non-swr reader sees the stale entry as expired and starts a miss
+       load; a swr reader with softTimeout arriving during it joins that flight and gets its
+       value, rather than being short-circuited by the backoff. */
+    const { engine } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    await engine.getOrSet({ key: 'k' }, boom, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(200);
+    const missLoader = vi.fn(() => delayed(50, 'fresh'));
+    const miss = engine.getOrSet({ key: 'k' }, missLoader, { ttl: 100 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(missLoader).toHaveBeenCalledOnce();
+    const staleLoader = vi.fn(async () => 'other');
+    const state = track(engine.getOrSet({ key: 'k' }, staleLoader, { ...LONG, softTimeout: 500 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await miss).toBe('fresh');
+    expect(state).toEqual({ settled: true, value: 'fresh' });
+    expect(staleLoader).not.toHaveBeenCalled();
+  });
+
+  it('softTimeout does not wait for a backed-off key', async () => {
+    const { engine, emitted } = makeEngine();
+    await engine.set({ key: 'k' }, 'old', LONG);
+    vi.setSystemTime(150);
+    await engine.getOrSet({ key: 'k' }, boom, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(500);
+    emitted.length = 0;
+    const loader = vi.fn(async () => 'new');
+    const state = track(engine.getOrSet({ key: 'k' }, loader, LONG_SOFT));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ settled: true, value: 'old' });
+    expect(loader).not.toHaveBeenCalled();
+    expect(emitted.map((e) => e.event)).toEqual(['hit']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('getOrSetMany refreshes only the stale keys that are not backed off', async () => {
+    const { engine } = makeEngine();
+    await engine.set({ key: 'a' }, 'oldA', LONG);
+    await engine.set({ key: 'b' }, 'oldB', LONG);
+    vi.setSystemTime(150);
+    await engine.getOrSet({ key: 'a' }, boom, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(500);
+    const loader = vi.fn(async (keys: string[]) => new Map(keys.map((k) => [k, `new${k}`])));
+    expect(await engine.getOrSetMany({}, ['a', 'b'], loader, LONG)).toEqual(['oldA', 'oldB']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(loader).toHaveBeenCalledWith(['b']);
+    expect(await engine.get({ key: 'a' })).toBe('oldA');
+    expect(await engine.get({ key: 'b' })).toBe('newb');
+  });
+
+  it('getOrSetMany backs off the keys its failed refresh did not write', async () => {
+    /* A failed batch refresh backs off each of its keys; a single-key read of one is skipped. */
+    const { engine } = makeEngine();
+    await engine.setMany(
+      {},
+      [
+        ['a', 'oldA'],
+        ['b', 'oldB'],
+      ],
+      LONG,
+    );
+    vi.setSystemTime(150);
+    const failing = vi.fn(() => Promise.reject(new Error('boom')));
+    await engine.getOrSetMany({}, ['a', 'b'], failing, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(500);
+    const loader = vi.fn(async () => 'new');
+    expect(await engine.getOrSet({ key: 'b' }, loader, LONG)).toBe('oldB');
+    const batchLoader = vi.fn(async (keys: string[]) => new Map(keys.map((k) => [k, k])));
+    await engine.getOrSetMany({}, ['a', 'b'], batchLoader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failing).toHaveBeenCalledOnce();
+    expect(loader).not.toHaveBeenCalled();
+    expect(batchLoader).not.toHaveBeenCalled();
+  });
+
+  it('getOrSetMany with softTimeout does not wait for backed-off keys', async () => {
+    const { engine } = makeEngine();
+    await engine.set({ key: 'a' }, 'oldA', LONG);
+    vi.setSystemTime(150);
+    await engine.getOrSet({ key: 'a' }, boom, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(500);
+    const loader = vi.fn(async (keys: string[]) => new Map(keys.map((k) => [k, k])));
+    const state = track(engine.getOrSetMany({}, ['a'], loader, LONG_SOFT));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state).toEqual({ settled: true, value: ['oldA'] });
+    expect(loader).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps at most 10 000 backed-off keys, dropping the oldest', async () => {
+    /* 10 001 keys fail one batch refresh in order: the first is dropped from the backoff, so
+       it refreshes again at once, while the second is still backed off. */
+    const { engine } = makeEngine();
+    const keys = Array.from({ length: 10_001 }, (_, i) => `k${i}`);
+    await engine.setMany(
+      {},
+      keys.map((k) => [k, 'old'] as const),
+      LONG,
+    );
+    vi.setSystemTime(150);
+    const failing = vi.fn(() => Promise.reject(new Error('boom')));
+    await engine.getOrSetMany({}, keys, failing, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failing).toHaveBeenCalledOnce();
+    vi.setSystemTime(500);
+    const loader = vi.fn(async () => 'new');
+    await engine.getOrSet({ key: 'k1' }, loader, LONG);
+    await engine.getOrSet({ key: 'k10000' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).not.toHaveBeenCalled();
+    await engine.getOrSet({ key: 'k0' }, loader, LONG);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loader).toHaveBeenCalledOnce();
+    expect(await engine.get({ key: 'k0' })).toBe('new');
+  });
 });

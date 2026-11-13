@@ -85,6 +85,9 @@ interface LoadedMany<T> {
 
 const NOOP = (): void => undefined;
 
+/** The most keys `EngineLoad` keeps backed off; past it, the oldest entry is dropped. */
+const MAX_BACKOFF_ENTRIES = 10_000;
+
 /** Node runs a longer `setTimeout` delay after 1 ms; the soft wait is capped at this instead. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -138,14 +141,22 @@ function refreshed<T>(flight: Promise<unknown>): Promise<Refreshed<T>> {
 export class EngineLoad {
   private readonly singleFlight = new SingleFlight();
   private readonly lockSettings: LockSettings;
+  private readonly refreshBackoff: number;
+  /**
+   * Spec 3.5: by flight key, the time (`Date.now()` ms) before which a key that just had a
+   * refresh write nothing starts no new refresh. Insertion order is recency; at most
+   * `MAX_BACKOFF_ENTRIES` entries. Never written with `refreshBackoff` 0.
+   */
+  private readonly backoff = new Map<string, number>();
 
   constructor(
     private readonly io: EngineIO,
-    defaults: Pick<ResolvedDefaults, 'lock'>,
+    defaults: Pick<ResolvedDefaults, 'lock' | 'refreshBackoff'>,
     private readonly tracing: CacheTracing,
   ) {
     const { ttl, waitTimeout, retryDelay } = defaults.lock;
     this.lockSettings = { ttl: toIntegerMs(ttl), waitTimeout, retryDelay };
+    this.refreshBackoff = defaults.refreshBackoff;
   }
 
   /**
@@ -194,11 +205,16 @@ export class EngineLoad {
    * failed or loaded an empty value it did not write (`Refreshed`); it never rejects. A key
    * already in flight (a miss, a refresh or a batch) is not loaded again: its flight is joined.
    * Callers that do not wait ignore the result.
+   *
+   * Backoff (spec 3.5): a key not in flight whose last refresh wrote nothing, less than
+   * `refreshBackoff` ms ago, is not refreshed: the result is `undefined` at once, with no
+   * flight, event or span. Joining a flight is never backed off, and a miss never checks it.
    */
   refresh<T>(plan: LoadPlan<T>): Promise<Refreshed<T>> {
     const flightKey = this.flightKey(plan.target, plan.key);
     const current = this.singleFlight.current(flightKey);
     if (current !== undefined) return refreshed(current);
+    if (this.backingOff(flightKey)) return Promise.resolve(undefined);
     // Traced, the refresh is a root `cache.refresh` span linked to the call that started it.
     const task = this.tracing.enabled
       ? () =>
@@ -206,7 +222,13 @@ export class EngineLoad {
             this.refreshTask(plan),
           )
       : () => this.refreshTask(plan);
-    return refreshed(this.singleFlight.run<Outcome<T>>(flightKey, task));
+    const result = refreshed<T>(this.singleFlight.run<Outcome<T>>(flightKey, task));
+    // Without backoff, the 1.0 path exactly: no added continuation.
+    if (this.refreshBackoff === 0) return result;
+    return result.then((settled) => {
+      this.noteRefresh(flightKey, settled);
+      return settled;
+    });
   }
 
   /**
@@ -243,6 +265,9 @@ export class EngineLoad {
    * any other key keeps its stale value.
    * With `softTimeout`, it settles once every item is done or that many ms have passed,
    * whichever is first, with the keys done by then; the refreshes run on.
+   *
+   * Backoff as in `refresh`, per item: an item not in flight and backed off is dropped (it
+   * counts as done, not refreshed); the items it loads itself set or clear their backoff.
    */
   refreshMany<T>(
     plan: BatchPlan<T>,
@@ -250,10 +275,27 @@ export class EngineLoad {
     softTimeout?: number,
   ): Promise<ReadonlyMap<string, T>> {
     const done = new Map<string, T>();
+    const backoff = this.refreshBackoff > 0;
+    // The flight key of each item this call loads itself; `undefined` for a joined one.
+    const owned: (string | undefined)[] = [];
+    const due = backoff
+      ? items.filter((item) => {
+          const flightKey = this.flightKey(plan.target, item.key);
+          if (this.singleFlight.has(flightKey)) {
+            owned.push(undefined);
+            return true;
+          }
+          if (this.backingOff(flightKey)) return false;
+          owned.push(flightKey);
+          return true;
+        })
+      : items;
     // `flights` joins the items in flight and loads the others with one loader call.
-    const flights = this.flights(plan, items, true).map((flight, i) =>
+    const flights = this.flights(plan, due, true).map((flight, i) =>
       refreshed<T>(flight).then((result) => {
-        const item = items[i];
+        const item = due[i];
+        const flightKey = owned[i];
+        if (flightKey !== undefined) this.noteRefresh(flightKey, result);
         if (result !== undefined && item !== undefined) done.set(item.ref.key, result.value);
       }),
     );
@@ -355,6 +397,31 @@ export class EngineLoad {
 
   private flightKey(target: Target, key: ResolvedKey): string {
     return `${target.name}\u0000${key.full}`;
+  }
+
+  /** Whether `flightKey` is backed off now; an expired entry is dropped. */
+  private backingOff(flightKey: string): boolean {
+    const until = this.backoff.get(flightKey);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    this.backoff.delete(flightKey);
+    return false;
+  }
+
+  /**
+   * Records how a refresh this instance started settled: one that wrote nothing backs its key
+   * off for `refreshBackoff` ms, as the newest entry (the oldest is dropped past
+   * `MAX_BACKOFF_ENTRIES`); one that wrote clears it. A no-op with `refreshBackoff` 0.
+   */
+  private noteRefresh(flightKey: string, result: Refreshed<unknown>): void {
+    if (this.refreshBackoff === 0) return;
+    this.backoff.delete(flightKey);
+    if (result !== undefined) return;
+    this.backoff.set(flightKey, Date.now() + this.refreshBackoff);
+    if (this.backoff.size > MAX_BACKOFF_ENTRIES) {
+      const oldest = this.backoff.keys().next();
+      if (oldest.done !== true) this.backoff.delete(oldest.value);
+    }
   }
 
   /** A miss's flight outcome; `unwritten` as in `Outcome`, for a refresh that joins it. */

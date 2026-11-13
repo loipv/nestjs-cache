@@ -12,21 +12,22 @@ Pass the options to `CacheModule.forRoot(options)`, or return them from the `use
 `CacheModule.forRootAsync({ isGlobal, imports, inject, useFactory })`. A full `forRootAsync` example with Redis is in
 [Stores](stores.md#redis-and-two-tier-setup).
 
-| Option                | Type                                                  | Default                      | Meaning                                                                                    |
-| --------------------- | ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `prefix`              | `string`                                              | none                         | Prefix for every key                                                                       |
-| `stores`              | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`                           |
-| `defaults.ttl`        | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                                                      |
-| `defaults.jitter`     | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]`                        |
-| `defaults.cacheNull`  | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                                              |
-| `defaults.nullTtl`    | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                                                |
-| `namespaces`          | `{ [ns]: { versioned?: boolean } }`                   | none                         | Turns on [versioned namespaces](namespaces-and-tags.md#versioned-namespaces) (exact names) |
-| `versioning.cacheTtl` | `number` (ms)                                         | `1_000`                      | How long an instance keeps a namespace version in memory                                   |
-| `escapeKeyArgs`       | `boolean`                                             | `false`                      | Escapes `%` and `:` in string and number template arguments                                |
-| `serializer`          | `Serializer`                                          | JSON                         | Envelope serializer                                                                        |
-| `isGlobal`            | `boolean`                                             | `false`                      | Register the module globally                                                               |
-| `defaults.lock`       | `CacheLockDefaults`                                   | lock off                     | The distributed lock; see [Distributed lock](resilience.md#distributed-lock)               |
-| `logging.level`       | `'off' \| 'error' \| 'debug'`                         | `'error'`                    | What the library logs; see [Logging](observability.md#logging)                             |
+| Option                    | Type                                                  | Default                      | Meaning                                                                                    |
+| ------------------------- | ----------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
+| `prefix`                  | `string`                                              | none                         | Prefix for every key                                                                       |
+| `stores`                  | `{ default: CacheStore; [name: string]: CacheStore }` | `{ default: memoryStore() }` | Named stores; a `default` store is required if you pass `stores`                           |
+| `defaults.ttl`            | `number` (ms)                                         | `60_000`                     | TTL when a decorator does not set one                                                      |
+| `defaults.jitter`         | `number` in `[0, 1)`                                  | `0`                          | Effective TTL = `ttl x (1 + r)`, `r` random in `[-jitter, +jitter]`                        |
+| `defaults.cacheNull`      | `boolean`                                             | `false`                      | Whether `null`/`undefined` results are stored                                              |
+| `defaults.nullTtl`        | `number` (ms)                                         | `30_000`                     | TTL for stored empty values                                                                |
+| `defaults.refreshBackoff` | `number` (ms, integer `>= 0`)                         | `1_000`                      | Wait before another swr refresh of a key after one that wrote nothing; `0` disables        |
+| `namespaces`              | `{ [ns]: { versioned?: boolean } }`                   | none                         | Turns on [versioned namespaces](namespaces-and-tags.md#versioned-namespaces) (exact names) |
+| `versioning.cacheTtl`     | `number` (ms)                                         | `1_000`                      | How long an instance keeps a namespace version in memory                                   |
+| `escapeKeyArgs`           | `boolean`                                             | `false`                      | Escapes `%` and `:` in string and number template arguments                                |
+| `serializer`              | `Serializer`                                          | JSON                         | Envelope serializer                                                                        |
+| `isGlobal`                | `boolean`                                             | `false`                      | Register the module globally                                                               |
+| `defaults.lock`           | `CacheLockDefaults`                                   | lock off                     | The distributed lock; see [Distributed lock](resilience.md#distributed-lock)               |
+| `logging.level`           | `'off' \| 'error' \| 'debug'`                         | `'error'`                    | What the library logs; see [Logging](observability.md#logging)                             |
 
 ## Null caching and TTL jitter
 
@@ -102,6 +103,15 @@ joined with concurrent misses on the same key (one load), and a refresh that fai
   `AsyncLocalStorage`, a request object passed in the arguments).
 - The synchronous part of the method (everything before its first `await`) runs before the stale value is returned
   to the caller, because the refresh is started first. Keep that part cheap.
+
+**Refresh backoff.** A swr refresh that writes nothing backs its key off for `defaults.refreshBackoff` ms (default
+`1_000`). It writes nothing when its loader fails, when another instance holds the lock, when the store write fails, or
+when it loads an empty value that is not stored. During the backoff a stale read of that key returns the stale value
+without starting a refresh: no `load` or `error` event, no `cache.refresh` span, and no wait for `softTimeout`. A
+`getOrSetMany` leaves the backed-off keys out of its refresh loader call. A refresh already running for the key is still
+joined, and a miss always loads. A refresh that writes clears the backoff. Each instance keeps at most 10 000 backed-off
+keys and drops the oldest beyond that. `0` turns the backoff off, as in 1.0. The value must be an integer `>= 0`;
+anything else is a `CacheConfigError`.
 
 **`softTimeout`.** With `strategy: 'swr'` a stale hit normally returns the old value at once. Add `softTimeout` (ms)
 to wait up to that long for the refresh instead (joining one already in flight): the fresh value is returned if it
