@@ -140,6 +140,22 @@ describe('TieredStore', () => {
     expect(bus.published[0]!.origin).not.toBe(otherBus.published[0]!.origin);
   });
 
+  it('splits a large setMany invalidation into several keys messages', async () => {
+    const entries = Array.from({ length: 30_000 }, (_, i) => ({
+      key: `bulk:${String(i).padStart(40, '0')}`,
+      value: 'v',
+      ttlMs: 60_000,
+    }));
+    await store.setMany(entries);
+    expect(bus.published.length).toBeGreaterThan(1);
+    expect(bus.published.every((m) => 'keys' in m)).toBe(true);
+  });
+
+  it('publishes one message for a small delete', async () => {
+    await store.delete(['a', 'b', 'c']);
+    expect(bus.published).toHaveLength(1);
+  });
+
   it('treats an L2 read failure as a miss and reports it', async () => {
     l2.failNext('get');
     await expect(store.get('k')).resolves.toBeUndefined();

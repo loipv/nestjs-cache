@@ -216,6 +216,19 @@ describe.each(WITH_PUBSUB)('TieredStore (integration) on %s', (adapterName) => {
     }
   });
 
+  it('a 30 000-entry setMany on one instance does not clear the other instance L1', async () => {
+    await a.cache.set('keep', { n: 1 });
+    await expectServedFromL1(redis, 'keep', () => b.cache.get('keep'), { n: 1 });
+    const entries = Array.from({ length: 30_000 }, (_, i): [string, number] => [
+      `bulk:${String(i).padStart(40, '0')}`,
+      i,
+    ]);
+    await a.cache.setMany(entries);
+    await pause(300);
+    await redis.raw.del('keep');
+    expect(await b.cache.get('keep')).toEqual({ n: 1 });
+  });
+
   /* Closing the apps leaves the user's client open: it still serves commands afterwards. */
   it('closing the app does not close the user client', async () => {
     await closeApp(a);

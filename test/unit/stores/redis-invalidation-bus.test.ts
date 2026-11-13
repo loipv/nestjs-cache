@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InvalidationMessage } from '../../../src/stores/cache-store.interface.js';
+import { chunkKeys, MAX_PUBLISH_CHARS } from '../../../src/stores/invalidation-chunks.js';
 import { redisInvalidationBus } from '../../../src/stores/redis-invalidation-bus.js';
 import { FakeRedis } from '../helpers/fake-redis.js';
 
@@ -49,6 +50,20 @@ describe('redisInvalidationBus', () => {
       { origin: 'a', prefix: '' },
       { origin: 'a', prefix: '' },
     ]);
+  });
+
+  it('parses every chunk of 30 000 keys as a keys message, not a clear', async () => {
+    const fake = new FakeRedis();
+    const bus = redisInvalidationBus({ client: fake });
+    const got: InvalidationMessage[] = [];
+    await bus.subscribe((m) => got.push(m));
+    const keys = Array.from({ length: 30_000 }, (_, i) => `k:${String(i).padStart(40, '0')}`);
+    const chunks = chunkKeys('a', keys, MAX_PUBLISH_CHARS);
+    for (const chunk of chunks) await bus.publish(chunk);
+    const sub = fake.subscribers[0]!;
+    for (const c of fake.commands) if (c.name === 'publish') sub.deliver(c.args[1] as string);
+    expect(got).toHaveLength(chunks.length);
+    expect(got.every((m) => 'keys' in m)).toBe(true);
   });
 
   it('ignores a message without a string origin, whatever its body (P-07)', async () => {

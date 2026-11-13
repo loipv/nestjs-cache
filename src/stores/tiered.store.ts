@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { CacheEventSink, CacheOperation } from '../core/events.js';
 import { CacheConfigError } from '../errors.js';
+import { chunkKeys, MAX_PUBLISH_CHARS } from './invalidation-chunks.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type {
   CacheStore,
@@ -371,6 +372,12 @@ export class TieredStore implements CacheStore {
   private async publish(message: InvalidationMessage): Promise<void> {
     const bus = this.bus;
     if (bus === undefined) return;
+    if ('keys' in message) {
+      // Large key lists are split so no message nears the receivers' parse limit (spec 3.4).
+      const chunks = chunkKeys(message.origin, message.keys, MAX_PUBLISH_CHARS);
+      await Promise.all(chunks.map((chunk) => this.attempt('publish', () => bus.publish(chunk))));
+      return;
+    }
     await this.attempt('publish', () => bus.publish(message));
   }
 
