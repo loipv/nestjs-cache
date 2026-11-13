@@ -90,6 +90,25 @@ describe('CacheEngine distributed lock', () => {
     expect(lock.acquireTtls).toEqual([1_500]);
   });
 
+  it('re-reads after acquiring: a value written just before is served with one hit', async () => {
+    const store = lockingStore();
+    const a = makeEngine({ stores: { default: store } }).engine;
+    const free = new FakeLock();
+    // The previous holder writes and releases between B's miss and B's acquire.
+    store.lock = {
+      acquire: async (key, ttlMs) => {
+        await a.set({ key: 'k' }, 'theirs');
+        return free.acquire(key, ttlMs);
+      },
+    };
+    const b = makeEngine({ stores: { default: store } });
+    const loader = vi.fn(async () => 'mine');
+    expect(await b.engine.getOrSet({ key: 'k' }, loader, LOCKED)).toBe('theirs');
+    expect(loader).not.toHaveBeenCalled();
+    expect(b.emitted.filter((e) => e.event === 'hit')).toHaveLength(1);
+    expect(b.emitted.map((e) => e.event)).toEqual(['miss', 'lock', 'hit']);
+  });
+
   it('waits for another holder, then serves its value with one hit', async () => {
     const { engine, emitted, lock, other } = setup();
     lock.held.add('__lock__:k');

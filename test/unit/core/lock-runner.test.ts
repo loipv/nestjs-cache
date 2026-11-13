@@ -167,6 +167,76 @@ describe('lock runner', () => {
       expect(hooks.onError).toHaveBeenCalledWith(boom);
     });
 
+    it('re-reads after acquire: a found value is returned, the loader is not called', async () => {
+      const lock = new FakeLock();
+      const reread = vi.fn<Reread<string>>(async () => ({ found: true, value: 'c' }));
+      const load = vi.fn(async () => 'v');
+      expect(await loadWithLock(lock, 'k', S, reread, load, hooks)).toEqual({
+        value: 'c',
+        from: 'cache',
+      });
+      expect(load).not.toHaveBeenCalled();
+      expect(reread).toHaveBeenCalledOnce();
+      expect(lock.releaseCalls).toEqual(['k']);
+      expect(hooks.onLock).toHaveBeenCalledOnce();
+      expect(hooks.onLock).toHaveBeenCalledWith(true, 0);
+      expect(hooks.onError).not.toHaveBeenCalled();
+    });
+
+    it('a re-read that throws is reported, then the load runs under the lock', async () => {
+      const lock = new FakeLock();
+      const boom = new Error('read failed');
+      const reread = vi.fn<Reread<string>>(async () => {
+        throw boom;
+      });
+      const load = vi.fn(async () => 'v');
+      expect(await loadWithLock(lock, 'k', S, reread, load, hooks)).toEqual({
+        value: 'v',
+        from: 'load',
+      });
+      expect(hooks.onError).toHaveBeenCalledWith(boom);
+      expect(load).toHaveBeenCalledOnce();
+      expect(lock.releaseCalls).toEqual(['k']);
+    });
+
+    it('does not wait for the release', async () => {
+      const lock: LockProvider = {
+        acquire: () => Promise.resolve({ release: () => new Promise<void>(() => undefined) }),
+      };
+      expect(await loadWithLock(lock, 'k', S, miss, async () => 'v', hooks)).toEqual({
+        value: 'v',
+        from: 'load',
+      });
+    });
+
+    it('does not wait for the release after a re-read hit', async () => {
+      const lock: LockProvider = {
+        acquire: () => Promise.resolve({ release: () => new Promise<void>(() => undefined) }),
+      };
+      const reread: Reread<string> = async () => ({ found: true, value: 'c' });
+      expect(await loadWithLock(lock, 'k', S, reread, async () => 'v', hooks)).toEqual({
+        value: 'c',
+        from: 'cache',
+      });
+    });
+
+    it('a synchronous throw from release is reported and the call resolves', async () => {
+      const boom = new Error('sync release');
+      const lock: LockProvider = {
+        acquire: () =>
+          Promise.resolve({
+            release: (): Promise<void> => {
+              throw boom;
+            },
+          }),
+      };
+      expect(await loadWithLock(lock, 'k', S, miss, async () => 'v', hooks)).toEqual({
+        value: 'v',
+        from: 'load',
+      });
+      expect(hooks.onError).toHaveBeenCalledWith(boom);
+    });
+
     it('releases when the loader throws (Review Focus 3)', async () => {
       const lock = new FakeLock();
       const boom = new Error('db');
@@ -281,6 +351,19 @@ describe('lock runner', () => {
       const boom = new Error('release failed');
       lock.failNext('release', boom);
       await refreshWithLock(lock, 'k', 10_000, async () => undefined, hooks);
+      expect(hooks.onError).toHaveBeenCalledWith(boom);
+    });
+    it('does not wait for the release and a rejecting release reaches onError', async () => {
+      const pending: LockProvider = {
+        acquire: () => Promise.resolve({ release: () => new Promise<void>(() => undefined) }),
+      };
+      await refreshWithLock(pending, 'k', 10_000, async () => undefined, hooks);
+      const boom = new Error('release failed');
+      const failing: LockProvider = {
+        acquire: () => Promise.resolve({ release: () => Promise.reject(boom) }),
+      };
+      await refreshWithLock(failing, 'k', 10_000, async () => undefined, hooks);
+      await Promise.resolve();
       expect(hooks.onError).toHaveBeenCalledWith(boom);
     });
   });

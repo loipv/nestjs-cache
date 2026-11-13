@@ -24,7 +24,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Releases in `finally`; a failed release is reported and never replaces the load outcome. */
+/** Starts the release without awaiting it; a failed or throwing release is reported, never raised. */
+function releaseInBackground(handle: LockHandle, hooks: LockHooks): void {
+  try {
+    handle.release().catch((error: unknown) => {
+      hooks.onError(error);
+    });
+  } catch (error) {
+    hooks.onError(error);
+  }
+}
+
+/** Releases in `finally` without delaying the caller; a failed release never replaces the load outcome. */
 async function whileHolding<T>(
   handle: LockHandle,
   load: () => Promise<T>,
@@ -33,16 +44,12 @@ async function whileHolding<T>(
   try {
     return await load();
   } finally {
-    try {
-      await handle.release();
-    } catch (error) {
-      hooks.onError(error);
-    }
+    releaseInBackground(handle, hooks);
   }
 }
 
 /**
- * Miss path (spec 0.2, 4.4). With the lock: load, then release. Without it: poll `reread`
+ * Miss path (spec 0.2, 4.4). With the lock: re-read once, then load and release (the release runs in the background). Without it: poll `reread`
  * every `retryDelay` until a value appears or `waitTimeout` passes, then load without the lock.
  * When `acquire` throws, the error is reported and the load runs without the lock.
  */
@@ -65,6 +72,17 @@ export async function loadWithLock<T>(
   }
   if (handle !== undefined) {
     hooks.onLock(true, Date.now() - started);
+    // Another holder may have written between the first miss and this acquire.
+    let cached: Awaited<ReturnType<Reread<T>>> = { found: false };
+    try {
+      cached = await reread();
+    } catch (error) {
+      hooks.onError(error);
+    }
+    if (cached.found) {
+      releaseInBackground(handle, hooks);
+      return { value: cached.value, from: 'cache' };
+    }
     return { value: await whileHolding(handle, load, hooks), from: 'load' };
   }
   for (;;) {
