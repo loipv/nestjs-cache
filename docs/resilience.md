@@ -105,10 +105,10 @@ const store = tieredStore({
   `openDuration` must be finite numbers greater than 0 and `<= 2_147_483_647` (the largest `setTimeout` delay);
   otherwise `circuitBreakerStore` throws `CacheConfigError`. `circuitBreakerStore(...)` returns a `CircuitBreakerStore`, its options are
   typed `CircuitBreakerStoreOptions`, and `breaker` events carry a `BreakerState`.
-- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`,
-  `lock.acquire` and `lock.release`. `invalidation`, `bind` and `close` are passed through. The breaker has the
-  optional ones (`getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping` and `lock`) only if the wrapped
-  store does.
+- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `getMany`, `setMany`, `touch`, `setIfAbsent`, `getStrict`,
+  `setStrict`, `ping`, `lock.acquire` and `lock.release`. `invalidation`, `bind` and `close` are passed through. The
+  breaker has the optional ones (`getAndTouch`, `getMany`, `setMany`, `touch`, `setIfAbsent`, `getStrict`,
+  `setStrict`, `ping` and `lock`) only if the wrapped store does.
 - `clear` runs only while the circuit is closed: when it is open or half-open, `clear` rejects with
   `CircuitOpenError` without calling the store, and it is never the half-open probe. It is not subject to `timeout`
   (a large Redis `SCAN`/`UNLINK` clear may run as long as it needs), so set a command or socket timeout on the Redis
@@ -116,9 +116,10 @@ const store = tieredStore({
 - A result that arrives after its command timed out is ignored: it does not reset the failure count or change the
   state. If an `acquire` times out but the lock is granted late, the late lock is released best-effort.
 - `CircuitOpenError` never emits `error`, and the cache methods do not reject with it: reads count as a miss, writes
-  are skipped, and loads run without the lock. Two calls can surface it: `CacheService.invalidateTags` rejects with
-  `CircuitOpenError` (or with the raw store error) when a tag token write fails, and `TieredStore.getStrict` and
-  `setStrict` reject with it by design. Every state change emits a `breaker` event.
+  are skipped, and loads run without the lock. Only these calls can surface it: `CacheService.invalidateTags` rejects
+  with `CircuitOpenError` (or with the raw store error) when a tag token write fails, and `TieredStore.getStrict`,
+  `setStrict`, `touch` and `setIfAbsent` reject with it by design (the engine handles these itself). Every state
+  change emits a `breaker` event.
 - In a tiered store, an open L2 circuit means L1 keeps serving and L1 writes still happen, but invalidation messages
   are not published. L1 entries on other instances can therefore stay stale for up to `l1Ttl` while the circuit is
   open.
@@ -143,7 +144,7 @@ open.
 | Lock acquire or release fails, or a background refresh fails               | Load without the lock / keep the old value; `error` with `operation: 'lock'` or `'refresh'`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Token key TTL refresh fails (1.1)                                          | `error` with `operation: 'touch'`; the read that used the token is unaffected; retried at the next use after 24 h                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | The original method throws                                                 | The error reaches the caller, nothing is stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `CircuitOpenError` from a breaker                                          | Never emits `error`; read = miss, write/delete skipped. Only `invalidateTags` (and the strict calls of a tiered store) can reject with it                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `CircuitOpenError` from a breaker                                          | Never emits `error`; read = miss, write/delete skipped. Only `invalidateTags` (and `getStrict`, `setStrict`, `touch` and `setIfAbsent` of a tiered store) can reject with it                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 `CacheConfigError` is thrown only in these cases:
 

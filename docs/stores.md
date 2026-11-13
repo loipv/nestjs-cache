@@ -239,6 +239,10 @@ the 1.0 behaviour. `memoryStore` has both, `redisStore` always has `touch` (one 
 when its client adapter does, and `tieredStore` and `circuitBreakerStore` expose them only when the store below them
 does.
 
+Because the engine calls `touch` and `setIfAbsent` whenever a store has them, a custom store must not use either name
+for a member with another meaning. A store written for 1.0 that already has a `touch` or `setIfAbsent` member with
+different arguments or semantics must rename it before upgrading to 1.1.
+
 The interfaces you implement (`CacheStore`, `LockProvider`, `InvalidationBus`, `RedisClientAdapter` and the other
 ones) only gain optional members in 1.x, and the library checks that an optional member exists before it calls it, so
 an implementation written for 1.0 keeps working. See [Stability and semver](semver.md#interfaces-you-implement).

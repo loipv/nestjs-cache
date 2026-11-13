@@ -114,5 +114,9 @@
   {
     "fragment": "`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`, `version`, `tag`",
     "reason": "1.1 adds the `CacheOperation` value `touch` (a failed background refresh of a version token key TTL, P-04); see docs/observability.md."
+  },
+  {
+    "fragment": "- Guarded: `get`, `set`, `delete`, `clear`, `getAndTouch`, `getMany`, `setMany`, `getStrict`, `setStrict`, `ping`,",
+    "reason": "1.1 adds the optional store members `touch` and `setIfAbsent`, which the circuit breaker guards too; see docs/resilience.md."
   }
 ]

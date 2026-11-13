@@ -28,8 +28,9 @@ const DEFAULT_L1_TTL = 10_000;
 /**
  * Two-tier store: a fast local L1 in front of a shared L2. Every write, delete and clear is
  * published on the invalidation bus so other instances drop their L1 copies. Failures are reported
- * through the sink given to `bind`; no method rejects except `getStrict` and `setStrict`, which
- * reject when L2 cannot be read or written.
+ * through the sink given to `bind`; no method rejects except `getStrict`, `setStrict`, `touch` and
+ * `setIfAbsent`, which reject when L2 cannot be read or written (with `CircuitOpenError` when an L2
+ * circuit breaker is open).
  */
 export class TieredStore implements CacheStore {
   /** The L2's lock, when it has one. */

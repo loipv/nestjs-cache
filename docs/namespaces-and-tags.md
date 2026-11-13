@@ -40,12 +40,13 @@ await cache.clear('users'); // one SET of a new token; no SCAN
 - A versioned namespace keeps a token in the key `<prefix>:__version__:<namespace>` and writes data under
   `<prefix>:<namespace>@<token>:<key>`. The token key has a 30-day TTL that every `clear` refreshes. On a store with
   `touch` (`memoryStore`, `redisStore`, and a `tieredStore` over Redis), using the namespace refreshes it too: each
-  instance resets the TTL to 30 days in the background at most once a day per token, so the token key expires 30 days
-  after its last use. A failed refresh emits an `error` event with `operation: 'touch'` and is tried again a day later;
-  the call that used the token is not affected. On a custom store without `touch`, the 1.0 rule stays: the TTL is set
-  only when the token key is created and on `clear`, so a namespace that has not been cleared for 30 days gets a new
-  token on its next use, however busy it is: every entry under the old token misses, including entries written just
-  before with a short `ttl` (a miss, never stale data).
+  instance resets the TTL to 30 days in the background about once a day per token (sooner after a restart, or when
+  the token left the process cache), so the token key expires 30 days after its last use. A token the instance has
+  just created or changed already has its full TTL and is not refreshed then. A failed refresh emits an `error` event
+  with `operation: 'touch'` and is tried again a day later; the call that used the token is not affected. On a custom
+  store without `touch`, the 1.0 rule stays: the TTL is set only when the token key is created and on `clear`, so a
+  namespace that has not been cleared for 30 days gets a new token on its next use, however busy it is: every entry
+  under the old token misses, including entries written just before with a short `ttl` (a miss, never stale data).
 - `clear` and `@CacheEvict({ allEntries: true })` write a new token. Old entries are never deleted; they become
   unreachable and expire by their own TTL.
 - Each instance caches the token in memory for `versioning.cacheTtl` ms (default `1_000`), so another instance sees a
@@ -191,13 +192,12 @@ Consistency and cost:
   evicted first).
 - Tag token keys live 30 days. The TTL is set when the key is created and on `invalidateTags` or
   `@CacheEvict({ tags })`. On a store with `touch` (`memoryStore`, `redisStore`, and a `tieredStore` over Redis), using
-  the tag refreshes it as for a versioned namespace (at most once a day per token and instance, in the background), so
+  the tag refreshes it as for a versioned namespace (about once a day per token and instance, in the background), so
   the key expires 30 days after its last use. On a custom store without `touch`, reads and writes never refresh it
   (the 1.0 rule): a tag that has not been invalidated for 30 days gets a new token on its next use, however busy it is:
   every entry tagged with it misses, including entries written just before with a short `ttl` (a miss, never stale
-  data). They live in the same store (in `memoryStore`, in a separate LRU
-  of `maxEntries` tokens, see [stores](./stores.md)), and one key per distinct tag accumulates in Redis. Bound tags
-  built from untrusted input.
+  data). They live in the same store (in `memoryStore`, in a separate LRU of `maxEntries` tokens, see
+  [stores](./stores.md)), and one key per distinct tag accumulates in Redis. Bound tags built from untrusted input.
 - On a two-tier store, if an invalidation message is lost or there is no bus, another instance can keep the old tag
   token for up to `l1Ttl` plus `versioning.cacheTtl` (the tag token key is cached in L1), not only
   `versioning.cacheTtl`.
