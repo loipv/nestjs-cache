@@ -48,6 +48,11 @@ Every module option is listed in [Configuration](configuration.md#module-options
 `redisStore({ client, channel? })` (`RedisStoreOptions`) accepts an ioredis instance (or a `RedisClientAdapter`). The default
 Pub/Sub channel is `nestjs-cache:invalidate`. Redis 6.2 or later is required (the store uses `GETEX`).
 
+`clear(prefix)` on Redis walks the keys with `SCAN` (`COUNT 1_000` per page) and sends each page to `UNLINK` while the
+scan goes on, with up to 4 `UNLINK` calls in flight. It still visits every key of the database, so its cost grows with
+the database size; a versioned namespace clears with one write instead. If an `UNLINK` fails, `clear` stops scanning,
+waits for the calls in flight and rejects with that error.
+
 `memoryStore({ maxEntries? })` is an LRU store (`MemoryStoreOptions`); `maxEntries` defaults to `1_000`. The version
 tokens of namespaces and tags (`<prefix>:__version__:*`, `<prefix>:__tag__:*`) are kept in a second LRU of the same
 size, so data writes never evict them; a store used as a `tieredStore` L1 does not need this and keeps one LRU.

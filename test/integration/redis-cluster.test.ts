@@ -175,6 +175,19 @@ describe('ioredis Cluster (integration)', () => {
     expect(await store.getMany(p2)).toEqual(p2.map(() => 'v'));
   });
 
+  it('clear(prefix) removes 5 000 keys across slots and keeps other keys', async () => {
+    const store = redisStore({ client });
+    for (let start = 0; start < 5_000; start += 500) {
+      await Promise.all(
+        Array.from({ length: 500 }, (_, i) => client.set(`bulk:k${String(start + i)}`, 'v')),
+      );
+    }
+    await client.set('other:x', 'v');
+    await store.clear('bulk:');
+    for (const node of masters()) expect(await scanNode(node, 'bulk:*')).toEqual([]);
+    expect(await client.get('other:x')).toBe('v');
+  });
+
   /* SET NX and the release script run on the master that owns the lock key. */
   it('a lock acquired through the cluster excludes a second acquire', async () => {
     const store = redisStore({ client });

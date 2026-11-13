@@ -3,6 +3,7 @@ import { RedisLock } from './redis-lock.js';
 import type { RedisClientAdapter } from './redis-client.adapter.js';
 import { createRedisBus, DEFAULT_CHANNEL, toRedisAdapter } from './redis-invalidation-bus.js';
 import type { RedisInvalidationBusOptions } from './redis-invalidation-bus.js';
+import { unlinkPages } from './unlink-pages.js';
 
 /**
  * Options of `redisStore`: the client and the invalidation channel, the same fields as
@@ -11,7 +12,8 @@ import type { RedisInvalidationBusOptions } from './redis-invalidation-bus.js';
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- its own name, same fields as the bus options
 export interface RedisStoreOptions extends RedisInvalidationBusOptions {}
 
-const SCAN_COUNT = 100;
+const SCAN_COUNT = 1_000;
+const UNLINK_CONCURRENCY = 4;
 
 /** Backslash-escapes `\ * ? [ ]` so a literal can be used inside a Redis MATCH pattern. */
 export function escapeGlob(literal: string): string {
@@ -75,20 +77,22 @@ export class RedisStore implements CacheStore {
     return this.adapter.unlink(keys);
   }
 
+  /** Scans `prefix*` and unlinks each page while the scan goes on, with up to `UNLINK_CONCURRENCY` in flight. */
   async clear(prefix: string): Promise<void> {
     const match = `${escapeGlob(prefix)}*`;
-    if (this.adapter.scanIterator !== undefined) {
-      for await (const keys of this.adapter.scanIterator(match, SCAN_COUNT)) {
-        if (keys.length > 0) await this.adapter.unlink(keys);
-      }
-      return;
-    }
-    let cursor = '0';
-    do {
-      const page = await this.adapter.scan(cursor, match, SCAN_COUNT);
-      cursor = page.cursor;
-      if (page.keys.length > 0) await this.adapter.unlink(page.keys);
-    } while (cursor !== '0');
+    const adapter = this.adapter;
+    const pages: AsyncIterable<string[]> =
+      adapter.scanIterator !== undefined
+        ? adapter.scanIterator(match, SCAN_COUNT)
+        : (async function* (): AsyncGenerator<string[]> {
+            let cursor = '0';
+            do {
+              const page = await adapter.scan(cursor, match, SCAN_COUNT);
+              cursor = page.cursor;
+              yield page.keys;
+            } while (cursor !== '0');
+          })();
+    await unlinkPages(pages, (keys) => adapter.unlink(keys), UNLINK_CONCURRENCY);
   }
 
   getAndTouch(key: string, ttlMs: number): Promise<string | undefined> {

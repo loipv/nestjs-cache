@@ -127,6 +127,21 @@ describe.each(selectedAdapters())('RedisStore (integration) on %s', (adapterName
     expect((await redis.raw.keys('*')).sort()).toEqual(['a1:x', 'b:x']);
   });
 
+  it('clear removes 20 000 keys of a prefix and keeps other keys', async () => {
+    const store = redisStore({ client });
+    for (let start = 0; start < 20_000; start += 1_000) {
+      await Promise.all(
+        Array.from({ length: 1_000 }, (_, i) =>
+          redis.raw.set(`p:k${String(start + i)}`, 'v', 600_000),
+        ),
+      );
+    }
+    await redis.raw.set('other:x', 'v', 600_000);
+    await store.clear('p:');
+    expect(await redis.raw.keys('p:*')).toHaveLength(0);
+    expect(await redis.raw.get('other:x')).toBe('v');
+  });
+
   // Skipped where the probe finds the adapter's pub/sub unreachable from this host (ruling T1-B).
   const title = 'carries invalidation messages between two stores';
   const reachable = PUBSUB.get(adapterName) === true;

@@ -22,7 +22,7 @@ describe('RedisStore', () => {
   it('clear keeps the scan loop when the adapter has no scanIterator', async () => {
     const fake = new FakeRedis();
     const store = redisStore({ client: fake });
-    for (let i = 0; i < 250; i += 1) fake.data.set(`u:${i}`, 'v');
+    for (let i = 0; i < 2_500; i += 1) fake.data.set(`u:${i}`, 'v');
     for (let i = 0; i < 3; i += 1) fake.data.set(`p:${i}`, 'v');
     await store.clear('u:');
     expect([...fake.data.keys()].sort()).toEqual(['p:0', 'p:1', 'p:2']);
@@ -30,7 +30,7 @@ describe('RedisStore', () => {
     expect(scans.length).toBeGreaterThanOrEqual(3);
     for (const scan of scans) {
       expect(scan.args[1]).toBe('u:*');
-      expect(scan.args[2]).toBe(100);
+      expect(scan.args[2]).toBe(1_000);
     }
   });
 
@@ -53,7 +53,7 @@ describe('RedisStore', () => {
       { name: 'unlink', args: [['u:1', 'u:2']] },
       { name: 'unlink', args: [['u:3']] },
     ]);
-    expect(matches).toEqual(['u:*|100']);
+    expect(matches).toEqual(['u:*|1000']);
   });
 
   it('clear escapes the prefix', async () => {
