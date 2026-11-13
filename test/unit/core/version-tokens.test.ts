@@ -788,11 +788,48 @@ describe('VersionTokens: creating a token with setIfAbsent', () => {
     expect(await tokens.current({ name: 'default', store }, 'tag', 'x')).toBe('winner01');
   });
 
-  it('a lost race whose key then reads empty returns the created token', async () => {
-    const { store } = counting(true);
-    store.setIfAbsent = () => Promise.resolve(false);
+  it('a lost race whose key then reads missing returns the created token after a second GET', async () => {
+    const { store, calls } = counting(true);
+    store.setIfAbsent = () => (calls.push('setIfAbsent'), Promise.resolve(false));
     const tokens = new VersionTokens('app', 1000);
     expect(await tokens.current({ name: 'default', store }, 'tag', 'x')).toMatch(TOKEN);
+    expect(calls).toEqual(['get', 'setIfAbsent', 'get']);
+  });
+
+  it('an empty token key is overwritten, and the new token is cached and kept (I1)', async () => {
+    /* 1.0 behaviour: '' counts as missing and a plain write repairs it. setIfAbsent would find
+       the key present and never repair it, so each read past cacheTtl would mint a new token.
+       Two current() calls across cacheTtl return the same token, and the key now holds it. */
+    vi.useFakeTimers();
+    try {
+      const { store, inner, calls } = counting(true);
+      await inner.set('app:__tag__:x', '', VERSION_KEY_TTL);
+      const tokens = new VersionTokens('app', 1000);
+      const target = { name: 'default', store };
+      const token = await tokens.current(target, 'tag', 'x');
+      expect(token).toMatch(TOKEN);
+      expect(calls).toEqual(['get', 'set', 'get']);
+      expect(await inner.get('app:__tag__:x')).toBe(token);
+      expect(tokens.cached(target, 'tag', 'x')).toBe(token);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await tokens.current(target, 'tag', 'x')).toBe(token);
+      expect(calls).toEqual(['get', 'set', 'get', 'get']);
+      expect(await inner.get('app:__tag__:x')).toBe(token);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fresh repairs an empty namespace token key the same way', async () => {
+    const { store, inner, calls } = counting(true);
+    await inner.set('app:__version__:users', '', VERSION_KEY_TTL);
+    const tokens = new VersionTokens('app', 1000);
+    const target = { name: 'default', store };
+    const token = await tokens.fresh(target, 'ns', 'users');
+    expect(token).toMatch(TOKEN);
+    expect(calls).toEqual(['get', 'set', 'get']);
+    expect(await inner.get('app:__version__:users')).toBe(token);
+    expect(await tokens.fresh(target, 'ns', 'users')).toBe(token);
   });
 
   it('without setIfAbsent the 1.0 path stays: get, set, get', async () => {
