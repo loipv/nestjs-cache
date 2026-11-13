@@ -2,6 +2,12 @@ import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
 import type { IoredisClusterLike, IoredisLike } from '../../../src/stores/ioredis.adapter.js';
 
+export interface FakePipeline {
+  queued: unknown[][];
+  set: ReturnType<typeof vi.fn>;
+  exec: ReturnType<typeof vi.fn>;
+}
+
 /**
  * Stand-in for an ioredis connection. Like ioredis, it only delivers messages on channels whose
  * SUBSCRIBE succeeded; `publishRemote` plays the part of another instance publishing.
@@ -27,6 +33,30 @@ export class FakeConnection extends EventEmitter {
   });
   quit = vi.fn(() => Promise.resolve('OK'));
   disconnect = vi.fn();
+  /** Every pipeline made by `pipeline()`, with its queued `set`s. */
+  readonly pipelines: FakePipeline[] = [];
+  /** What the next `exec` resolves; by default one `[null, 'OK']` per queued command. */
+  nextExec: (() => Promise<[Error | null, unknown][] | null>) | undefined;
+  pipeline = vi.fn(() => {
+    const queued: unknown[][] = [];
+    const exec = vi.fn(() => {
+      const custom = this.nextExec;
+      this.nextExec = undefined;
+      return custom !== undefined
+        ? custom()
+        : Promise.resolve(queued.map((): [Error | null, unknown] => [null, 'OK']));
+    });
+    const pipeline: FakePipeline = {
+      queued,
+      exec,
+      set: vi.fn((...args: unknown[]) => {
+        queued.push(args);
+        return pipeline;
+      }),
+    };
+    this.pipelines.push(pipeline);
+    return pipeline;
+  });
 
   private readonly prepared: FakeConnection[] = [];
 

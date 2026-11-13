@@ -21,3 +21,12 @@ export const minimal: IoredisLike = { ...base, duplicate: () => minimal };
 
 // @ts-expect-error mget must resolve (string | null)[]
 export const badMget: IoredisLike = { ...minimal, mget: () => Promise.resolve(1) };
+
+// A hand-written client with a pipeline is an IoredisLike.
+export const withPipeline: IoredisLike = {
+  ...minimal,
+  pipeline: () => ({
+    set: () => undefined,
+    exec: () => Promise.resolve([[null, 'OK']] as [Error | null, unknown][]),
+  }),
+};

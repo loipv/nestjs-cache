@@ -94,6 +94,27 @@ describe('ioredis Cluster (integration)', () => {
     for (const key of keys) expect(await store.get(key)).toBeUndefined();
   });
 
+  /* setMany over keys in many slots writes all of them with a TTL; a command Redis refuses makes
+     the pipeline of its slot fail, and setMany rejects. SET never answers WRONGTYPE (it overwrites
+     a list), so the failing command is one Redis refuses: PX 0 gives "invalid expire time". */
+  it('setMany writes keys across slots and rejects when a command fails', async () => {
+    const store = redisStore({ client });
+    const entries = Array.from({ length: 60 }, (_, i) => ({
+      key: `many:${String(i)}`,
+      value: `v${String(i)}`,
+      ttlMs: 60_000,
+    }));
+    expect((await ownersOf(entries.map((e) => e.key))).size).toBe(3);
+    await store.setMany(entries);
+    for (const e of entries) {
+      expect(await client.get(e.key)).toBe(e.value);
+      expect(await client.pttl(e.key)).toBeGreaterThan(0);
+    }
+    await expect(
+      store.setMany([...entries, { key: 'many:bad', value: 'y', ttlMs: 0 }]),
+    ).rejects.toThrow('invalid expire time');
+  });
+
   /* getMany over keys in different slots, with a missing key and a duplicate, answers one value
      per input position in input order. */
   it('getMany returns values in input order for keys in different slots', async () => {

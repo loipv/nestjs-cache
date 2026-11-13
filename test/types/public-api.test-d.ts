@@ -137,3 +137,16 @@ expectTypeOf<lib.CacheStore['touch']>().toEqualTypeOf<
 expectTypeOf<lib.CacheStore['setIfAbsent']>().toEqualTypeOf<
   ((key: string, value: string, ttlMs: number) => Promise<boolean>) | undefined
 >();
+
+// A RedisClientAdapter without the optional setMany still compiles.
+export const adapterWithoutSetMany: lib.RedisClientAdapter = {
+  get: () => Promise.resolve(undefined),
+  set: () => Promise.resolve(),
+  getex: () => Promise.resolve(undefined),
+  unlink: () => Promise.resolve(),
+  scan: () => Promise.resolve({ cursor: '0', keys: [] }),
+  publish: () => Promise.resolve(),
+  createSubscriber: () => {
+    throw new Error('unused');
+  },
+};

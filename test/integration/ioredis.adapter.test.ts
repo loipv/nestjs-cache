@@ -37,6 +37,19 @@ describe('ioredisAdapter', () => {
     expect(pttl).toBeLessThanOrEqual(5_000);
   });
 
+  it('setMany writes 100 entries with a TTL', async () => {
+    const entries = Array.from({ length: 100 }, (_, i) => ({
+      key: `m${String(i)}`,
+      value: `v${String(i)}`,
+      ttlMs: 60_000,
+    }));
+    await adapter.setMany?.(entries);
+    for (const e of entries) {
+      expect(await client.get(e.key)).toBe(e.value);
+      expect(await client.pttl(e.key)).toBeGreaterThan(0);
+    }
+  });
+
   it('get returns undefined for a missing key', async () => {
     expect(await adapter.get('nope')).toBeUndefined();
   });
