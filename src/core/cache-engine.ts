@@ -168,12 +168,16 @@ export class CacheEngine {
     this.escapeKeyArgs = options.escapeKeyArgs;
     // One token store for namespaces and tags; the facade serves the namespace calls.
     // A failed background touch is reported through `io`, built below: read it at call time.
+    // The flush runs outside the cache scope, so the failure lands on no cache span.
     const tokens = new VersionTokens(
       options.prefix,
       options.versionCacheTtl,
       MAX_TAG_TOKENS,
       (store, error) => {
         this.io.reportError(store, 'touch', error);
+      },
+      (run) => {
+        tracing.detach(run);
       },
     );
     this.tokens = tokens;

@@ -136,13 +136,16 @@ export class VersionTokens {
 
   /**
    * `maxTagTokens` is `MAX_TAG_TOKENS` outside tests. `onTouchError` receives each failed
-   * background touch, with the store name; nothing else sees it.
+   * background touch, with the store name; nothing else sees it. `detach`, when given, schedules
+   * the touch flush (the engine runs it outside the cache scope, so a failed touch lands on no
+   * cache span).
    */
   constructor(
     private readonly prefix: string | undefined,
     private readonly cacheTtl: number,
     maxTagTokens = MAX_TAG_TOKENS,
     private readonly onTouchError?: (store: string, error: unknown) => void,
+    private readonly detach?: (run: () => void) => void,
   ) {
     this.kinds = { ns: newState('ns', Infinity), tag: newState('tag', maxTagTokens) };
   }
@@ -477,9 +480,13 @@ export class VersionTokens {
     batch.keys.add(tokenKey(this.prefix, kind, name));
     if (!this.flushQueued) {
       this.flushQueued = true;
-      queueMicrotask(() => {
-        this.flushTouches();
-      });
+      const schedule = (): void => {
+        queueMicrotask(() => {
+          this.flushTouches();
+        });
+      };
+      if (this.detach === undefined) schedule();
+      else this.detach(schedule);
     }
   }
 

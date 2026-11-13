@@ -167,6 +167,24 @@ describe('lock runner', () => {
       expect(hooks.onError).toHaveBeenCalledWith(boom);
     });
 
+    it('starts the background release through hooks.detach when set (M5)', async () => {
+      const lock = new FakeLock();
+      const boom = new Error('release failed');
+      lock.failNext('release', boom);
+      const detach = vi.fn((run: () => void) => {
+        expect(lock.releaseCalls).toEqual([]);
+        run();
+      });
+      expect(await loadWithLock(lock, 'k', S, miss, async () => 'v', { ...hooks, detach })).toEqual(
+        { value: 'v', from: 'load' },
+      );
+      expect(detach).toHaveBeenCalledOnce();
+      expect(lock.releaseCalls).toEqual(['k']);
+      await vi.waitFor(() => {
+        expect(hooks.onError).toHaveBeenCalledWith(boom);
+      });
+    });
+
     it('re-reads after acquire: a found value is returned, the loader is not called', async () => {
       const lock = new FakeLock();
       const reread = vi.fn<Reread<string>>(async () => ({ found: true, value: 'c' }));

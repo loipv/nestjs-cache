@@ -488,7 +488,8 @@ export class EngineLoad {
 
   /**
    * Traced, `cache.lock` runs from `onAcquireStart` to the first `onLock` or acquire error; its
-   * `end` is idempotent, so a later release error lands on the current cache span instead.
+   * `end` is idempotent. The background release runs outside the cache scope (`detach`), so its
+   * error lands on no span; its `error` event is unchanged.
    */
   private hooks({ target, ref }: Located): LockHooks {
     let lockSpan: { end(acquired: boolean | undefined): void } | undefined;
@@ -506,6 +507,11 @@ export class EngineLoad {
         lockSpan?.end(undefined);
         this.io.reportError(target.name, 'lock', error);
       },
+      detach: this.tracing.enabled
+        ? (run) => {
+            this.tracing.detach(run);
+          }
+        : undefined,
     };
   }
 

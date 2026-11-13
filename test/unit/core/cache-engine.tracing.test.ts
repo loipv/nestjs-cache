@@ -3,6 +3,7 @@ import { CacheConfigError } from '../../../src/errors.js';
 import type { CacheModuleOptions } from '../../../src/module/cache.options.js';
 import { CircuitOpenError } from '../../../src/resilience/circuit-breaker.store.js';
 import type { KeyRef } from '../../../src/core/cache-engine.js';
+import { VERSION_KEY_TTL } from '../../../src/core/version-tokens.js';
 import type { LockHandle, LockProvider } from '../../../src/stores/cache-store.interface.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
@@ -329,17 +330,30 @@ describe('CacheEngine tracing: the lock', () => {
     expect(main.status).toBeUndefined();
   });
 
-  it('a failing release is recorded on the main span, not on the ended cache.lock', async () => {
+  it('a failing background release is recorded on no span, and still emits its error (M5)', async () => {
     const lock = new FakeLock();
     const failure = new Error('release failed');
     lock.failNext('release', failure);
-    const { engine, tracer } = traced({ ...LOCK, stores: { default: lockingStore(lock) } });
+    const { engine, emitted, tracer } = traced({
+      ...LOCK,
+      stores: { default: lockingStore(lock) },
+    });
     expect(await engine.getOrSet({ key: 'k' }, async () => 'v')).toBe('v');
+    await vi.waitFor(() => {
+      expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
+    });
+    expect(lock.releaseCalls).toEqual(['__lock__:k']);
+    expect(emitted.find((e) => e.event === 'error')?.payload).toEqual({
+      store: 'default',
+      operation: 'lock',
+      error: failure,
+    });
     expect(tracer.span('cache.lock').attributes['cache.lock.acquired']).toBe(true);
-    expect(tracer.span('cache.lock').exceptions).toEqual([]);
-    const main = tracer.span('cache.getOrSet');
-    expect(main.exceptions).toEqual([failure]);
-    expect(errorOperations(main)).toEqual(['lock']);
+    for (const span of tracer.spans()) {
+      expect(span.exceptions).toEqual([]);
+      expect(span.events).toEqual([]);
+      expect(span.status).toBeUndefined();
+    }
   });
 });
 
@@ -631,6 +645,36 @@ describe('CacheEngine tracing: writes and errors', () => {
     expect(await engine.getOrSet({ key: 'k' }, async () => 1, { lock: true })).toBe(1);
     store.failNext('delete', new CircuitOpenError());
     await engine.delete({}, ['k']);
+    for (const span of tracer.spans()) {
+      expect(span.exceptions).toEqual([]);
+      expect(span.events).toEqual([]);
+      expect(span.status).toBeUndefined();
+    }
+  });
+
+  it('a failing background token touch is recorded on no span, and still emits its error (M5)', async () => {
+    class TouchStore extends FakeStore {
+      readonly touch = vi.fn((): Promise<void> => Promise.reject(new Error('touch failed')));
+    }
+    const store = new TouchStore();
+    // The token exists already: a token this process just created is not touched.
+    store.data.set('app:__version__:users', { value: 'token001', ttlMs: VERSION_KEY_TTL });
+    const { engine, emitted, tracer } = traced({
+      prefix: 'app',
+      namespaces: { users: { versioned: true } },
+      stores: { default: store },
+    });
+    await engine.set({ namespace: 'users', key: '1' }, 'x');
+    await vi.waitFor(() => {
+      expect(emitted.filter((e) => e.event === 'error')).toHaveLength(1);
+    });
+    expect(store.touch).toHaveBeenCalledTimes(1);
+    expect(emitted.find((e) => e.event === 'error')?.payload).toEqual({
+      store: 'default',
+      operation: 'touch',
+      error: new Error('touch failed'),
+    });
+    expect(tracer.spans().length).toBeGreaterThan(0);
     for (const span of tracer.spans()) {
       expect(span.exceptions).toEqual([]);
       expect(span.events).toEqual([]);

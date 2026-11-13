@@ -175,6 +175,16 @@ export class CacheTracing {
   }
 
   /**
+   * Runs `fn` outside any cache scope: background work it starts (a token touch, a lock release)
+   * records nothing on the span of the call that started it. Events and metrics are unaffected.
+   */
+  detach(fn: () => void): void {
+    const on = this.on;
+    if (on === undefined) fn();
+    else on.als.exit(fn);
+  }
+
+  /**
    * Starts `cache.lock` under the active span, not activated. `end` is idempotent; `true` or
    * `false` sets `cache.lock.acquired`, `undefined` (the acquire failed) sets nothing.
    */

@@ -17,6 +17,11 @@ export interface LockHooks {
   /** Called once: the lock was acquired, or the wait for it ended. */
   onLock(acquired: boolean, waitedMs: number): void;
   onError(error: unknown): void;
+  /**
+   * Runs the background release; the engine runs it outside the cache scope, so a release error
+   * lands on no cache span. Without it, the release starts in place.
+   */
+  detach?(run: () => void): void;
 }
 
 /** A plain `setTimeout`, not unref'd, so fake timers drive the wait. */
@@ -24,15 +29,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Starts the release without awaiting it; a failed or throwing release is reported, never raised. */
+/**
+ * Starts the release without awaiting it (through `hooks.detach` when set); a failed or throwing
+ * release is reported, never raised.
+ */
 function releaseInBackground(handle: LockHandle, hooks: LockHooks): void {
-  try {
-    handle.release().catch((error: unknown) => {
+  const release = (): void => {
+    try {
+      handle.release().catch((error: unknown) => {
+        hooks.onError(error);
+      });
+    } catch (error) {
       hooks.onError(error);
-    });
-  } catch (error) {
-    hooks.onError(error);
-  }
+    }
+  };
+  if (hooks.detach === undefined) release();
+  else hooks.detach(release);
 }
 
 /** Releases in `finally` without delaying the caller; a failed release never replaces the load outcome. */
