@@ -47,7 +47,10 @@ function releaseInBackground(handle: LockHandle, hooks: LockHooks): void {
   else hooks.detach(release);
 }
 
-/** Releases in `finally` without delaying the caller; a failed release never replaces the load outcome. */
+/**
+ * Releases in `finally` without delaying the caller; a failed release never replaces the load
+ * outcome.
+ */
 async function whileHolding<T>(
   handle: LockHandle,
   load: () => Promise<T>,
@@ -61,9 +64,10 @@ async function whileHolding<T>(
 }
 
 /**
- * Miss path (spec 0.2, 4.4). With the lock: re-read once, then load and release (the release runs in the background). Without it: poll `reread`
- * every `retryDelay` until a value appears or `waitTimeout` passes, then load without the lock.
- * When `acquire` throws, the error is reported and the load runs without the lock.
+ * Miss path (spec 0.2, 4.4). With the lock: re-read once, then load and release (the release
+ * runs in the background). Without it: poll `reread` every `retryDelay` until a value appears or
+ * `waitTimeout` passes, then load without the lock. When `acquire` throws, the error is reported
+ * and the load runs without the lock.
  */
 export async function loadWithLock<T>(
   lock: LockProvider,

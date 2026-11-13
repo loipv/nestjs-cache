@@ -70,12 +70,12 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 /**
  * Wraps a store with a circuit breaker (spec 0.2, 4.6). `get`, `set`, `delete`, `clear`,
- * `getAndTouch`, `getMany`, `setMany`, `touch`, `setIfAbsent`, `getStrict`, `setStrict`, `ping`, `lock.acquire` and
- * `LockHandle.release` are guarded: each races a timeout, except `clear`. `clear` runs only
- * while the circuit is closed (open or half-open it rejects with `CircuitOpenError`, and it is
- * never the half-open probe); it is not bounded by `timeout`, so set a command or socket timeout
- * on the client. Its real outcome is recorded once. `failureThreshold` consecutive failures open
- * the circuit so calls reject with
+ * `getAndTouch`, `getMany`, `setMany`, `touch`, `setIfAbsent`, `getStrict`, `setStrict`, `ping`,
+ * `lock.acquire` and `LockHandle.release` are guarded: each races a timeout, except `clear`.
+ * `clear` runs only while the circuit is closed (open or half-open it rejects with
+ * `CircuitOpenError`, and it is never the half-open probe); it is not bounded by `timeout`, so set
+ * a command or socket timeout on the client. Its real outcome is recorded once.
+ * `failureThreshold` consecutive failures open the circuit so calls reject with
  * `CircuitOpenError` without reaching the store. After `openDuration` one probe is let through.
  * `invalidation`, `bind` and `close` are forwarded unchanged.
  */

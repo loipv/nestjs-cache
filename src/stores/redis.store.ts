@@ -77,7 +77,10 @@ export class RedisStore implements CacheStore {
     return this.adapter.unlink(keys);
   }
 
-  /** Scans `prefix*` and unlinks each page while the scan goes on, with up to `UNLINK_CONCURRENCY` in flight. */
+  /**
+   * Scans `prefix*` and unlinks each page while the scan goes on, with up to
+   * `UNLINK_CONCURRENCY` in flight.
+   */
   async clear(prefix: string): Promise<void> {
     const match = `${escapeGlob(prefix)}*`;
     const adapter = this.adapter;

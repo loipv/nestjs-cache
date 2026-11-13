@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { CacheEventSink, CacheOperation } from '../core/events.js';
 import { CacheConfigError } from '../errors.js';
-import { chunkKeys, MAX_PUBLISH_CHARS } from './invalidation-chunks.js';
 import { CircuitOpenError } from '../resilience/circuit-breaker.store.js';
 import type {
   CacheStore,
@@ -10,6 +9,7 @@ import type {
   InvalidationMessage,
   LockProvider,
 } from './cache-store.interface.js';
+import { chunkKeys, MAX_PUBLISH_CHARS } from './invalidation-chunks.js';
 
 /** Options of `tieredStore`. */
 export interface TieredStoreOptions {

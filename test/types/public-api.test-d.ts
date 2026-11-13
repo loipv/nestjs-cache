@@ -124,7 +124,8 @@ expectTypeOf<lib.CircuitBreakerStoreOptions>().toEqualTypeOf<{
 // @ts-expect-error the old name is not exported
 export type OldBreakerOptions = lib.CircuitBreakerOptions;
 
-/* 1.1: touch and setIfAbsent are optional CacheStore members; a minimal store still satisfies it. */
+/* 1.1: touch and setIfAbsent are optional CacheStore members; a minimal store still satisfies
+   it. */
 export const minimalStore: lib.CacheStore = {
   get: () => Promise.resolve(undefined),
   set: () => Promise.resolve(),
