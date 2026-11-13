@@ -121,8 +121,9 @@ function slot(target: Target, name: string): string {
  *
  * P-04: on a store with `touch`, each token used (served from the cache by `current` or
  * `currentMany`, or cached from a store read) is touched at most once per
- * `TOKEN_TOUCH_INTERVAL` per process; a `bump` counts as a touch. The keys due are queued per
- * store and sent in the background, one `touch(keys, VERSION_KEY_TTL)` per store per microtask.
+ * `TOKEN_TOUCH_INTERVAL` per process; a `bump`, and a create by this process, count as a touch.
+ * The keys due are queued per store and sent in the background, one
+ * `touch(keys, VERSION_KEY_TTL)` per store per microtask.
  * Touching never changes which token a call returns or caches; a failed touch goes to
  * `onTouchError` only.
  */
@@ -171,13 +172,14 @@ export class VersionTokens {
     const running = state.inflight.get(k);
     if (running !== undefined) return running;
     const promise = this.read(target, kind, name).then(
-      (token) => {
+      ({ token, wrote }) => {
         // A bump while this read was in flight removed the entry; keep the newer token.
         if (state.inflight.get(k) === promise) {
           state.inflight.delete(k);
           // An older plain read may have seen the key missing; it must not drop this token.
           state.reads.delete(k);
-          this.remember(state, target, name, k, token);
+          // A token just written has its full TTL: it counts as touched (T9-a).
+          this.remember(state, target, name, k, token, wrote);
         }
         return token;
       },
@@ -261,9 +263,9 @@ export class VersionTokens {
     state.freshes.set(k, (state.freshes.get(k) ?? 0) + 1);
     const bumps = state.bumps.get(k) ?? 0;
     try {
-      const token = create
+      const { token, wrote } = create
         ? await this.read(target, kind, name)
-        : await readToken(target.store, tokenKey(this.prefix, kind, name));
+        : { token: await readToken(target.store, tokenKey(this.prefix, kind, name)), wrote: false };
       const found = token !== undefined && token !== '';
       if ((state.bumps.get(k) ?? 0) === bumps) {
         // In-flight reads started earlier; they must not replace this newer token (or, for a
@@ -271,7 +273,7 @@ export class VersionTokens {
         state.reads.delete(k);
         if (found) {
           state.inflight.delete(k);
-          this.remember(state, target, name, k, token);
+          this.remember(state, target, name, k, token, wrote);
         } else if (kind === 'tag') {
           // As in `currentMany`: the tag key is gone, so its token is no fallback any more.
           state.cache.delete(k);
@@ -426,8 +428,9 @@ export class VersionTokens {
 
   /**
    * Caches `token` (of `name`, slot `k`) as the most recently refreshed entry, evicting the oldest
-   * beyond the cap. The entry keeps the `touchedAt` of the one it replaces; `bumped` (a token just
-   * written with its full TTL) sets it to now instead. Then the token key is touched if due.
+   * beyond the cap. The entry keeps the `touchedAt` of the one it replaces; `written` (a token
+   * this process just wrote with its full TTL: a bump or a create) sets it to now instead. Then
+   * the token key is touched if due.
    */
   private remember(
     state: KindState,
@@ -435,10 +438,10 @@ export class VersionTokens {
     name: string,
     k: string,
     token: string,
-    bumped = false,
+    written = false,
   ): void {
     const now = Date.now();
-    const touchedAt = bumped ? now : state.cache.get(k)?.touchedAt;
+    const touchedAt = written ? now : state.cache.get(k)?.touchedAt;
     const entry: Cached = { token, until: now + this.cacheTtl, touchedAt };
     state.cache.delete(k);
     state.cache.set(k, entry);
@@ -509,20 +512,28 @@ export class VersionTokens {
    * `setIfAbsent` would find present and never repair), the token is written and read back (the
    * 1.0 path): a bump landing between the read and the write is overwritten by `created` and the
    * entries stamped with the bumped token are orphaned (they read as misses), never read wrongly.
+   * `wrote` tells whether this call wrote the token key (with its full TTL); a token found, or
+   * left by a winning `setIfAbsent`, was not.
    */
-  private async read(target: Target, kind: TokenKind, name: string): Promise<string> {
+  private async read(
+    target: Target,
+    kind: TokenKind,
+    name: string,
+  ): Promise<{ token: string; wrote: boolean }> {
     const key = tokenKey(this.prefix, kind, name);
     const store = target.store;
     const existing = await readToken(store, key);
-    if (existing !== undefined && existing !== '') return existing;
+    if (existing !== undefined && existing !== '') return { token: existing, wrote: false };
     const created = newVersionToken();
+    let wrote = true;
     if (existing === undefined && store.setIfAbsent !== undefined) {
-      if (await store.setIfAbsent(key, created, VERSION_KEY_TTL)) return created;
+      if (await store.setIfAbsent(key, created, VERSION_KEY_TTL)) return { token: created, wrote };
+      wrote = false;
     } else {
       await writeToken(store, key, created);
     }
     const stored = await readToken(store, key);
-    return stored === undefined || stored === '' ? created : stored;
+    return { token: stored === undefined || stored === '' ? created : stored, wrote };
   }
 }
 

@@ -107,13 +107,16 @@ describe.each(selectedAdapters())('cache tags (integration) on %s', (adapterName
   });
 
   it('a fresh tag token costs one GET and two SETs (token NX write, data write)', async () => {
-    /* Commandstats are per node, so the helper sums over the masters. */
+    /* Commandstats are per node, so the helper sums over the masters. A token this process just
+       created is not touched (T9-a): no background GETEX follows, even after the flush. */
     const app = await startApp(redisStore({ client: redis.client }), 50);
     try {
       await redis.raw.resetStats();
       await app.cache.set('x', 1, { tags: ['fresh-tag'] });
+      await pause(20);
       expect(await redis.raw.commandCalls('set')).toBe(2);
       expect(await redis.raw.commandCalls('get')).toBe(1);
+      expect(await redis.raw.commandCalls('getex')).toBe(0);
     } finally {
       await app.ref.close();
     }

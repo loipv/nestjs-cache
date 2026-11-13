@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents } from '../../../src/core/events.js';
-import { TOKEN_TOUCH_INTERVAL } from '../../../src/core/version-tokens.js';
+import { TOKEN_TOUCH_INTERVAL, VERSION_KEY_TTL } from '../../../src/core/version-tokens.js';
 import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
 import {
   circuitBreakerStore,
@@ -382,6 +382,8 @@ describe('CacheEngine versioned namespaces', () => {
       readonly touch = vi.fn((): Promise<void> => Promise.reject(new Error('touch failed')));
     }
     const store = new TouchStore();
+    // The token exists already: a token this process just created is not touched (T9-a).
+    store.data.set('app:__version__:users', { value: 'token001', ttlMs: VERSION_KEY_TTL });
     const { engine, emitted } = setup({ ...OPTIONS, stores: { default: store } });
     await engine.set(REF, 'x');
     await vi.runAllTimersAsync();
@@ -416,6 +418,8 @@ describe('CacheEngine versioned namespaces', () => {
       }),
       events,
     );
+    // The token exists already, so the set touches it (a token just created would not be).
+    await inner.set('app:__version__:users', 'token001', VERSION_KEY_TTL);
     await engine.set(REF, 'x');
     await vi.runAllTimersAsync();
     expect(touch).toHaveBeenCalledTimes(1);

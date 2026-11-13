@@ -873,11 +873,67 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
     return { store, touch, onTouchError, tokens, target: { name: 'default', store } };
   }
 
+  /** Writes a token for `name` straight into `store`, so a read finds it instead of creating it. */
+  function existing(store: CacheStore, kind: 'ns' | 'tag', name: string): Promise<void> {
+    return store.set(tokenKey('app', kind, name), 'token001', VERSION_KEY_TTL);
+  }
+
+  it('a token this process creates is not touched until 24 hours later (T9-a)', async () => {
+    /* setIfAbsent wrote the key with its full TTL just now, through current or fresh: no touch
+       is queued. Once 24 hours have passed, the next use touches the same token. */
+    const { touch, tokens, target } = touching();
+    const token = await tokens.current(target, 'ns', 'users');
+    await tokens.fresh(target, 'tag', 'a');
+    await vi.runAllTimersAsync();
+    expect(touch).not.toHaveBeenCalled();
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL - 1);
+    expect(await tokens.current(target, 'ns', 'users')).toBe(token);
+    await vi.runAllTimersAsync();
+    expect(touch).not.toHaveBeenCalled();
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL);
+    expect(await tokens.current(target, 'ns', 'users')).toBe(token);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(touch).toHaveBeenCalledWith([tokenKey('app', 'ns', 'users')], VERSION_KEY_TTL);
+  });
+
+  it('a token created by the 1.0 write path (no setIfAbsent) is not touched either', async () => {
+    /* An empty key is repaired with a plain write too: that write also counts as a touch. */
+    const inner = memoryStore();
+    const touch = vi.fn((keys: readonly string[], ttlMs: number) => inner.touch(keys, ttlMs));
+    const store: CacheStore = {
+      get: (key) => inner.get(key),
+      set: (key, value, ttlMs) => inner.set(key, value, ttlMs),
+      delete: (keys) => inner.delete(keys),
+      clear: (prefix) => inner.clear(prefix),
+      touch,
+    };
+    await inner.set(tokenKey('app', 'tag', 'b'), '', VERSION_KEY_TTL);
+    const tokens = new VersionTokens('app', 1000);
+    const target = { name: 'default', store };
+    await tokens.current(target, 'ns', 'users');
+    await tokens.current(target, 'tag', 'b');
+    await vi.runAllTimersAsync();
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it('a token found by setIfAbsent losing a race is touched once (the winner may be another process)', async () => {
+    const { store, touch, tokens, target } = touching();
+    vi.spyOn(store, 'setIfAbsent').mockImplementation(async (key, _value, ttlMs) => {
+      await store.set(key, 'winner01', ttlMs);
+      return false;
+    });
+    expect(await tokens.current(target, 'tag', 'a')).toBe('winner01');
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+  });
+
   it('touches a token key once per 24 hours of use', async () => {
     /* 100 uses within the first hour, served both from the token cache and from the store
        (the cache lives 60 s), send one touch; once 24 hours have passed, the next use sends a
        second one. */
-    const { touch, tokens, target } = touching(60_000);
+    const { store, touch, tokens, target } = touching(60_000);
+    await existing(store, 'ns', 'users');
     const token = await tokens.current(target, 'ns', 'users');
     for (let i = 0; i < 99; i += 1) {
       await vi.advanceTimersByTimeAsync(36_000);
@@ -896,7 +952,8 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
 
   it('a token served from the cache is touched once due', async () => {
     /* The token cache outlives 24 hours: the hot path itself queues the touch. */
-    const { touch, tokens, target } = touching(2 * TOKEN_TOUCH_INTERVAL);
+    const { store, touch, tokens, target } = touching(2 * TOKEN_TOUCH_INTERVAL);
+    await existing(store, 'tag', 'a');
     await tokens.current(target, 'tag', 'a');
     await vi.runAllTimersAsync();
     expect(touch).toHaveBeenCalledTimes(1);
@@ -933,6 +990,9 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
     const other = memoryStore();
     const otherTouch = vi.spyOn(other, 'touch');
     const second = { name: 'second', store: other };
+    await existing(first.store, 'ns', 'users');
+    await existing(first.store, 'tag', 'a');
+    await existing(other, 'tag', 'a');
     await Promise.all([
       first.tokens.current(first.target, 'ns', 'users'),
       first.tokens.current(first.target, 'tag', 'a'),
@@ -974,7 +1034,8 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
 
   it('a failed touch is reported once, the read still succeeds and nothing is unhandled', async () => {
     /* The failure is not retried before 24 hours: touchedAt is not reset. */
-    const { touch, onTouchError, tokens, target } = touching();
+    const { store, touch, onTouchError, tokens, target } = touching();
+    await existing(store, 'ns', 'users');
     const error = new Error('touch failed');
     touch.mockRejectedValue(error);
     const unhandled = vi.fn();
@@ -999,7 +1060,8 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
   });
 
   it('a synchronous throw from touch is reported, not thrown', async () => {
-    const { touch, onTouchError, tokens, target } = touching();
+    const { store, touch, onTouchError, tokens, target } = touching();
+    await existing(store, 'ns', 'users');
     const error = new Error('sync touch failure');
     touch.mockImplementation(() => {
       throw error;
@@ -1012,6 +1074,7 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
 
   it('a failed touch without onTouchError, or with a throwing one, is never unhandled', async () => {
     const store = memoryStore();
+    await existing(store, 'ns', 'users');
     vi.spyOn(store, 'touch').mockRejectedValue(new Error('touch failed'));
     const unhandled = vi.fn();
     process.on('unhandledRejection', unhandled);
@@ -1045,6 +1108,7 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
     const l2 = memoryStore();
     const l2Touch = vi.spyOn(l2, 'touch');
     const tiered = tieredStore({ l1: memoryStore(), l2, invalidation: new FakeBus() });
+    await existing(l2, 'ns', 'users');
     const tokens = new VersionTokens('app', 1000);
     await tokens.current({ name: 'default', store: tiered }, 'ns', 'users');
     await vi.runAllTimersAsync();
@@ -1065,6 +1129,8 @@ describe('VersionTokens: refreshing token keys in use (P-04)', () => {
     const touch = vi.spyOn(store, 'touch');
     const tokens = new VersionTokens('app', 1000, 1);
     const target = { name: 'default', store };
+    await existing(store, 'tag', 'a');
+    await existing(store, 'tag', 'b');
     for (const name of ['a', 'b', 'a']) {
       await tokens.current(target, 'tag', name);
       await vi.runAllTimersAsync();
