@@ -2,7 +2,7 @@
 '@loipv/nestjs-cache': minor
 ---
 
-Version and tag tokens in use no longer expire after 30 days (P-04), and the hot paths send fewer Redis commands.
+Version and tag tokens in use no longer expire after 30 days, and the hot paths send fewer Redis commands.
 
 Added:
 
