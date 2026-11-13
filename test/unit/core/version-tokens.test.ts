@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_TAG_TOKENS,
+  TOKEN_TOUCH_INTERVAL,
   VERSION_KEY_TTL,
   VersionTokens,
   tokenKey,
@@ -812,5 +813,229 @@ describe('VersionTokens: creating a token with setIfAbsent', () => {
     await expect(tokens.current({ name: 'default', store: failing }, 'tag', 'b')).rejects.toThrow(
       'l2 down',
     );
+  });
+});
+
+describe('VersionTokens: refreshing token keys in use (P-04)', () => {
+  const HOUR = 3_600_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A MemoryStore with a `touch` spy, and tokens that report touch failures to `onTouchError`. */
+  function touching(cacheTtl = 1000) {
+    const store = memoryStore();
+    const touch = vi.spyOn(store, 'touch');
+    const onTouchError = vi.fn();
+    const tokens = new VersionTokens('app', cacheTtl, MAX_TAG_TOKENS, onTouchError);
+    return { store, touch, onTouchError, tokens, target: { name: 'default', store } };
+  }
+
+  it('touches a token key once per 24 hours of use', async () => {
+    /* 100 uses within the first hour, served both from the token cache and from the store
+       (the cache lives 60 s), send one touch; once 24 hours have passed, the next use sends a
+       second one. */
+    const { touch, tokens, target } = touching(60_000);
+    const token = await tokens.current(target, 'ns', 'users');
+    for (let i = 0; i < 99; i += 1) {
+      await vi.advanceTimersByTimeAsync(36_000);
+      expect(await tokens.current(target, 'ns', 'users')).toBe(token);
+    }
+    expect(Date.now()).toBeLessThan(HOUR);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(touch).toHaveBeenCalledWith([tokenKey('app', 'ns', 'users')], VERSION_KEY_TTL);
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL);
+    expect(await tokens.current(target, 'ns', 'users')).toBe(token);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(2);
+    expect(touch).toHaveBeenLastCalledWith([tokenKey('app', 'ns', 'users')], VERSION_KEY_TTL);
+  });
+
+  it('a token served from the cache is touched once due', async () => {
+    /* The token cache outlives 24 hours: the hot path itself queues the touch. */
+    const { touch, tokens, target } = touching(2 * TOKEN_TOUCH_INTERVAL);
+    await tokens.current(target, 'tag', 'a');
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL - 1);
+    await tokens.current(target, 'tag', 'a');
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL);
+    await tokens.current(target, 'tag', 'a');
+    await tokens.currentMany(target, 'tag', ['a']);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(2);
+    expect(touch).toHaveBeenLastCalledWith([tokenKey('app', 'tag', 'a')], VERSION_KEY_TTL);
+  });
+
+  it('currentMany of 3 names sends one touch with the 3 keys', async () => {
+    const { store, touch, tokens, target } = touching();
+    for (const name of ['a', 'b', 'c']) {
+      await store.set(tokenKey('app', 'tag', name), `token00${name}`, VERSION_KEY_TTL);
+    }
+    const found = await tokens.currentMany(target, 'tag', ['a', 'b', 'c']);
+    expect([...found.values()]).toEqual(['token00a', 'token00b', 'token00c']);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(touch).toHaveBeenCalledWith(
+      ['a', 'b', 'c'].map((name) => tokenKey('app', 'tag', name)),
+      VERSION_KEY_TTL,
+    );
+  });
+
+  it('keys due in one tick share one touch per store', async () => {
+    /* Two stores: each gets one touch with its own keys. */
+    const first = touching();
+    const other = memoryStore();
+    const otherTouch = vi.spyOn(other, 'touch');
+    const second = { name: 'second', store: other };
+    await Promise.all([
+      first.tokens.current(first.target, 'ns', 'users'),
+      first.tokens.current(first.target, 'tag', 'a'),
+      first.tokens.current(second, 'tag', 'a'),
+    ]);
+    await vi.runAllTimersAsync();
+    expect(first.touch).toHaveBeenCalledTimes(1);
+    expect(first.touch).toHaveBeenCalledWith(
+      [tokenKey('app', 'ns', 'users'), tokenKey('app', 'tag', 'a')],
+      VERSION_KEY_TTL,
+    );
+    expect(otherTouch).toHaveBeenCalledTimes(1);
+    expect(otherTouch).toHaveBeenCalledWith([tokenKey('app', 'tag', 'a')], VERSION_KEY_TTL);
+  });
+
+  it('a bump counts as a touch', async () => {
+    const { touch, tokens, target } = touching();
+    await tokens.bump(target, 'ns', 'users');
+    await tokens.current(target, 'ns', 'users');
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL - 1);
+    await tokens.current(target, 'ns', 'users');
+    await tokens.fresh(target, 'ns', 'users');
+    await vi.runAllTimersAsync();
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it('fresh and recheck reads are uses: a token not touched yet is queued', async () => {
+    const { store, touch, tokens, target } = touching();
+    await store.set(tokenKey('app', 'tag', 'a'), 'token00a', VERSION_KEY_TTL);
+    await store.set(tokenKey('app', 'tag', 'b'), 'token00b', VERSION_KEY_TTL);
+    expect(await tokens.fresh(target, 'tag', 'a')).toBe('token00a');
+    expect(await tokens.recheck(target, 'tag', 'b')).toBe('token00b');
+    await vi.runAllTimersAsync();
+    expect(touch.mock.calls.flatMap(([keys]) => keys)).toEqual([
+      tokenKey('app', 'tag', 'a'),
+      tokenKey('app', 'tag', 'b'),
+    ]);
+  });
+
+  it('a failed touch is reported once, the read still succeeds and nothing is unhandled', async () => {
+    /* The failure is not retried before 24 hours: touchedAt is not reset. */
+    const { touch, onTouchError, tokens, target } = touching();
+    const error = new Error('touch failed');
+    touch.mockRejectedValue(error);
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const token = await tokens.current(target, 'ns', 'users');
+      expect(token).toMatch(TOKEN);
+      await vi.runAllTimersAsync();
+      expect(onTouchError).toHaveBeenCalledTimes(1);
+      expect(onTouchError).toHaveBeenCalledWith('default', error);
+      for (let i = 0; i < 10; i += 1) {
+        await vi.advanceTimersByTimeAsync(HOUR);
+        expect(await tokens.current(target, 'ns', 'users')).toBe(token);
+      }
+      await vi.runAllTimersAsync();
+      expect(touch).toHaveBeenCalledTimes(1);
+      expect(onTouchError).toHaveBeenCalledTimes(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('a synchronous throw from touch is reported, not thrown', async () => {
+    const { touch, onTouchError, tokens, target } = touching();
+    const error = new Error('sync touch failure');
+    touch.mockImplementation(() => {
+      throw error;
+    });
+    expect(await tokens.current(target, 'ns', 'users')).toMatch(TOKEN);
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(onTouchError).toHaveBeenCalledWith('default', error);
+  });
+
+  it('a failed touch without onTouchError, or with a throwing one, is never unhandled', async () => {
+    const store = memoryStore();
+    vi.spyOn(store, 'touch').mockRejectedValue(new Error('touch failed'));
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const silent = new VersionTokens('app', 1000);
+      await silent.current({ name: 'default', store }, 'ns', 'users');
+      const throwing = new VersionTokens('app', 1000, MAX_TAG_TOKENS, () => {
+        throw new Error('listener failed');
+      });
+      await throwing.current({ name: 'default', store }, 'ns', 'users');
+      await vi.runAllTimersAsync();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('a store without touch queues nothing and reports nothing', async () => {
+    const { store, tokens, target } = setup();
+    const onTouchError = vi.fn();
+    const withCallback = new VersionTokens('app', 1000, MAX_TAG_TOKENS, onTouchError);
+    await withCallback.current(target, 'ns', 'users');
+    await withCallback.currentMany(target, 'ns', ['users']);
+    await tokens.current(target, 'ns', 'users');
+    await vi.runAllTimersAsync();
+    expect(onTouchError).not.toHaveBeenCalled();
+    expect('touch' in store).toBe(false);
+  });
+
+  it('a tiered store touches through L2, and only when L2 has touch', async () => {
+    const l2 = memoryStore();
+    const l2Touch = vi.spyOn(l2, 'touch');
+    const tiered = tieredStore({ l1: memoryStore(), l2, invalidation: new FakeBus() });
+    const tokens = new VersionTokens('app', 1000);
+    await tokens.current({ name: 'default', store: tiered }, 'ns', 'users');
+    await vi.runAllTimersAsync();
+    expect(l2Touch).toHaveBeenCalledWith([tokenKey('app', 'ns', 'users')], VERSION_KEY_TTL);
+    const plain = tieredStore({
+      l1: memoryStore(),
+      l2: new FakeStore(),
+      invalidation: new FakeBus(),
+    });
+    expect(plain.touch).toBeUndefined();
+    await tokens.current({ name: 'plain', store: plain }, 'ns', 'users');
+    await vi.runAllTimersAsync();
+    expect(l2Touch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tag token evicted by the cap is touched again on its next use', async () => {
+    const store = memoryStore();
+    const touch = vi.spyOn(store, 'touch');
+    const tokens = new VersionTokens('app', 1000, 1);
+    const target = { name: 'default', store };
+    for (const name of ['a', 'b', 'a']) {
+      await tokens.current(target, 'tag', name);
+      await vi.runAllTimersAsync();
+    }
+    expect(touch.mock.calls.flatMap(([keys]) => keys)).toEqual([
+      tokenKey('app', 'tag', 'a'),
+      tokenKey('app', 'tag', 'b'),
+      tokenKey('app', 'tag', 'a'),
+    ]);
   });
 });

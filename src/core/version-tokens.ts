@@ -16,6 +16,12 @@ export const VERSION_KEY_TTL = 2_592_000_000;
  */
 export const MAX_TAG_TOKENS = 10_000;
 
+/**
+ * 24 hours: how often this process refreshes the TTL of a token key in use (P-04), on a store
+ * with `touch`. A token key in use therefore lives `VERSION_KEY_TTL` after its last use.
+ */
+export const TOKEN_TOUCH_INTERVAL = 86_400_000;
+
 const KIND_NAMESPACE: Readonly<Record<TokenKind, string>> = { ns: '__version__', tag: '__tag__' };
 
 /**
@@ -40,6 +46,18 @@ export function newVersionToken(): string {
 interface Cached {
   token: string;
   until: number;
+  /**
+   * When this process last queued a touch of the token key, or bumped it; unset until then. Set
+   * at queue time and kept on failure, so a failing touch is retried only after
+   * `TOKEN_TOUCH_INTERVAL`. Survives `remember` replacing the entry.
+   */
+  touchedAt?: number | undefined;
+}
+
+/** The token keys waiting for one `touch` of their store, and the store name to report under. */
+interface TouchBatch {
+  readonly name: string;
+  readonly keys: Set<string>;
 }
 
 /** The tokens of one kind, each map keyed by `<store>\0<name>`. */
@@ -100,15 +118,30 @@ function slot(target: Target, name: string): string {
  * (`'tag'`). Emits nothing; store failures reject. A token key is read with `getStrict` and
  * written with `setStrict` when the store has them (a tiered store), so a token is never created
  * or changed in L1 alone while L2 is down. An empty token key counts as missing.
+ *
+ * P-04: on a store with `touch`, each token used (served from the cache by `current` or
+ * `currentMany`, or cached from a store read) is touched at most once per
+ * `TOKEN_TOUCH_INTERVAL` per process; a `bump` counts as a touch. The keys due are queued per
+ * store and sent in the background, one `touch(keys, VERSION_KEY_TTL)` per store per microtask.
+ * Touching never changes which token a call returns or caches; a failed touch goes to
+ * `onTouchError` only.
  */
 export class VersionTokens {
   private readonly kinds: Readonly<Record<TokenKind, KindState>>;
+  /** Token keys due for a touch, per store, until the scheduled flush sends them. */
+  private readonly touches = new Map<CacheStore, TouchBatch>();
+  /** Whether a flush of `touches` is scheduled. */
+  private flushQueued = false;
 
-  /** `maxTagTokens` is `MAX_TAG_TOKENS` outside tests. */
+  /**
+   * `maxTagTokens` is `MAX_TAG_TOKENS` outside tests. `onTouchError` receives each failed
+   * background touch, with the store name; nothing else sees it.
+   */
   constructor(
     private readonly prefix: string | undefined,
     private readonly cacheTtl: number,
     maxTagTokens = MAX_TAG_TOKENS,
+    private readonly onTouchError?: (store: string, error: unknown) => void,
   ) {
     this.kinds = { ns: newState('ns', Infinity), tag: newState('tag', maxTagTokens) };
   }
@@ -126,7 +159,15 @@ export class VersionTokens {
     const state = this.kinds[kind];
     const k = slot(target, name);
     const cached = state.cache.get(k);
-    if (cached !== undefined && Date.now() < cached.until) return Promise.resolve(cached.token);
+    if (cached !== undefined) {
+      const now = Date.now();
+      if (now < cached.until) {
+        if (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+          this.touchIfDue(target, kind, name, cached, now);
+        }
+        return Promise.resolve(cached.token);
+      }
+    }
     const running = state.inflight.get(k);
     if (running !== undefined) return running;
     const promise = this.read(target, kind, name).then(
@@ -136,7 +177,7 @@ export class VersionTokens {
           state.inflight.delete(k);
           // An older plain read may have seen the key missing; it must not drop this token.
           state.reads.delete(k);
-          this.remember(state, k, token);
+          this.remember(state, target, name, k, token);
         }
         return token;
       },
@@ -230,7 +271,7 @@ export class VersionTokens {
         state.reads.delete(k);
         if (found) {
           state.inflight.delete(k);
-          this.remember(state, k, token);
+          this.remember(state, target, name, k, token);
         } else if (kind === 'tag') {
           // As in `currentMany`: the tag key is gone, so its token is no fallback any more.
           state.cache.delete(k);
@@ -259,7 +300,7 @@ export class VersionTokens {
     state.inflight.delete(k);
     state.reads.delete(k);
     state.rechecks.delete(k);
-    this.remember(state, k, token);
+    this.remember(state, target, name, k, token, true);
   }
 
   /**
@@ -290,6 +331,9 @@ export class VersionTokens {
       const k = slot(target, name);
       const cached = state.cache.get(k);
       if (cached !== undefined && now < cached.until) {
+        if (cached.touchedAt === undefined || now - cached.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+          this.touchIfDue(target, kind, name, cached, now);
+        }
         result.set(name, cached.token);
         fromCache?.add(name);
         continue;
@@ -304,7 +348,7 @@ export class VersionTokens {
       unread.map((name) => [name, tokenKey(this.prefix, kind, name)] as const),
     );
     for (const [name, raw] of reads) {
-      pending.push([name, this.shareRead(state, slot(target, name), raw)]);
+      pending.push([name, this.shareRead(state, target, name, raw)]);
     }
     for (const [name, token] of await Promise.all(
       pending.map(async ([name, read]) => [name, await read] as const),
@@ -350,9 +394,11 @@ export class VersionTokens {
    */
   private shareRead(
     state: KindState,
-    k: string,
+    target: Target,
+    name: string,
     raw: Promise<string | undefined>,
   ): Promise<string | undefined> {
+    const k = slot(target, name);
     const read: Promise<string | undefined> = raw.then(
       (value) => {
         const registered = state.reads.get(k) === read;
@@ -365,7 +411,7 @@ export class VersionTokens {
         if (registered) {
           // As in `fresh`: an older read-or-create in flight must not replace this token.
           state.inflight.delete(k);
-          this.remember(state, k, value);
+          this.remember(state, target, name, k, value);
         }
         return value;
       },
@@ -378,13 +424,81 @@ export class VersionTokens {
     return read;
   }
 
-  /** Caches `token` as the most recently refreshed entry, evicting the oldest beyond the cap. */
-  private remember(state: KindState, k: string, token: string): void {
+  /**
+   * Caches `token` (of `name`, slot `k`) as the most recently refreshed entry, evicting the oldest
+   * beyond the cap. The entry keeps the `touchedAt` of the one it replaces; `bumped` (a token just
+   * written with its full TTL) sets it to now instead. Then the token key is touched if due.
+   */
+  private remember(
+    state: KindState,
+    target: Target,
+    name: string,
+    k: string,
+    token: string,
+    bumped = false,
+  ): void {
+    const now = Date.now();
+    const touchedAt = bumped ? now : state.cache.get(k)?.touchedAt;
+    const entry: Cached = { token, until: now + this.cacheTtl, touchedAt };
     state.cache.delete(k);
-    state.cache.set(k, { token, until: Date.now() + this.cacheTtl });
+    state.cache.set(k, entry);
     for (const oldest of state.cache.keys()) {
       if (state.cache.size <= state.limit) break;
       state.cache.delete(oldest);
+    }
+    if (entry.touchedAt === undefined || now - entry.touchedAt >= TOKEN_TOUCH_INTERVAL) {
+      this.touchIfDue(target, state.kind, name, entry, now);
+    }
+  }
+
+  /**
+   * Queues a touch of the token key of `name` when the store has `touch`, recording `now` in
+   * `entry.touchedAt`. The caller has checked that the entry is due. A store without `touch`
+   * queues nothing and records nothing (the 1.0 behaviour).
+   */
+  private touchIfDue(
+    target: Target,
+    kind: TokenKind,
+    name: string,
+    entry: Cached,
+    now: number,
+  ): void {
+    const store = target.store;
+    if (store.touch === undefined) return;
+    entry.touchedAt = now;
+    let batch = this.touches.get(store);
+    if (batch === undefined) {
+      batch = { name: target.name, keys: new Set() };
+      this.touches.set(store, batch);
+    }
+    batch.keys.add(tokenKey(this.prefix, kind, name));
+    if (!this.flushQueued) {
+      this.flushQueued = true;
+      queueMicrotask(() => {
+        this.flushTouches();
+      });
+    }
+  }
+
+  /**
+   * Sends one `touch(keys, VERSION_KEY_TTL)` per queued store and empties the queue, whatever
+   * the outcome. Nobody awaits it: a rejection (or a synchronous throw) goes to `onTouchError`,
+   * and nothing escapes, not even a throwing `onTouchError`.
+   */
+  private flushTouches(): void {
+    this.flushQueued = false;
+    const batches = [...this.touches];
+    this.touches.clear();
+    for (const [store, { name, keys }] of batches) {
+      if (store.touch === undefined) continue;
+      const touch = store.touch.bind(store);
+      attempt(() => touch([...keys], VERSION_KEY_TTL)).catch((error: unknown) => {
+        try {
+          this.onTouchError?.(name, error);
+        } catch {
+          // A failing error report must not become an unhandled rejection.
+        }
+      });
     }
   }
 

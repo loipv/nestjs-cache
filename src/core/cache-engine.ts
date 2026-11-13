@@ -26,7 +26,7 @@ import { isReservedNamespace, keyErrorOf } from './key-builder.js';
 import type { CacheEvents, CacheLogLevel, CacheOperation } from './events.js';
 import { NamespaceVersions } from './namespace-versions.js';
 import { createStrategy, type ExpiryStrategy } from './strategies/expiry-strategy.js';
-import { tokenKeyPrefixes, VersionTokens } from './version-tokens.js';
+import { MAX_TAG_TOKENS, tokenKeyPrefixes, VersionTokens } from './version-tokens.js';
 
 export type { BatchPutOptions, KeyRef, PutOptions } from './engine-io.js';
 export type { BatchLoader, BatchScope } from './engine-batch.js';
@@ -167,7 +167,15 @@ export class CacheEngine {
     this.logLevel = options.logging.level;
     this.escapeKeyArgs = options.escapeKeyArgs;
     // One token store for namespaces and tags; the facade serves the namespace calls.
-    const tokens = new VersionTokens(options.prefix, options.versionCacheTtl);
+    // A failed background touch is reported through `io`, built below: read it at call time.
+    const tokens = new VersionTokens(
+      options.prefix,
+      options.versionCacheTtl,
+      MAX_TAG_TOKENS,
+      (store, error) => {
+        this.io.reportError(store, 'touch', error);
+      },
+    );
     this.tokens = tokens;
     const versions = new NamespaceVersions(
       options.prefix,

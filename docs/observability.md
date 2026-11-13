@@ -40,8 +40,9 @@ works without `emitDecoratorMetadata`; plain constructor injection (`constructor
 Repeated `error` log lines are throttled to one per 30 seconds for each (store, operation) pair; the next line carries a
 `(+N similar errors suppressed)` suffix. Events are still emitted for every occurrence.
 
-`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`, `refresh`, `lock`, `version`, `tag`
-(the `CacheOperation` type).
+`operation` of an `error` event is one of `get`, `set`, `delete`, `clear`, `deserialize`, `key`, `publish`, `subscribe`,
+`refresh`, `lock`, `version`, `tag`, `touch` (the `CacheOperation` type). `touch` is a failed background refresh of
+version token key TTLs (see [Versioned namespaces](namespaces-and-tags.md#versioned-namespaces)); no call fails with it.
 
 ## Metrics, health check and logging
 

@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CacheEngine } from '../../../src/core/cache-engine.js';
 import { CacheEvents } from '../../../src/core/events.js';
+import { TOKEN_TOUCH_INTERVAL } from '../../../src/core/version-tokens.js';
 import { resolveOptions, type CacheModuleOptions } from '../../../src/module/cache.options.js';
+import {
+  circuitBreakerStore,
+  CircuitOpenError,
+} from '../../../src/resilience/circuit-breaker.store.js';
 import type { CacheStore } from '../../../src/stores/cache-store.interface.js';
+import { memoryStore } from '../../../src/stores/memory.store.js';
 import { tieredStore } from '../../../src/stores/tiered.store.js';
 import { makeEngine } from '../helpers/engine.js';
 import { FakeLock } from '../helpers/fake-lock.js';
@@ -367,5 +373,61 @@ describe('CacheEngine versioned namespaces', () => {
       { op: 'clear', args: ['app:posts:'] },
     ]);
     expect(await engine.get({ namespace: 'posts', key: '1' })).toBeUndefined();
+  });
+
+  it('a failed token touch emits an error with operation touch, and the call succeeds', async () => {
+    /* P-04: the token key is touched in the background; its failure is an error event of
+       the store, never the caller's failure. */
+    class TouchStore extends FakeStore {
+      readonly touch = vi.fn((): Promise<void> => Promise.reject(new Error('touch failed')));
+    }
+    const store = new TouchStore();
+    const { engine, emitted } = setup({ ...OPTIONS, stores: { default: store } });
+    await engine.set(REF, 'x');
+    await vi.runAllTimersAsync();
+    expect(store.touch).toHaveBeenCalledTimes(1);
+    // The background touch may settle before or after the set's own event.
+    expect(emitted.map((e) => e.event).sort()).toEqual(['error', 'set']);
+    expect(emitted.find((e) => e.event === 'error')?.payload).toEqual({
+      store: 'default',
+      operation: 'touch',
+      error: new Error('touch failed'),
+    });
+    expect(await engine.get(REF)).toBe('x');
+  });
+
+  it('a touch refused by an open circuit emits no error event (Review Focus 1)', async () => {
+    /* The token stays cached past 24 hours while the circuit is open: the due touch is
+       refused with CircuitOpenError, which, as for any other operation, is not an error. */
+    const inner = memoryStore();
+    const breaker = circuitBreakerStore(inner, {
+      failureThreshold: 1,
+      openDuration: 2 * TOKEN_TOUCH_INTERVAL,
+    });
+    const touch = vi.spyOn(breaker, 'touch');
+    const events = new CacheEvents();
+    const errors: unknown[] = [];
+    events.on('error', (payload) => errors.push(payload));
+    const engine = new CacheEngine(
+      resolveOptions({
+        ...OPTIONS,
+        versioning: { cacheTtl: 2 * TOKEN_TOUCH_INTERVAL },
+        stores: { default: breaker },
+      }),
+      events,
+    );
+    await engine.set(REF, 'x');
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(1);
+    vi.spyOn(inner, 'get').mockRejectedValueOnce(new Error('down'));
+    expect(await engine.get(REF)).toBeUndefined();
+    expect(breaker.state).toBe('open');
+    errors.length = 0;
+    vi.setSystemTime(TOKEN_TOUCH_INTERVAL);
+    expect(await engine.get(REF)).toBeUndefined();
+    await vi.runAllTimersAsync();
+    expect(touch).toHaveBeenCalledTimes(2);
+    await expect(touch.mock.results[1]?.value).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(errors).toEqual([]);
   });
 });

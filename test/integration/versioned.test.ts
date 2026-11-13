@@ -123,6 +123,28 @@ describe.each(selectedAdapters())('versioned namespaces (integration) on %s', (a
       expect(await redis.raw.get('app:__version__:users')).not.toBe(before);
       expect(await redis.raw.pttl('app:__version__:users')).toBeGreaterThan(TWENTY_NINE_DAYS);
     });
+
+    it('a token key in use is touched back to 30 days (P-04)', async () => {
+      /* The version key is left with 10 s. A new engine on the same Redis (a fresh process:
+         the token is not touched yet) reads the entry, which sends one background touch. */
+      await app.cache.set('1', 'x', { namespace: 'users' });
+      await redis.raw.pexpire('app:__version__:users', 10_000);
+      expect(await redis.raw.pttl('app:__version__:users')).toBeLessThanOrEqual(10_000);
+      const other = await startApp(redisStore({ client: redis.client }));
+      try {
+        expect(await other.cache.get('1', { namespace: 'users' })).toBe('x');
+        // The touch runs after a microtask; the raw client may use another connection, so poll.
+        const deadline = Date.now() + 2_000;
+        let pttl = await redis.raw.pttl('app:__version__:users');
+        while (pttl <= 2_500_000_000 && Date.now() < deadline) {
+          await pause(20);
+          pttl = await redis.raw.pttl('app:__version__:users');
+        }
+        expect(pttl).toBeGreaterThan(2_500_000_000);
+      } finally {
+        await other.ref.close();
+      }
+    });
   });
 
   // Two tiered stores sync over pub/sub: skipped where the probe finds it unreachable (ruling T1-B).

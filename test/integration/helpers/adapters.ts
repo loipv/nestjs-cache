@@ -89,6 +89,8 @@ export interface RawRedis {
   del(key: string): Promise<void>;
   /** Remaining ttl in ms (-1 without a ttl, -2 for a missing key). */
   pttl(key: string): Promise<number>;
+  /** `PEXPIRE key ttlMs`. */
+  pexpire(key: string, ttlMs: number): Promise<void>;
   /** Every key matching `pattern`; on a cluster, from every master. */
   keys(pattern: string): Promise<string[]>;
   /** `CONFIG RESETSTAT` on the master (on a cluster, on every master). */
@@ -204,6 +206,9 @@ async function startIoredis(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pttl(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pexpire(key, ttlMs);
+      },
       keys: (pattern) => scanIoredis(client, pattern),
       resetStats: async () => {
         await client.config('RESETSTAT');
@@ -241,6 +246,9 @@ async function startIoredisCluster(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pttl(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pexpire(key, ttlMs);
+      },
       keys: async (pattern) =>
         (
           await Promise.all(client.nodes('master').map((node) => scanIoredis(node, pattern)))
@@ -319,6 +327,9 @@ async function startNodeRedis(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pTTL(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pExpire(key, ttlMs);
+      },
       keys: (pattern) => scanNodeRedis(client, pattern),
       resetStats: async () => {
         await client.configResetStat();
@@ -358,6 +369,9 @@ async function startNodeRedisCluster(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pTTL(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pExpire(key, ttlMs);
+      },
       keys: async (pattern) => (await perMaster((node) => scanNodeRedis(node, pattern))).flat(),
       resetStats: async () => {
         await perMaster((node) => node.configResetStat());
@@ -396,6 +410,9 @@ async function startIoredisSentinel(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pttl(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pexpire(key, ttlMs);
+      },
       keys: (pattern) => scanIoredis(client, pattern),
       resetStats: async () => {
         await client.config('RESETSTAT');
@@ -436,6 +453,9 @@ async function startNodeRedisSentinel(): Promise<StartedAdapter> {
         await client.del(key);
       },
       pttl: (key) => client.pTTL(key),
+      pexpire: async (key, ttlMs) => {
+        await client.pExpire(key, ttlMs);
+      },
       keys: (pattern) => scanNodeRedis(client, pattern),
       resetStats: async () => {
         await client.configResetStat();

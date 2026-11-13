@@ -23,7 +23,9 @@ export type CacheOperation =
   | 'lock'
   | 'version'
   /** An invalid tag list (a throwing tag callback included); the entry is not written. */
-  | 'tag';
+  | 'tag'
+  /** A background refresh of version token key TTLs (`store.touch`) failed; no call fails. */
+  | 'touch';
 
 /**
  * Internal: the operations `CacheLogger` logs; `'metrics'` is a failing metrics update and
