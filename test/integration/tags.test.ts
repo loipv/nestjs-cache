@@ -106,6 +106,19 @@ describe.each(selectedAdapters())('cache tags (integration) on %s', (adapterName
     await redis.stop();
   });
 
+  it('a fresh tag token costs one GET and two SETs (token NX write, data write)', async () => {
+    /* Commandstats are per node, so the helper sums over the masters. */
+    const app = await startApp(redisStore({ client: redis.client }), 50);
+    try {
+      await redis.raw.resetStats();
+      await app.cache.set('x', 1, { tags: ['fresh-tag'] });
+      expect(await redis.raw.commandCalls('set')).toBe(2);
+      expect(await redis.raw.commandCalls('get')).toBe(1);
+    } finally {
+      await app.ref.close();
+    }
+  });
+
   describe('with two redisStore apps', () => {
     let apps: App[];
 

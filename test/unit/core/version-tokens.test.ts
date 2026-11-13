@@ -5,6 +5,10 @@ import {
   VersionTokens,
   tokenKey,
 } from '../../../src/core/version-tokens.js';
+import type { CacheStore } from '../../../src/stores/cache-store.interface.js';
+import { memoryStore } from '../../../src/stores/memory.store.js';
+import { tieredStore } from '../../../src/stores/tiered.store.js';
+import { FakeBus } from '../helpers/fake-bus.js';
 import { FakeStore } from '../helpers/fake-store.js';
 
 const TOKEN = /^[0-9a-z]{8}$/;
@@ -737,5 +741,76 @@ describe('VersionTokens: re-reading a mismatched tag', () => {
     expect(joined).toBe(failing);
     await expect(failing).rejects.toThrow('read failed');
     expect(tokens.cached(target, 'tag', 'b')).toBeUndefined();
+  });
+});
+
+describe('VersionTokens: creating a token with setIfAbsent', () => {
+  /** A MemoryStore that records its calls, optionally without `setIfAbsent`. */
+  function counting(withSetIfAbsent: boolean): {
+    store: CacheStore;
+    inner: ReturnType<typeof memoryStore>;
+    calls: string[];
+  } {
+    const inner = memoryStore();
+    const calls: string[] = [];
+    const store: CacheStore = {
+      get: (key) => (calls.push('get'), inner.get(key)),
+      set: (key, value, ttlMs) => (calls.push('set'), inner.set(key, value, ttlMs)),
+      delete: (keys) => inner.delete(keys),
+      clear: (prefix) => inner.clear(prefix),
+    };
+    if (withSetIfAbsent) {
+      store.setIfAbsent = (key, value, ttlMs) => (
+        calls.push('setIfAbsent'),
+        inner.setIfAbsent(key, value, ttlMs)
+      );
+    }
+    return { store, inner, calls };
+  }
+
+  it('reads, then creates with setIfAbsent and no plain set', async () => {
+    const { store, calls } = counting(true);
+    const tokens = new VersionTokens('app', 1000);
+    const token = await tokens.current({ name: 'default', store }, 'tag', 'x');
+    expect(token).toMatch(TOKEN);
+    expect(calls).toEqual(['get', 'setIfAbsent']);
+    expect(await store.get('app:__tag__:x')).toBe(token);
+  });
+
+  it('a lost race returns the winner token', async () => {
+    const { store, inner } = counting(true);
+    store.setIfAbsent = async (key, value, ttlMs) => {
+      await inner.set(key, 'winner01', ttlMs);
+      return false;
+    };
+    const tokens = new VersionTokens('app', 1000);
+    expect(await tokens.current({ name: 'default', store }, 'tag', 'x')).toBe('winner01');
+  });
+
+  it('a lost race whose key then reads empty returns the created token', async () => {
+    const { store } = counting(true);
+    store.setIfAbsent = () => Promise.resolve(false);
+    const tokens = new VersionTokens('app', 1000);
+    expect(await tokens.current({ name: 'default', store }, 'tag', 'x')).toMatch(TOKEN);
+  });
+
+  it('without setIfAbsent the 1.0 path stays: get, set, get', async () => {
+    const { store, calls } = counting(false);
+    const tokens = new VersionTokens('app', 1000);
+    await tokens.current({ name: 'default', store }, 'tag', 'x');
+    expect(calls).toEqual(['get', 'set', 'get']);
+  });
+
+  it('a tiered store whose L2 has setIfAbsent uses it; a strict rejection rejects current', async () => {
+    const l2 = counting(true);
+    const tiered = tieredStore({ l1: memoryStore(), l2: l2.store, invalidation: new FakeBus() });
+    const tokens = new VersionTokens('app', 1000);
+    await tokens.current({ name: 'default', store: tiered }, 'tag', 'a');
+    expect(l2.calls).toEqual(['get', 'setIfAbsent']);
+    l2.store.setIfAbsent = () => Promise.reject(new Error('l2 down'));
+    const failing = tieredStore({ l1: memoryStore(), l2: l2.store, invalidation: new FakeBus() });
+    await expect(tokens.current({ name: 'default', store: failing }, 'tag', 'b')).rejects.toThrow(
+      'l2 down',
+    );
   });
 });

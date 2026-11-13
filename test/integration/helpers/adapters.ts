@@ -91,7 +91,19 @@ export interface RawRedis {
   pttl(key: string): Promise<number>;
   /** Every key matching `pattern`; on a cluster, from every master. */
   keys(pattern: string): Promise<string[]>;
+  /** `CONFIG RESETSTAT` on the master (on a cluster, on every master). */
+  resetStats(): Promise<void>;
+  /** The `calls` of `cmdstat_<command>` (lowercase), summed over the masters. */
+  commandCalls(command: string): Promise<number>;
 }
+
+/** The calls of `cmdstat_<command>` in an `INFO commandstats` reply; 0 when never called. */
+function parseCalls(info: string, command: string): number {
+  const match = new RegExp(`^cmdstat_${command}:calls=(\\d+)`, 'm').exec(info);
+  return match?.[1] === undefined ? 0 : Number(match[1]);
+}
+
+const sum = (values: number[]): number => values.reduce((a, b) => a + b, 0);
 
 export interface StartedAdapter {
   client: RedisStoreOptions['client'];
@@ -193,6 +205,10 @@ async function startIoredis(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pttl(key),
       keys: (pattern) => scanIoredis(client, pattern),
+      resetStats: async () => {
+        await client.config('RESETSTAT');
+      },
+      commandCalls: async (command) => parseCalls(await client.info('commandstats'), command),
     },
     // The container is shared by the file's adapters and stops in the file's afterAll.
     stop: async () => {
@@ -229,6 +245,17 @@ async function startIoredisCluster(): Promise<StartedAdapter> {
         (
           await Promise.all(client.nodes('master').map((node) => scanIoredis(node, pattern)))
         ).flat(),
+      resetStats: async () => {
+        await Promise.all(client.nodes('master').map((node) => node.config('RESETSTAT')));
+      },
+      commandCalls: async (command) =>
+        sum(
+          await Promise.all(
+            client
+              .nodes('master')
+              .map(async (node) => parseCalls(await node.info('commandstats'), command)),
+          ),
+        ),
     },
     stop: async () => {
       await client.quit();
@@ -293,6 +320,10 @@ async function startNodeRedis(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pTTL(key),
       keys: (pattern) => scanNodeRedis(client, pattern),
+      resetStats: async () => {
+        await client.configResetStat();
+      },
+      commandCalls: async (command) => parseCalls(await client.info('commandstats'), command),
     },
     stop: async () => {
       await client.close();
@@ -328,6 +359,11 @@ async function startNodeRedisCluster(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pTTL(key),
       keys: async (pattern) => (await perMaster((node) => scanNodeRedis(node, pattern))).flat(),
+      resetStats: async () => {
+        await perMaster((node) => node.configResetStat());
+      },
+      commandCalls: async (command) =>
+        sum(await perMaster(async (node) => parseCalls(await node.info('commandstats'), command))),
     },
     stop: async () => {
       await client.close();
@@ -361,6 +397,10 @@ async function startIoredisSentinel(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pttl(key),
       keys: (pattern) => scanIoredis(client, pattern),
+      resetStats: async () => {
+        await client.config('RESETSTAT');
+      },
+      commandCalls: async (command) => parseCalls(await client.info('commandstats'), command),
     },
     stop: async () => {
       await client.quit();
@@ -397,6 +437,10 @@ async function startNodeRedisSentinel(): Promise<StartedAdapter> {
       },
       pttl: (key) => client.pTTL(key),
       keys: (pattern) => scanNodeRedis(client, pattern),
+      resetStats: async () => {
+        await client.configResetStat();
+      },
+      commandCalls: async (command) => parseCalls(await client.info('commandstats'), command),
     },
     stop: async () => {
       await client.close();

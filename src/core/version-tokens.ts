@@ -388,16 +388,25 @@ export class VersionTokens {
     }
   }
 
-  /** Reads the token key, creating it when missing; a concurrent creator's token wins. */
+  /**
+   * Reads the token key, creating it when missing; a concurrent creator's token wins. With
+   * `setIfAbsent` the create is atomic, so a token written (or bumped) after the read is never
+   * overwritten; without it, a bump landing between the read and the write is overwritten by
+   * `created` and the entries stamped with the bumped token are orphaned (they read as misses),
+   * never read wrongly.
+   */
   private async read(target: Target, kind: TokenKind, name: string): Promise<string> {
     const key = tokenKey(this.prefix, kind, name);
-    const existing = await readToken(target.store, key);
+    const store = target.store;
+    const existing = await readToken(store, key);
     if (existing !== undefined && existing !== '') return existing;
-    // A bump that lands between the read above and this write is overwritten by `created`: the
-    // entries stamped with the bumped token are orphaned (they read as misses), never read wrongly.
     const created = newVersionToken();
-    await writeToken(target.store, key, created);
-    const stored = await readToken(target.store, key);
+    if (store.setIfAbsent !== undefined) {
+      if (await store.setIfAbsent(key, created, VERSION_KEY_TTL)) return created;
+    } else {
+      await writeToken(store, key, created);
+    }
+    const stored = await readToken(store, key);
     return stored === undefined || stored === '' ? created : stored;
   }
 }
